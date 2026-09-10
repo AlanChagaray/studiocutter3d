@@ -29,6 +29,11 @@ dev = [
     "mypy>=1.13",
     "bandit>=1.8",
 ]
+# Primer ladrillo del ciclo 2 (capa web). Se instala aparte del motor, que no
+# depende de nada de esto: `pip install -e ".[web]"`.
+web = [
+    "argon2-cffi>=25.1",
+]
 
 [project.scripts]
 cutter3d = "cutter3d.cli:main"

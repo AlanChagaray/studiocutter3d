@@ -13,6 +13,10 @@ out/
 *.stl
 *.glb
 
+# credenciales locales — hashes de usuarios para el login del ciclo 2.
+# Nunca se commitea: es por maquina, no por repo.
+credenciales.json
+
 # herramientas
 .pytest_cache/
 .mypy_cache/
