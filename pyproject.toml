@@ -1,0 +1,99 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "studiocutter3d"
+version = "0.1.0"
+description = "Convierte line art en cortantes de galletitas imprimibles (.3mf / .stl), sin alterar el dibujo."
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.14",
+    "shapely>=2.1",
+    "trimesh>=4.5",
+    "manifold3d>=3.0",
+    "mapbox-earcut>=1.0",
+    "scikit-image>=0.24",
+    "pillow>=11.0",
+    "svgelements>=1.9",
+    "vtracer>=0.6.15",
+    "resvg-py>=0.5",
+    "lxml>=5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.9",
+    "mypy>=1.13",
+    "bandit>=1.8",
+]
+
+[project.scripts]
+cutter3d = "cutter3d.cli:main"
+
+[tool.setuptools]
+packages = ["cutter3d"]
+
+# ── Gates de calidad ────────────────────────────────────────────────────────
+# Los corre la skill `gate` sobre los archivos de cada ciclo. Sin baseline:
+# el proyecto arranca en cero y la deuda se mantiene en cero.
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C90", "PL", "RUF"]
+ignore = [
+    "PLR0913", # varios parametros con nombre es lo idiomatico para los params de geometria
+    # N818 pide sufijo `Error` en las excepciones. Las de este proyecto tienen
+    # nombre en espanol (`SvgInvalido`, `MallaNoManifold`, `BooleanaFallida`) y el
+    # sufijo ingles las volveria hibridos ilegibles: `SvgInvalidoError`. Se prefiere
+    # la coherencia del idioma del dominio por sobre la convencion de nombres.
+    "N818",
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["PLR2004"] # los numeros magicos en asserts son el punto del test
+
+[tool.mypy]
+strict = true
+files = ["cutter3d"]
+python_version = "3.13"
+
+# Unica perilla de `strict` que se afloja, y por una razon concreta: skimage y
+# trimesh SI traen `py.typed`, pero exponen funciones sin anotar (`medial_axis`,
+# `disk`, `threshold_otsu`, `PBRMaterial`, `TextureVisuals`, `Scene.export`).
+# Como el modulo se resuelve, `ignore_missing_imports` no las alcanza y
+# `disallow_untyped_calls` rechaza cada llamada. La alternativa seria sembrar
+# `# type: ignore` por todo el codigo propio, que es peor: esconde tambien los
+# errores reales. Todo el resto de `strict` sigue activo — definiciones sin
+# tipar, Optional implicito, retornos Any, decoradores sin tipar.
+disallow_untyped_calls = false
+
+# Librerias sin stubs: se tipa el borde propio, no el de terceros.
+[[tool.mypy.overrides]]
+module = [
+    "trimesh.*",
+    "skimage.*",
+    "scipy.*",
+    "shapely.*",
+    "svgelements.*",
+    "vtracer.*",
+    "resvg_py.*",
+    "mapbox_earcut.*",
+    "manifold3d.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv"]

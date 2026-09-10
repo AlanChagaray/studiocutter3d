@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fixture principal: el caso real que ejercita todo el contrato de fidelidad.
+
+     Tiene las tres cosas juntas:
+       - TRAZOS finos (el contorno de la cabeza es un anillo de ~3,3 unidades;
+         a 90 mm eso son ~0,5 mm, o sea por debajo del ancho objetivo de 1 mm,
+         asi que el bucle de dilatacion tiene que entrar en accion).
+       - UN HUECO (el interior del anillo, resuelto con fill-rule="evenodd").
+       - ZONAS MACIZAS (los dos ojos rellenos), que segun prompt_cortante.md el
+         motor NO puede convertir a contorno: si los ojos vienen llenos, van llenos.
+
+     Contornos exteriores: 10 (cabeza, 2 ojos, nariz, 2 trazos de boca, 4 bigotes).
+     Huecos: 1 (el interior de la cabeza).
+     Paths rellenos sin stroke, como la salida de un vectorizador. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="500" viewBox="0 0 600 500">
+
+  <!-- cabeza: contorno exterior + contorno interior => anillo con hueco -->
+  <path fill="#000000" fill-rule="evenodd" d="M157.5,130 L132.5,27.5 L242.5,92.5 C262.5,87.5 337.5,87.5 357.5,92.5 L467.5,27.5 L442.5,130 C502.5,170 532.5,225 532.5,295 C532.5,400 427.5,475 300,475 C172.5,475 67.5,400 67.5,295 C67.5,225 97.5,170 157.5,130 Z M159.50,132.10 L134.84,31.03 L243.30,95.12 C263.02,90.19 336.98,90.19 356.70,95.12 L465.16,31.03 L440.51,132.10 C499.90,171.54 529.55,225.77 529.55,294.79 C529.55,398.32 425.72,472.27 300,472.27 C174.28,472.27 70.45,398.32 70.45,294.79 C70.45,225.77 100.10,171.54 159.50,132.10 Z"/>
+
+  <!-- ojos: macizos. NO se contornean en el motor. -->
+  <path fill="#000000" d="M241,265 C241,279.36 229.36,291 215,291 C200.64,291 189,279.36 189,265 C189,250.64 200.64,239 215,239 C229.36,239 241,250.64 241,265 Z"/>
+  <path fill="#000000" d="M411,265 C411,279.36 399.36,291 385,291 C370.64,291 359,279.36 359,265 C359,250.64 370.64,239 385,239 C399.36,239 411,250.64 411,265 Z"/>
+
+  <!-- nariz -->
+  <path fill="#000000" d="M285,300 L315,300 L300,325 Z"/>
+
+  <!-- boca: dos trazos finos.
+       Arrancan en y=331 y no en el vertice de la nariz (y=325): si se tocaran en
+       un punto, la dilatacion los fusionaria con la nariz y el conteo de
+       contornos cambiaria entre el arte original y el final. El line art real no
+       tiene vertices coincidentes; este fixture tampoco debe tenerlos. -->
+  <path fill="#000000" d="M300,331 C294,349 280,355 266,349 L264,353 C281,360 297,353 303,333 Z"/>
+  <path fill="#000000" d="M300,331 C306,349 320,355 334,349 L336,353 C319,360 303,353 297,333 Z"/>
+
+  <!-- bigotes: barras finas, tambien por debajo del ancho objetivo -->
+  <path fill="#000000" d="M105,318 L175,318 L175,321.4 L105,321.4 Z"/>
+  <path fill="#000000" d="M105,348 L175,348 L175,351.4 L105,351.4 Z"/>
+  <path fill="#000000" d="M425,318 L495,318 L495,321.4 L425,321.4 Z"/>
+  <path fill="#000000" d="M425,348 L495,348 L495,351.4 L425,351.4 Z"/>
+</svg>

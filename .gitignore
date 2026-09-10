@@ -1,0 +1,24 @@
+# entorno
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# salidas del motor
+out/
+*.3mf
+*.stl
+*.glb
+
+# herramientas
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# basura de windows / git bash
+bash.exe.stackdump
+Thumbs.db
+desktop.ini

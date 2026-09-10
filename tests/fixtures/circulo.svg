@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fixture: forma simple sin huecos ni trazos. Caso `cortante` solo.
+     Circulo de r=200 en un lienzo 600x600, como 4 cubicas (salida tipica de un
+     vectorizador: path relleno, sin stroke). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600" viewBox="0 0 600 600">
+  <path fill="#000000" d="M500,300 C500,410.46 410.46,500 300,500 C189.54,500 100,410.46 100,300 C100,189.54 189.54,100 300,100 C410.46,100 500,189.54 500,300 Z"/>
+</svg>

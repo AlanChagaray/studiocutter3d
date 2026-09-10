@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fixture: poligono concavo. Estrella de 5 puntas, r externo 200 / interno 80.
+     Los vertices reflex y las puntas agudas son donde un join_style mal elegido
+     genera autointersecciones en los offsets del cortador.
+     El path esta definido alrededor del origen y posicionado con `transform`.
+     La transformacion incluye un `rotate(15)` a proposito: con solo `translate`,
+     svg_io recentra el arte igual y el test no podria distinguir si la
+     transformacion se aplico. La rotacion cambia la relacion de aspecto del
+     bounding box, que si es observable. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600" viewBox="0 0 600 600">
+  <g transform="translate(300,300) rotate(15)">
+    <path fill="#000000" d="M0,-200 L47.02,-64.72 L190.21,-61.80 L76.08,24.72 L117.56,161.80 L0,80 L-117.56,161.80 L-76.08,24.72 L-190.21,-61.80 L-47.02,-64.72 Z"/>
+  </g>
+</svg>
