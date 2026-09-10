@@ -35,7 +35,7 @@ from .solids import construir_escena
 from .svg_io import cargar_svg
 from .verify import ReporteFidelidad, exigir_manifold, render_texto, verificar
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "AjustesMotor",
@@ -77,6 +77,10 @@ class Resultado:
     @property
     def rutas_stl(self) -> tuple[Path, ...]:
         return self.salidas.rutas_stl
+
+    @property
+    def rutas_3mf_objeto(self) -> tuple[Path, ...]:
+        return self.salidas.rutas_3mf_objeto
 
 
 def generar(

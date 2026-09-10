@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "studiocutter3d"
-version = "0.1.0"
+version = "0.2.0"
 description = "Convierte line art en cortantes de galletitas imprimibles (.3mf / .stl), sin alterar el dibujo."
 requires-python = ">=3.13"
 dependencies = [
@@ -28,10 +28,17 @@ dev = [
     "ruff>=0.9",
     "mypy>=1.13",
     "bandit>=1.8",
+    "httpx>=0.28",     # lo necesita fastapi.testclient.TestClient
+    "pip-audit>=2.10", # gate de CVEs
 ]
-# Primer ladrillo del ciclo 2 (capa web). Se instala aparte del motor, que no
-# depende de nada de esto: `pip install -e ".[web]"`.
+# Capa web (ciclo 2). El motor no depende de nada de esto: `pip install -e ".[web]"`.
+# Todas pure-python: no hay riesgo de compilacion en Windows.
 web = [
+    "fastapi>=0.141",
+    "uvicorn>=0.52",   # sin [standard]: arrastra deps con extensiones en C
+    "jinja2>=3.1",
+    "python-multipart>=0.0.32",
+    "itsdangerous>=2.2",  # lo necesita SessionMiddleware de Starlette
     "argon2-cffi>=25.1",
 ]
 
@@ -39,7 +46,7 @@ web = [
 cutter3d = "cutter3d.cli:main"
 
 [tool.setuptools]
-packages = ["cutter3d"]
+packages = ["cutter3d", "app", "app.routers"]
 
 # ── Gates de calidad ────────────────────────────────────────────────────────
 # Los corre la skill `gate` sobre los archivos de cada ciclo. Sin baseline:
@@ -68,7 +75,7 @@ max-complexity = 10
 
 [tool.mypy]
 strict = true
-files = ["cutter3d"]
+files = ["cutter3d", "app"]
 python_version = "3.13"
 
 # Unica perilla de `strict` que se afloja, y por una razon concreta: skimage y
@@ -99,6 +106,9 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "lento: corre el motor de verdad en un proceso hijo (segundos, no milisegundos)",
+]
 
 [tool.bandit]
 exclude_dirs = ["tests", ".venv"]

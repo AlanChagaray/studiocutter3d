@@ -194,6 +194,33 @@ def test_stl_describe_la_misma_geometria_que_el_3mf(ciclo: Ciclo) -> None:
         assert desde_stl.volume == pytest.approx(mallas[nombre].volume, rel=1e-6)
 
 
+def test_cada_3mf_suelto_es_el_mismo_cuerpo_en_el_mismo_lugar(ciclo: Ciclo) -> None:
+    """Separar los objetos no puede moverlos ni cambiarles la malla.
+
+    Si un suelto viniera recentrado, abrir los dos en el slicer los dejaria
+    superpuestos en vez de anidados — y no habria forma de darse cuenta hasta
+    imprimir.
+    """
+    sueltos = ciclo.salidas.rutas_3mf_objeto
+    assert len(sueltos) == 2, sueltos
+    juntas = releer_3mf(ciclo.salidas.ruta_3mf)
+    for ruta in sueltos:
+        mallas = releer_3mf(ruta)
+        assert len(mallas) == 1, f"{ruta.name} tiene que traer un solo cuerpo"
+        nombre, malla = next(iter(mallas.items()))
+        assert nombre == ruta.stem.rsplit("_", 1)[1], "el 3MF perdio el nombre del objeto"
+        original = juntas[nombre]
+        assert len(malla.faces) == len(original.faces)
+        assert malla.is_watertight
+        assert malla.bounds == pytest.approx(original.bounds, abs=1e-9), "se movio de lugar"
+
+
+def test_sin_marcador_no_hay_3mf_sueltos(tmp_path: Path) -> None:
+    """Con un solo cuerpo, el suelto seria una copia del combinado."""
+    r = generar(FIXTURES / "estrella.svg", Modo.CORTANTE, tmp_path / "solo.3mf")
+    assert r.rutas_3mf_objeto == ()
+
+
 def test_glb_trae_material_pbr(ciclo: Ciclo) -> None:
     """El preview 3D tiene que verse como plastico impreso, no como un gris plano."""
     escena = trimesh.load(str(ciclo.salidas.ruta_glb), file_type="glb", force="scene")

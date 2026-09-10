@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block titulo %}Correccion de lineas{% endblock %}
+{% block titulo_pagina %}Correccion de lineas{% endblock %}
+{% block bajada %}Blanco y negro puro, sin grises ni sombreados. Entra un JPG, sale el PNG corregido y su SVG.{% endblock %}
+
+{% block encabezado_extra %}
+<div class="chip-archivo oculto" id="chip-archivo">
+  {{ m.icono('archivo', 15) }}<span id="nombre-archivo"></span>
+</div>
+{% endblock %}
+
+{% block contenido %}
+<div class="aviso aviso--info">
+  {{ m.icono('info', 16) }}
+  <span>
+    Esta etapa <strong>no dibuja nada nuevo</strong>: no agrega, no quita ni rellena lineas.
+    Solo lleva la imagen a dos valores y, si lo pedis, reemplaza las manchas macizas
+    por su contorno. Cualquier cambio queda declarado abajo.
+  </span>
+</div>
+
+<div class="columnas">
+  <div class="crece" style="display:flex;flex-direction:column;gap:14px">
+
+    <div class="panel">
+      <div class="dropzone" id="zona" style="padding:26px 20px">
+        {{ m.icono('subir', 28) }}
+        <div>
+          <div class="dropzone__titulo">Solta el JPG aca</div>
+          <div class="dropzone__ayuda">JPG unicamente &middot; hasta 25 MB</div>
+        </div>
+        <button type="button" class="boton" id="elegir">{{ m.icono('archivo', 17) }} Elegir archivo</button>
+        <input type="file" id="entrada" class="sr" accept=".jpg,.jpeg,.jfif,image/jpeg">
+      </div>
+    </div>
+
+    <div class="panel panel--plano oculto" id="panel-comparador">
+      <div class="comparador">
+        <div>
+          <div class="rotulo"><span class="punto"></span> ORIGINAL</div>
+          <div class="lienzo"><img id="img-original" alt="Imagen original"></div>
+        </div>
+        <div>
+          <div class="rotulo"><span class="punto punto--activo"></span> CORREGIDA</div>
+          <div class="lienzo"><img id="img-corregida" alt="Imagen corregida"></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <aside class="aparte" style="display:flex;flex-direction:column;gap:14px">
+    <div class="panel">
+      <h2 class="panel__titulo">Opciones</h2>
+
+      <button type="button" class="tema" id="boton-macizos" style="cursor:pointer">
+        <span style="text-align:left;line-height:1.35">
+          Contornear zonas macizas<br>
+          <span class="lista__meta">ojos rellenos y manchas pasan a ser solo su borde</span>
+        </span>
+        <span class="switch" id="switch-macizos" role="switch" aria-checked="true"></span>
+      </button>
+
+      <button type="button" class="boton" id="procesar" disabled>
+        {{ m.icono('lineas', 17) }} Corregir lineas
+      </button>
+
+      <div class="aviso oculto" id="estado" role="status"></div>
+    </div>
+
+    <div class="panel oculto" id="panel-declaracion">
+      <h2 class="panel__titulo">Que se modifico</h2>
+      <div class="metrica" style="border:0;padding:0">
+        <div class="dato"><span>Umbral aplicado</span><span class="dato__valor" id="d-umbral">—</span></div>
+        <div class="dato"><span>Ancho de trazo medido</span><span class="dato__valor" id="d-ancho">—</span></div>
+        <div class="dato"><span>Zonas contorneadas</span><span class="dato__valor" id="d-zonas">—</span></div>
+        <div class="dato"><span>Area afectada</span><span class="dato__valor" id="d-area">—</span></div>
+      </div>
+      <div class="aviso aviso--alerta oculto" id="aviso-macizos">
+        {{ m.icono('alerta', 16) }}
+        <span id="texto-macizos"></span>
+      </div>
+    </div>
+
+    <div class="fila oculto" id="pie">
+      <a class="boton boton--secundario" id="bajar" download>{{ m.icono('bajar', 17) }} PNG</a>
+      <a class="boton boton--secundario" id="bajar-svg" download>{{ m.icono('bajar', 17) }} SVG</a>
+      <a class="boton" id="seguir" href="/cortante">Seguir a crear cortante {{ m.icono('seguir', 17) }}</a>
+    </div>
+  </aside>
+</div>
+{% endblock %}

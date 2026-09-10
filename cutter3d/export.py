@@ -33,6 +33,18 @@ class Salidas:
     ruta_3mf: Path
     ruta_glb: Path
     rutas_stl: tuple[Path, ...]
+    rutas_3mf_objeto: tuple[Path, ...] = ()
+    """Un `.3mf` por objeto, ademas del que los trae a los dos.
+
+    El combinado sigue siendo el archivo bueno —los dos cuerpos en su posicion
+    anidada real, que es lo que se imprime—, pero separados dan libertad de
+    editar uno sin el otro. Vacio cuando hay un solo objeto: ahi el separado
+    seria una copia del combinado y ofrecer dos descargas identicas confunde.
+    """
+
+
+OBJETOS = (NOMBRE_MARCADOR, NOMBRE_CORTADOR)
+"""Los cuerpos de la escena, en el orden en que se exportan de a uno."""
 
 
 def _escribir_atomico(datos: bytes, destino: Path) -> Path:
@@ -72,7 +84,7 @@ def exportar_glb(escena: trimesh.Scene, destino: Path) -> Path:
 def exportar_stl(escena: trimesh.Scene, destino_3mf: Path) -> tuple[Path, ...]:
     """Un STL por objeto, nombrado `<base>_<objeto>.stl`."""
     rutas: list[Path] = []
-    for nombre in (NOMBRE_MARCADOR, NOMBRE_CORTADOR):
+    for nombre in OBJETOS:
         malla = escena.geometry.get(nombre)
         if malla is None:
             continue
@@ -82,12 +94,39 @@ def exportar_stl(escena: trimesh.Scene, destino_3mf: Path) -> tuple[Path, ...]:
     return tuple(rutas)
 
 
+def exportar_3mf_por_objeto(escena: trimesh.Scene, destino_3mf: Path) -> tuple[Path, ...]:
+    """Un `.3mf` por objeto, nombrado `<base>_<objeto>.3mf`.
+
+    Cada uno es una `Scene` de un solo cuerpo, asi que conserva lo que el 3MF
+    aporta sobre el STL: el nombre del objeto y los milimetros. **Las
+    coordenadas no se tocan** — el cuerpo queda donde estaba en el conjunto, y
+    abrir los dos archivos en el slicer los reencuentra exactamente anidados.
+
+    Con un solo objeto devuelve vacio: seria una copia del combinado.
+    """
+    presentes = [n for n in OBJETOS if n in escena.geometry]
+    if len(presentes) < len(OBJETOS):
+        return ()
+    rutas: list[Path] = []
+    for nombre in presentes:
+        sola = trimesh.Scene({nombre: escena.geometry[nombre]})
+        datos = sola.export(file_type="3mf")
+        ruta = destino_3mf.with_name(f"{destino_3mf.stem}_{nombre}.3mf")
+        rutas.append(_escribir_atomico(bytes(datos), ruta))
+    return tuple(rutas)
+
+
 def exportar(escena: trimesh.Scene, destino_3mf: Path, con_stl: bool = False) -> Salidas:
-    """Exporta el .3mf, el .glb del preview y, si se pide, los .stl."""
+    """Exporta el .3mf, el .glb del preview, los .3mf sueltos y, si se pide, los .stl."""
     ruta_3mf = exportar_3mf(escena, destino_3mf)
     ruta_glb = exportar_glb(escena, destino_3mf.with_suffix(".glb"))
     rutas_stl = exportar_stl(escena, destino_3mf) if con_stl else ()
-    return Salidas(ruta_3mf=ruta_3mf, ruta_glb=ruta_glb, rutas_stl=rutas_stl)
+    return Salidas(
+        ruta_3mf=ruta_3mf,
+        ruta_glb=ruta_glb,
+        rutas_stl=rutas_stl,
+        rutas_3mf_objeto=exportar_3mf_por_objeto(escena, destino_3mf),
+    )
 
 
 def releer_3mf(ruta: Path) -> dict[str, trimesh.Trimesh]:

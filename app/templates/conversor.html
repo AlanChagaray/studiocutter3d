@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block titulo %}Convertidor{% endblock %}
+{% block titulo_pagina %}Convertidor{% endblock %}
+{% block bajada %}PNG, JFIF, WEBP, JPG y SVG a JPG o a SVG. El JPG entra a la correccion de lineas; el SVG es lo unico que entra al cortante.{% endblock %}
+
+{% block encabezado_extra %}
+<div class="segmentado" role="group" aria-label="Formato de todos los archivos">
+  <button type="button" data-destino="jpg" aria-pressed="true">Todos a JPG</button>
+  <button type="button" data-destino="svg" aria-pressed="false">Todos a SVG</button>
+</div>
+{% endblock %}
+
+{% block contenido %}
+<div class="panel">
+  <div class="dropzone" id="zona">
+    {{ m.icono('subir', 34) }}
+    <div>
+      <div class="dropzone__titulo">Arrastra tus archivos aca</div>
+      <div class="dropzone__ayuda">o elegilos del disco &middot; PNG, JFIF, WEBP, JPG, SVG &middot; hasta 25 MB cada uno</div>
+    </div>
+    <button type="button" class="boton" id="elegir">{{ m.icono('archivo', 17) }} Elegir archivos</button>
+    <input type="file" id="entrada" class="sr" multiple
+           accept=".png,.jfif,.jpg,.jpeg,.webp,.svg,image/png,image/webp,image/jpeg,image/svg+xml">
+  </div>
+</div>
+
+<div class="panel panel--plano oculto" id="panel-cola">
+  <div class="rotulo">
+    <span class="punto punto--activo"></span> ARCHIVOS
+    <span class="lista__meta" style="margin-left:auto" id="resumen-cola"></span>
+  </div>
+  <div class="lista" id="cola"></div>
+  <div class="fila" style="padding:14px 18px;border-top:1px solid var(--borde-suave)">
+    <span class="lista__meta" id="pista-cola">
+      Elegi el destino de cada archivo, o usa los botones de arriba para mandarlos todos al mismo.
+    </span>
+    <button type="button" class="boton" id="convertir" disabled>
+      {{ m.icono('conversor', 17) }} Convertir
+    </button>
+  </div>
+</div>
+
+<div class="fila oculto" id="pie">
+  <span class="lista__meta" id="pista-pie"></span>
+  <a class="boton boton--secundario oculto" id="seguir-lineas" href="/lineas">
+    Seguir a correccion de lineas {{ m.icono('seguir', 17) }}
+  </a>
+  <a class="boton oculto" id="seguir-cortante" href="/cortante">
+    Seguir a crear cortante {{ m.icono('seguir', 17) }}
+  </a>
+</div>
+
+{# Molde de fila: el JS lo clona en vez de armar HTML con strings, asi no hay
+   ni un innerHTML con datos del usuario adentro. #}
+<template id="molde-fila">
+  <div class="lista__fila">
+    <span class="usuario__inicial" style="background:var(--celeste-tinte);color:var(--celeste-texto)"
+          data-rol="ext"></span>
+    <div>
+      <div class="lista__nombre" data-rol="nombre"></div>
+      <div class="lista__meta" data-rol="peso"></div>
+    </div>
+    <div>
+      <select class="selector" data-rol="destino" aria-label="Formato de salida">
+        <option value="jpg">a JPG</option>
+        <option value="svg">a SVG</option>
+      </select>
+    </div>
+    <div><span class="barra"><span class="barra__relleno" data-rol="barra" style="width:0%"></span></span></div>
+    <div><span class="chip chip--proceso" data-rol="chip">en espera</span></div>
+    <div style="text-align:right">
+      <a class="boton boton--secundario oculto" data-rol="bajar" download>&darr; <span data-rol="ext-bajar"></span></a>
+    </div>
+  </div>
+</template>
+{% endblock %}

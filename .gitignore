@@ -13,9 +13,15 @@ out/
 *.stl
 *.glb
 
-# credenciales locales — hashes de usuarios para el login del ciclo 2.
+# credenciales locales — hashes de usuarios para el login.
 # Nunca se commitea: es por maquina, no por repo.
 credenciales.json
+
+# secreto de firma de la sesion — se genera solo en el primer arranque
+sesion.key
+
+# directorios de trabajo de la web: uno por UUID, efimeros y con TTL
+trabajo/
 
 # herramientas
 .pytest_cache/

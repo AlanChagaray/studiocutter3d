@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block titulo %}Crear Cortante{% endblock %}
+{% block titulo_pagina %}Crear Cortante{% endblock %}
+{% block bajada %}De un SVG al archivo imprimible, con la vista previa antes de descargar.{% endblock %}
+
+{% block encabezado_extra %}
+<div class="segmentado" role="group" aria-label="Modo">
+  <button type="button" data-modo="cortante" aria-pressed="false">Cortante</button>
+  <button type="button" data-modo="cortante+marcador" aria-pressed="true">Cortante + Marcador</button>
+</div>
+{% endblock %}
+
+{% block contenido %}
+<div class="columnas">
+
+  <aside class="aparte" style="display:flex;flex-direction:column;gap:14px">
+    <div class="panel">
+      <h2 class="panel__titulo">Archivo</h2>
+      <div class="dropzone" id="zona" style="padding:22px 16px">
+        {{ m.icono('subir', 26) }}
+        <div class="dropzone__ayuda">SVG unicamente &middot; hasta 25 MB</div>
+        <button type="button" class="boton boton--fantasma" id="elegir">Elegir archivo</button>
+        <input type="file" id="entrada" class="sr" accept=".svg,image/svg+xml">
+      </div>
+      <div class="chip-archivo oculto" id="chip-archivo">
+        {{ m.icono('archivo', 15) }}<span id="nombre-archivo"></span>
+      </div>
+      <p class="lista__meta" style="margin-top:10px;line-height:1.45">
+        Solo SVG: el motor trabaja sobre curvas y asi la pieza sale lo mas fiel posible.
+        Si tenes una imagen, pasala primero por el
+        <a href="/conversor">Convertidor</a> o por la
+        <a href="/lineas">correccion de lineas</a>.
+      </p>
+    </div>
+
+    <div class="panel">
+      <div class="fila">
+        <h2 class="panel__titulo">Dimensiones</h2>
+        <button type="button" class="boton boton--secundario" id="restaurar"
+                style="min-height:32px;padding:0 11px;font-size:11.5px">
+          {{ m.icono('girar', 14) }} Valores por defecto
+        </button>
+      </div>
+
+      <div class="parametros">
+        {% for c in campos %}
+        <div class="campo" data-campo="{{ c.nombre }}"
+             {% if c.solo_marcador %}data-solo-marcador="1"{% endif %}>
+          <label class="campo__label" for="p-{{ c.nombre }}" title="{{ c.ayuda }}">{{ c.etiqueta }}</label>
+          <div class="campo__caja">
+            <input id="p-{{ c.nombre }}" name="{{ c.nombre }}" type="number" inputmode="decimal"
+                   value="{{ c.valor }}" step="{{ c.paso }}" min="0.01" max="{{ limite_max_mm }}"
+                   data-defecto="{{ c.valor }}">
+            <span class="campo__unidad">mm</span>
+          </div>
+          <span class="campo__error oculto" data-rol="error">{{ m.icono('error', 13) }}<span></span></span>
+        </div>
+        {% endfor %}
+      </div>
+
+      <div class="limites">
+        Ningun valor puede ser cero o negativo, ni superar {{ limite_max_mm|int }} mm (1 metro).
+        Fuera de ese rango el servidor rechaza el pedido y te dice cual es el parametro.
+        <span class="oculto" id="nota-modo">
+          En modo <strong>Cortante</strong> los parametros del marcador no se muestran porque
+          no cambian nada de la pieza.
+        </span>
+      </div>
+
+      <label class="tema" style="cursor:pointer">
+        <span>Descargar tambien los STL</span>
+        <input type="checkbox" id="con-stl" checked>
+      </label>
+
+      <button type="button" class="boton" id="generar" disabled>
+        {{ m.icono('cortante', 17) }} Generar cortante
+      </button>
+
+      <div class="aviso oculto" id="estado" role="status"></div>
+    </div>
+  </aside>
+
+  <div class="crece" style="display:flex;flex-direction:column;gap:14px;min-height:520px">
+
+    <div class="panel panel--plano crece" style="display:flex;flex-direction:column">
+      <div class="rotulo">
+        <span class="punto punto--activo"></span> VISTA PREVIA 3D
+        <span class="lista__meta" style="margin-left:auto" id="pista-visor">todavia no hay nada que mostrar</span>
+      </div>
+      <div class="visor" id="visor">
+        <div class="visor__pista">arrastrar para girar &middot; rueda para acercar</div>
+        <div class="visor__leyenda">
+          <span class="muestra">cortador</span>
+          <span class="muestra muestra--marcador">marcador</span>
+        </div>
+      </div>
+    </div>
+
+    {# Las descargas aparecen recien cuando la vista previa cargo: lo que se
+       baja es la misma geometria que se esta viendo, y verla primero es parte
+       del flujo. Hasta entonces los enlaces existen pero estan inertes. #}
+    <div class="panel oculto" id="panel-descargas">
+      <div class="fila" style="flex-wrap:wrap">
+        <h2 class="panel__titulo">Descargas</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap" id="botones-descarga">
+          <a class="boton oculto" data-clave="3mf" download>{{ m.icono('bajar', 16) }} 3MF completo</a>
+          <a class="boton boton--secundario oculto" data-clave="3mf_cortador" download>3MF cortador</a>
+          <a class="boton boton--secundario oculto" data-clave="3mf_marcador" download>3MF marcador</a>
+          <a class="boton boton--secundario oculto" data-clave="stl_cortador" download>STL cortador</a>
+          <a class="boton boton--secundario oculto" data-clave="stl_marcador" download>STL marcador</a>
+        </div>
+      </div>
+      <div class="lista__meta" id="pista-descargas"></div>
+      <div class="lista__meta" style="margin-top:6px">
+        El 3MF completo trae los dos cuerpos anidados como se imprimen. Los sueltos son el
+        mismo cuerpo en las mismas coordenadas, para editar uno sin tocar el otro.
+      </div>
+    </div>
+
+    <div class="oculto" id="panel-reporte" style="display:flex;flex-direction:column;gap:12px">
+      <div class="veredicto" id="veredicto">
+        <span id="veredicto-icono"></span>
+        <div>
+          <div class="veredicto__titulo" id="veredicto-titulo">—</div>
+          <div class="lista__meta" id="veredicto-bajada"></div>
+        </div>
+      </div>
+
+      <div class="metricas">
+        <div class="metrica">
+          <span class="metrica__titulo">FIDELIDAD DEL CONTORNO</span>
+          <div class="dato"><span>Contornos original / final</span><span class="dato__valor" id="r-contornos">—</span></div>
+          <div class="dato"><span>Huecos original / final</span><span class="dato__valor" id="r-huecos">—</span></div>
+          <div class="dato"><span>Area de diferencia</span><span class="dato__valor" id="r-area">—</span></div>
+          <div class="dato"><span>Desvio p50 / p99 / max</span><span class="dato__valor" id="r-desvio">—</span></div>
+          <div class="dato"><span>Dilatacion aplicada</span><span class="dato__valor" id="r-dilatacion">—</span></div>
+        </div>
+
+        <div class="metrica">
+          <span class="metrica__titulo">TRAZO Y HUECOS</span>
+          <div class="dato"><span>Trazo antes / despues</span><span class="dato__valor" id="r-trazo">—</span></div>
+          <div class="dato"><span>Hueco minimo entre trazos</span><span class="dato__valor" id="r-hueco-min">—</span></div>
+          <div class="dato"><span>Muescas selladas</span><span class="dato__valor" id="r-muescas">—</span></div>
+          <div class="dato"><span>Luz real / nominal</span><span class="dato__valor" id="r-luz">—</span></div>
+          <div class="dato"><span>Lado mayor final</span><span class="dato__valor" id="r-lado">—</span></div>
+        </div>
+
+        <div class="metrica">
+          <span class="metrica__titulo">SOLIDOS</span>
+          <div id="r-topologias" style="display:flex;flex-direction:column;gap:10px"></div>
+        </div>
+
+        <div class="metrica">
+          <span class="metrica__titulo">SECCIONES A ALTURA</span>
+          <div id="r-secciones" style="display:flex;flex-direction:column;gap:10px"></div>
+        </div>
+      </div>
+
+      <div class="oculto" id="panel-advertencias"></div>
+    </div>
+
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{# Los modulos de three (GLTFLoader, OrbitControls) importan de 'three' por
+   nombre. El import map es lo que traduce ese nombre al archivo vendorizado,
+   sin tocar los archivos de la libreria — asi siguen siendo diffeables contra
+   la version 0.186.0 original. #}
+<script type="importmap">
+{"imports": {"three": "/static/vendor/three/three.module.js"}}
+</script>
+<script type="module" src="{{ url_for('static', path='/js/preview3d.js') }}"></script>
+{% endblock %}

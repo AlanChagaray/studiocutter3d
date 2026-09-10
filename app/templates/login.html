@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block titulo %}Iniciar sesion{% endblock %}
+
+{#
+  El login no comparte el shell: no hay sidebar ni navegacion que mostrarle a
+  alguien que todavia no entro. Por eso reemplaza `cuerpo` entero en vez de
+  llenar `contenido`.
+#}
+{% block cuerpo %}
+<div class="pantalla-login">
+  <div class="tarjeta-login">
+
+    <div class="tarjeta-login__cabecera">
+      <span class="usuario__inicial" style="width:52px;height:52px;border-radius:15px;font-size:17px"
+            aria-hidden="true">sC</span>
+      <div>
+        <div class="tarjeta-login__titulo">studio<span style="color:var(--celeste)">Cutter</span>3D</div>
+        <p class="nota" style="margin-top:5px">Convertidor de line art a cortantes imprimibles</p>
+      </div>
+    </div>
+
+    {% if error %}
+    <div class="aviso aviso--error" role="alert">
+      {{ m.icono('error', 16) }}<span>{{ error }}</span>
+    </div>
+    {% endif %}
+
+    <form method="post" action="/login" style="display:flex;flex-direction:column;gap:15px">
+      <input type="hidden" name="destino" value="{{ destino }}">
+
+      <div class="campo">
+        <label class="campo__label" for="usuario">USUARIO</label>
+        <div class="campo__caja">
+          {{ m.icono('usuario', 17) }}
+          <input id="usuario" name="usuario" type="text" required autofocus
+                 autocomplete="username" spellcheck="false" autocapitalize="none"
+                 value="{{ usuario_previo }}" placeholder="tu usuario">
+        </div>
+      </div>
+
+      <div class="campo">
+        <label class="campo__label" for="clave">CONTRASEÑA</label>
+        <div class="campo__caja">
+          {{ m.icono('candado', 17) }}
+          <input id="clave" name="clave" type="password" required
+                 autocomplete="current-password" placeholder="tu contraseña">
+        </div>
+      </div>
+
+      <button type="submit" class="boton" style="margin-top:4px">
+        Iniciar sesion {{ m.icono('seguir', 17) }}
+      </button>
+    </form>
+
+    <p class="nota">
+      Instancia local de un solo usuario. No hay registro abierto ni recuperacion
+      por mail: las credenciales se dan de alta desde el servidor.
+    </p>
+
+  </div>
+</div>
+{% endblock %}
