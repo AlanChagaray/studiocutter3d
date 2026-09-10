@@ -1,0 +1,35 @@
+# Finales de linea: LF en todos lados, siempre.
+#
+# Sin esto manda `core.autocrlf`, que es una config de cada maquina: en Windows
+# viene en `true` y deja el working tree con CRLF. El repo igual guarda LF, asi
+# que no se rompe nada — pero el mismo archivo se ve distinto segun quien lo
+# haya clonado, y las herramientas que leen del disco (ruff format, los diffs
+# de un editor, un `.sh`) empiezan a discrepar entre maquinas.
+#
+# `.gitattributes` gana sobre `core.autocrlf`, y vive en el repo, asi que la
+# regla viaja con el proyecto en vez de depender de como tenga configurado git
+# cada uno.
+
+* text=auto eol=lf
+
+# Binarios: git no los toca ni intenta adivinar. `text=auto` ya los detecta
+# solo, pero declararlos evita que un archivo raro se cuele como texto y
+# termine corrupto por una conversion de finales de linea.
+*.woff2 binary
+*.woff  binary
+*.ttf   binary
+*.otf   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary
+*.ico   binary
+*.3mf   binary
+*.glb   binary
+*.stl   binary
+
+# three.js vendorizado: es codigo de terceros sin modificar. Marcarlo evita
+# que GitHub reporte el proyecto como "mayormente JavaScript" — son 2,2 MB de
+# libreria contra el codigo propio, y sin esto el lenguaje del repo lo decide
+# three.
+app/static/vendor/** linguist-vendored
