@@ -6,9 +6,11 @@
  *
  * La fidelidad del aspecto sale de tres cosas:
  *
- * 1. **Los materiales vienen en el archivo.** El motor le asigna PBR a cada
- *    objeto (metallic 0, roughness 0,62 — PLA mate) con el celeste del
- *    cortador y el gris del marcador. Aca no se pisan: se respetan.
+ * 1. **El acabado viene en el archivo.** El motor le asigna PBR a cada objeto
+ *    (metallic 0, roughness 0,62 — PLA mate) y eso no se toca. Lo unico que
+ *    se pisa es el **color**, que lo elige la paleta de la pantalla: la pieza
+ *    se imprime en un filamento, asi que el celeste y el gris que trae el
+ *    archivo son una convencion del motor, no una propiedad de la pieza.
  * 2. **Un entorno de estudio generado por codigo.** Sin `environment`, un
  *    material PBR mate se ve como plastilina plana. Se arma una caja de
  *    paneles emisivos y se convierte con `PMREMGenerator`, que da los
@@ -32,6 +34,19 @@ import { GLTFLoader } from '/static/vendor/three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from '/static/vendor/three/addons/controls/OrbitControls.js';
 
 const contenedor = document.getElementById('visor');
+
+/**
+ * El color inicial sale de la propia paleta de la pantalla.
+ *
+ * No hay una segunda lista de colores aca: la unica esta en `COLORES` del
+ * router, el template la dibuja y este modulo lee la muestra marcada. Si la
+ * paleta no existe devuelve `null` y la pieza se queda con los materiales
+ * del motor, que es la degradacion correcta.
+ */
+function colorElegido() {
+  const muestra = document.querySelector('#paleta .paleta__color[aria-pressed="true"]');
+  return muestra ? muestra.dataset.color : null;
+}
 
 if (contenedor) {
   try {
@@ -80,12 +95,35 @@ function iniciar(host) {
   const piso = agregarPiso(escena);
 
   let modelo = null;
+  let color = colorElegido();
 
   document.addEventListener('cortante:listo', (e) => {
     cargar(e.detail.url);
   });
+  document.addEventListener('cortante:color', (e) => {
+    color = e.detail.color;
+    pintarPieza();
+  });
   document.addEventListener('tema:cambio', () => pintarPiso(piso));
   pintarPiso(piso);
+
+  /**
+   * Pinta la pieza entera del color elegido, sin tocar el acabado.
+   *
+   * Los dos cuerpos van del mismo color a proposito: es una pieza impresa en
+   * un filamento. Dejarlos de colores distintos —como vienen del motor—
+   * sugiere un bicolor que la impresora no hace sola.
+   */
+  function pintarPieza() {
+    if (!modelo || !color) return;
+    modelo.traverse((o) => {
+      if (!o.isMesh) return;
+      const materiales = Array.isArray(o.material) ? o.material : [o.material];
+      materiales.forEach((m) => {
+        if (m && m.color) m.color.set(color);
+      });
+    });
+  }
 
   /**
    * Avisa como termino la carga.
@@ -112,6 +150,7 @@ function iniciar(host) {
             o.receiveShadow = true;
           }
         });
+        pintarPieza();
         escena.add(modelo);
         encuadrar(modelo);
         controles.autoRotate = true;

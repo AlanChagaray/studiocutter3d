@@ -77,6 +77,13 @@
         {{ m.icono('cortante', 17) }} Generar cortante
       </button>
 
+      {# Generado con estos valores exactos, el boton no tiene nada que hacer:
+         volver a apretarlo daria el mismo archivo despues de otros cinco
+         segundos. Se reactiva solo cuando algo del pedido cambia. #}
+      <p class="lista__meta oculto" id="pista-generar" style="text-align:center">
+        Listo con estos valores. Cambia una medida o el modo para volver a generar.
+      </p>
+
       <div class="aviso oculto" id="estado" role="status"></div>
     </div>
   </aside>
@@ -90,9 +97,18 @@
       </div>
       <div class="visor" id="visor">
         <div class="visor__pista">arrastrar para girar &middot; rueda para acercar</div>
-        <div class="visor__leyenda">
-          <span class="muestra">cortador</span>
-          <span class="muestra muestra--marcador">marcador</span>
+        {# La paleta ocupa el lugar de la vieja leyenda cortador/marcador: con
+           la pieza pintada de un solo color esa leyenda pasaba a mentir, y las
+           dos piezas se distinguen solas por la forma (una es pared, la otra
+           una placa con relieve). #}
+        <div class="paleta" role="group" aria-label="Color de la vista previa" id="paleta">
+          {% for c in colores %}
+          <button type="button" class="paleta__color" data-color="{{ c.hex }}"
+                  style="--muestra:{{ c.hex }}" title="{{ c.nombre }}"
+                  aria-label="{{ c.nombre }}"
+                  aria-pressed="{{ 'true' if loop.first else 'false' }}"></button>
+          {% endfor %}
+          <span class="paleta__nota">solo la vista</span>
         </div>
       </div>
     </div>
@@ -115,6 +131,7 @@
       <div class="lista__meta" style="margin-top:6px">
         El 3MF completo trae los dos cuerpos anidados como se imprimen. Los sueltos son el
         mismo cuerpo en las mismas coordenadas, para editar uno sin tocar el otro.
+        El color de la vista previa no va en el archivo: al imprimir lo pone el filamento.
       </div>
     </div>
 

@@ -18,6 +18,8 @@ import pytest
 from conftest import CLAVE, USUARIO
 from fastapi.testclient import TestClient
 
+from app.routers.cortante import COLORES
+
 PROTEGIDAS = ["/", "/conversor", "/lineas", "/cortante"]
 
 
@@ -196,6 +198,76 @@ def test_el_grafo_de_modulos_del_visor_cierra(sesion: TestClient) -> None:
         assert any(u.endswith(imprescindible) for u in vistos), (
             f"el grafo no llego a {imprescindible}; recorrido: {sorted(vistos)}"
         )
+
+
+_MUESTRA = re.compile(r'<button[^>]*\bclass="paleta__color"[^>]*>', re.DOTALL)
+
+
+def _atributo(etiqueta: str, nombre: str) -> str:
+    hallado = re.search(rf'\b{nombre}="([^"]*)"', etiqueta)
+    return hallado.group(1) if hallado else ""
+
+
+def test_la_paleta_del_visor_ofrece_los_ocho_colores(sesion: TestClient) -> None:
+    """La paleta que se dibuja es exactamente `COLORES`, en orden y completa."""
+    muestras = _MUESTRA.findall(sesion.get("/cortante").text)
+    assert len(muestras) == len(COLORES) == 8
+
+    for etiqueta, color in zip(muestras, COLORES, strict=True):
+        assert _atributo(etiqueta, "data-color") == color.hex
+        assert _atributo(etiqueta, "aria-label") == color.nombre
+        assert re.fullmatch(r"#[0-9a-f]{6}", color.hex), color
+
+    nombres = [c.nombre for c in COLORES]
+    assert nombres[0] == "Blanco", "el default es el primero de la lista"
+    assert set(nombres) == {
+        "Blanco",
+        "Gris",
+        "Rojo",
+        "Amarillo",
+        "Azul",
+        "Verde",
+        "Rosa",
+        "Violeta",
+    }
+
+    marcadas = [e for e in muestras if _atributo(e, "aria-pressed") == "true"]
+    assert len(marcadas) == 1, "tiene que arrancar con una sola muestra elegida"
+    assert _atributo(marcadas[0], "aria-label") == "Blanco"
+
+
+def test_ningun_color_de_la_paleta_esta_escrito_dos_veces(sesion: TestClient) -> None:
+    """El front recibe los codigos, no los guarda.
+
+    El CSS los toma de `--muestra` y el visor los lee del boton marcado. Si
+    alguno aparece escrito en el JS o en el CSS hay dos listas, y la que se ve
+    en pantalla va a dejar de coincidir con la que pinta la pieza.
+    """
+    servido = "".join(
+        sesion.get(ruta).text
+        for ruta in ("/static/js/app.js", "/static/js/preview3d.js", "/static/css/estilo.css")
+    )
+    for color in COLORES:
+        assert color.hex not in servido, (
+            f"{color.hex} ({color.nombre}) tambien esta escrito en el front; "
+            "la paleta tiene un solo dueño: COLORES en app/routers/cortante.py"
+        )
+
+
+def test_el_boton_de_generar_nace_apagado_y_con_su_pista(sesion: TestClient) -> None:
+    """Los ids que `app.js` prende y apaga tienen que existir en la pantalla.
+
+    Si uno se renombra de un solo lado no falla nada visible: el boton queda
+    trabado despues de la primera pieza y no hay forma de volver a generar.
+    """
+    html = sesion.get("/cortante").text
+    boton = re.search(r'<button[^>]*id="generar"[^>]*>', html)
+    assert boton is not None and "disabled" in boton.group(0)
+    assert re.search(r'class="[^"]*\boculto\b[^"]*"[^>]*id="pista-generar"', html)
+
+    js = sesion.get("/static/js/app.js").text
+    assert "#pista-generar" in js
+    assert "#paleta .paleta__color" in js
 
 
 def test_el_css_define_los_dos_temas(sesion: TestClient) -> None:

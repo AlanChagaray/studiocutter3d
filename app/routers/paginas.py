@@ -11,7 +11,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from ..dependencias import UsuarioRequerido, plantillas
-from .cortante import CAMPOS, LIMITE_MAX_MM
+from .cortante import CAMPOS, COLORES, LIMITE_MAX_MM
 
 router = APIRouter(tags=["paginas"])
 
@@ -44,5 +44,6 @@ def pagina_cortante(request: Request, usuario: UsuarioRequerido) -> Response:
         usuario,
         pagina="cortante",
         campos=CAMPOS,
+        colores=COLORES,
         limite_max_mm=LIMITE_MAX_MM,
     )

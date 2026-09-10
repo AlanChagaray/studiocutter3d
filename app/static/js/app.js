@@ -43,6 +43,10 @@ const MS_ESPERA_PREVIEW = 15000;
 const PISTA_SIN_PREVIEW =
   'No se pudo mostrar la vista previa. Los archivos estan completos igual.';
 
+// "La geometria" y no "lo que estas viendo": el color de la pieza lo elige la
+// paleta del visor y no viaja al archivo. La forma si es exactamente esta.
+const PISTA_CON_PREVIEW = 'Lo que estas viendo es exactamente la geometria que se descarga.';
+
 function mostrar(el, visible = true) {
   if (el) el.classList.toggle('oculto', !visible);
 }
@@ -432,10 +436,13 @@ function iniciarLineas() {
 function iniciarCortante() {
   const estado = $('#estado');
   const generar = $('#generar');
+  const pistaGenerar = $('#pista-generar');
   const botonesModo = $$('.segmentado button[data-modo]');
   let archivo = null;
   let modo = 'cortante+marcador';
   let esperaPreview = null;
+  let generando = false;
+  let firmaGenerada = null;
   const origen = new URLSearchParams(location.search).get('origen');
 
   botonesModo.forEach((b) =>
@@ -443,6 +450,7 @@ function iniciarCortante() {
       modo = b.dataset.modo;
       botonesModo.forEach((o) => o.setAttribute('aria-pressed', String(o === b)));
       aplicarModo();
+      repasarGenerar();
     })
   );
   aplicarModo();
@@ -463,29 +471,61 @@ function iniciarCortante() {
       (c) => modo === 'cortante+marcador' || !c.dataset.soloMarcador
     );
 
+  /**
+   * Todo lo que define el archivo que va a salir, en un solo string.
+   *
+   * Es una firma y no un flag de "toque algo" a proposito: asi cambiar un
+   * valor y volverlo atras vuelve a apagar el boton, que es la verdad — ese
+   * archivo ya esta hecho. El color del visor **no entra**: no viaja al
+   * archivo, y regenerar por un color seria cobrarle al usuario cinco
+   * segundos por nada.
+   */
+  const firma = () =>
+    JSON.stringify([
+      modo,
+      $('#con-stl').checked,
+      archivo ? [archivo.name, archivo.size, archivo.lastModified] : origen,
+      camposActivos().map((c) => $('input', c).value),
+    ]);
+
+  /** El unico lugar que prende y apaga el boton de generar. */
+  function repasarGenerar() {
+    const alDia = firmaGenerada !== null && firma() === firmaGenerada;
+    generar.disabled = generando || !(archivo || origen) || alDia;
+    mostrar(pistaGenerar, alDia && !generando);
+  }
+
+  $$('.parametros input').forEach((i) => i.addEventListener('input', repasarGenerar));
+  $('#con-stl').addEventListener('change', repasarGenerar);
+
   $('#restaurar').addEventListener('click', () => {
     $$('.parametros input').forEach((i) => {
       i.value = i.dataset.defecto;
     });
     limpiarErroresDeCampo();
+    // Asignar `.value` desde el codigo no dispara `input`: hay que repasar.
+    repasarGenerar();
   });
 
   conectarZona($('#zona'), $('#entrada'), (archivos) => {
     archivo = archivos[0];
     texto($('#nombre-archivo'), archivo.name);
     mostrar($('#chip-archivo'), true);
-    generar.disabled = false;
+    repasarGenerar();
   });
 
   if (origen) {
     texto($('#nombre-archivo'), 'viene de la pantalla anterior');
     mostrar($('#chip-archivo'), true);
-    generar.disabled = false;
+    repasarGenerar();
   }
+
+  iniciarPaleta();
 
   generar.addEventListener('click', async () => {
     limpiarErroresDeCampo();
-    generar.disabled = true;
+    generando = true;
+    repasarGenerar();
     const datos = new FormData();
     if (archivo) datos.append('archivo', archivo, archivo.name);
     else if (origen) datos.append('origen', origen);
@@ -495,6 +535,10 @@ function iniciarCortante() {
       const i = $('input', c);
       datos.append(i.name, i.value);
     });
+    // La firma se saca ANTES de mandar: es la de los valores que se enviaron.
+    // Si el usuario toca un campo mientras el motor trabaja, lo que vuelve no
+    // corresponde a lo que hay en pantalla y el boton tiene que quedar vivo.
+    const firmaEnviada = firma();
 
     try {
       avisar(estado, 'info', 'Enviando…');
@@ -503,11 +547,14 @@ function iniciarCortante() {
         await sondear(lanzado.id, (t) => avisar(estado, 'info', `${t.etapa}…`))
       );
       pintarResultado(trabajo);
+      firmaGenerada = firmaEnviada;
     } catch (e) {
       marcarCampo(e);
       avisar(estado, 'error', e.message);
+      firmaGenerada = null;
     } finally {
-      generar.disabled = false;
+      generando = false;
+      repasarGenerar();
     }
   });
 
@@ -584,9 +631,48 @@ function iniciarCortante() {
   // se habilitan igual: el archivo esta bien, lo que fallo es la vista.
   document.addEventListener('cortante:preview', (e) =>
     habilitarDescargas(
-      e.detail.ok ? 'Lo que estas viendo es exactamente lo que se descarga.' : PISTA_SIN_PREVIEW
+      e.detail.ok ? PISTA_CON_PREVIEW : PISTA_SIN_PREVIEW
     )
   );
+
+  /**
+   * Paleta del visor.
+   *
+   * Cambia el color de la pieza en pantalla y nada mas: el `.3mf` y el `.glb`
+   * salen con los materiales del motor, y al imprimir el color lo pone el
+   * filamento. Por eso no reactiva el boton de generar ni se manda al
+   * servidor. Se recuerda en `localStorage`, igual que el tema.
+   *
+   * La lista de colores la dibuja el template desde `COLORES` del router: aca
+   * no hay ningun codigo de color escrito, solo el que trae cada boton.
+   */
+  function iniciarPaleta() {
+    const muestras = $$('#paleta .paleta__color');
+    if (!muestras.length) return;
+
+    let guardado = null;
+    try {
+      guardado = localStorage.getItem('color-visor');
+    } catch (_) {
+      /* sin localStorage se arranca con el primero, que es el default */
+    }
+
+    const aplicar = (boton, recordar) => {
+      muestras.forEach((o) => o.setAttribute('aria-pressed', String(o === boton)));
+      document.dispatchEvent(
+        new CustomEvent('cortante:color', { detail: { color: boton.dataset.color } })
+      );
+      if (!recordar) return;
+      try {
+        localStorage.setItem('color-visor', boton.dataset.color);
+      } catch (_) {
+        /* sin persistencia: el color vale para esta pagina igual */
+      }
+    };
+
+    muestras.forEach((b) => b.addEventListener('click', () => aplicar(b, true)));
+    aplicar(muestras.find((b) => b.dataset.color === guardado) || muestras[0], false);
+  }
 }
 
 /* ── Reporte de fidelidad ────────────────────────────────────────────────── */

@@ -81,6 +81,41 @@ CAMPOS: tuple[CampoParametro, ...] = (
 LIMITE_MAX_MM = CutterParams.LIMITE_MAX_MM
 
 
+@dataclass(frozen=True)
+class ColorVista:
+    """Un color de la paleta del visor.
+
+    **No viaja al archivo.** El `.3mf` y el `.glb` llevan los materiales que
+    les puso el motor, y al imprimir el color lo pone el filamento: esto sirve
+    para mirar la pieza como va a quedar, no para configurarla. Por eso es un
+    dato de pantalla y no un parametro de `generar_cortante`.
+
+    Vive aca —y no suelto en el template— por lo mismo que `CAMPOS`: el nombre
+    y el codigo se escriben una sola vez, y un test puede exigir la lista
+    completa sin leer HTML.
+    """
+
+    nombre: str
+    hex: str
+
+
+COLORES: tuple[ColorVista, ...] = (
+    ColorVista("Blanco", "#f4f3f0"),
+    ColorVista("Gris", "#8c9298"),
+    ColorVista("Rojo", "#c9302c"),
+    ColorVista("Amarillo", "#eec12a"),
+    ColorVista("Azul", "#2a63c4"),
+    ColorVista("Verde", "#2f9c55"),
+    ColorVista("Rosa", "#ef78a8"),
+    ColorVista("Violeta", "#7d51c4"),
+)
+"""El primero es el default: blanco, que es como sale el PLA mas comun.
+
+Ninguno es blanco puro (`#ffffff`) ni negro puro a proposito — el visor usa
+tone mapping ACES, y un blanco saturado se quema y deja la pieza sin relieve.
+"""
+
+
 @router.post("")
 def generar_cortante(
     usuario: UsuarioRequerido,
