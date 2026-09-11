@@ -16,6 +16,8 @@ dependencies = [
     "mapbox-earcut>=1.0",
     "scikit-image>=0.24",
     "pillow>=11.0",
+    "pillow-heif>=1.7",   # HEIC/HEIF: el formato por default de las fotos de iPhone
+    "rawpy>=0.27",        # RAW de camara (ARW, CR2, CR3, DNG, NEF) via LibRaw
     "svgelements>=1.9",
     "vtracer>=0.6.15",
     "resvg-py>=0.5",
@@ -89,6 +91,14 @@ python_version = "3.13"
 disallow_untyped_calls = false
 
 # Librerias sin stubs: se tipa el borde propio, no el de terceros.
+[[tool.mypy.overrides]]
+# `pillow-heif` y `rawpy` traen `py.typed`, asi que mypy resuelve el modulo y
+# `ignore_missing_imports` no los alcanza — pero importan sus simbolos publicos
+# sin re-exportarlos, y `strict` activa `no_implicit_reexport`. Se afloja solo
+# para esos dos modulos de terceros: el codigo propio sigue con strict entero.
+module = ["pillow_heif.*", "rawpy.*"]
+implicit_reexport = true
+
 [[tool.mypy.overrides]]
 module = [
     "trimesh.*",

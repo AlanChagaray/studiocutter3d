@@ -74,6 +74,11 @@ def convertir(
         dir_trabajo,
         permitidos=FORMATOS_CONVERSOR,
         limite_bytes=a.tamano_maximo_bytes,
+        # El nombre del cliente entra SOLO para que la descarga se llame
+        # como el archivo original. `sanear_nombre_base` lo reduce a
+        # [A-Za-z0-9._-] y nunca toca una ruta: el archivo en disco sigue
+        # siendo `entrada.<ext>`.
+        nombre_cliente=archivo.filename,
     )
 
     clave = CLAVE_SALIDA[formato]
@@ -90,6 +95,7 @@ def convertir(
         trabajo.id,
         estado=EstadoTrabajo.LISTO,
         etapa="listo",
+        nombre_base=subida.nombre_base,
         archivos={clave.value: nombre},
         reporte={
             "formato_original": subida.formato.value,

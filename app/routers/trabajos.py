@@ -50,8 +50,8 @@ def descargar(
     almacen: AlmacenDep,
     a: AjustesDep,
 ) -> FileResponse:
-    """Sirve un archivo del trabajo. El nombre de descarga lo pone el servidor."""
-    _exigir_trabajo(almacen, id_, usuario)
+    """Sirve un archivo del trabajo. El nombre lo decide el servidor."""
+    trabajo = _exigir_trabajo(almacen, id_, usuario)
     ruta = ruta_de(a, id_, clave)
     if ruta is None:
         raise ErrorApi(
@@ -63,7 +63,10 @@ def descargar(
     return FileResponse(
         ruta,
         media_type=MEDIO_DE[clave],
-        filename=nombre_de_descarga(id_, clave),
+        # Starlette percent-encodea lo que haga falta (`filename*=utf-8''...`),
+        # asi que el header no se arma a mano: el saneo de `nombre_de_descarga`
+        # es por como se LEE el nombre, no por seguridad del header.
+        filename=nombre_de_descarga(id_, clave, trabajo.nombre_base),
     )
 
 

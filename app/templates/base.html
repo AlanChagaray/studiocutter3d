@@ -1,5 +1,11 @@
 {% import "macros.html" as m %}<!doctype html>
-<html lang="es">
+{#
+  `data-usuario` va en el <html> y no en el <body> porque `app.js` lo lee ANTES
+  de DOMContentLoaded (el script va sin `defer`, ver abajo) y ahi `document.body`
+  todavia no existe. En el login queda vacio, que es justo lo que hace falta para
+  que el estado del usuario anterior se descarte.
+#}
+<html lang="es" data-usuario="{{ usuario|default('') }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -23,23 +29,12 @@
 {% block cuerpo %}
 <div class="app">
 
-<aside class="sidebar">
+<header class="barra-superior">
   {{ m.marca() }}
 
-  <nav class="nav" aria-label="Modulos">
-    <span class="nav__titulo">MODULOS</span>
-    <a class="nav__item" href="/conversor" {% if pagina == 'conversor' %}aria-current="page"{% endif %}>
-      {{ m.icono('conversor') }}<span>Convertidor</span>
-    </a>
-    <a class="nav__item" href="/lineas" {% if pagina == 'lineas' %}aria-current="page"{% endif %}>
-      {{ m.icono('lineas') }}<span>Correccion de lineas</span>
-    </a>
-    <a class="nav__item" href="/cortante" {% if pagina == 'cortante' %}aria-current="page"{% endif %}>
-      {{ m.icono('cortante') }}<span>Crear Cortante</span>
-    </a>
-  </nav>
+  {{ m.nav_modulos(modulos, pagina) }}
 
-  <div class="pie-sidebar">
+  <div class="barra-superior__aparte">
     <button type="button" class="tema" id="boton-tema" aria-label="Cambiar tema">
       <span>Modo oscuro</span>
       <span class="switch" id="switch-tema" role="switch" aria-checked="false"></span>
@@ -47,14 +42,14 @@
 
     <div class="usuario">
       <span class="usuario__inicial" aria-hidden="true">{{ (usuario or '?')[0]|upper }}</span>
-      <span>{{ usuario }}</span>
-      <form method="post" action="/logout" style="margin-left:auto">
-        <button type="submit" class="boton boton--secundario" style="min-height:34px;padding:0 10px"
+      <span class="usuario__nombre">{{ usuario }}</span>
+      <form method="post" action="/logout">
+        <button type="submit" class="boton boton--secundario boton--icono"
                 title="Cerrar sesion" aria-label="Cerrar sesion">{{ m.icono('salir', 16) }}</button>
       </form>
     </div>
   </div>
-</aside>
+</header>
 
 <main class="contenido">
   <header class="encabezado">
@@ -67,18 +62,6 @@
 
   {% block contenido %}{% endblock %}
 </main>
-
-<nav class="barra-inferior" aria-label="Modulos">
-  <a href="/conversor" {% if pagina == 'conversor' %}aria-current="page"{% endif %}>
-    {{ m.icono('conversor', 21) }}<span>Convertir</span>
-  </a>
-  <a href="/lineas" {% if pagina == 'lineas' %}aria-current="page"{% endif %}>
-    {{ m.icono('lineas', 21) }}<span>Lineas</span>
-  </a>
-  <a href="/cortante" {% if pagina == 'cortante' %}aria-current="page"{% endif %}>
-    {{ m.icono('cortante', 21) }}<span>Cortante</span>
-  </a>
-</nav>
 
 </div>
 {% endblock %}

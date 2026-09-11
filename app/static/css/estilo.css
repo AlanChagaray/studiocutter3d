@@ -8,8 +8,15 @@
  *   - `data-tema="claro"` / `"oscuro"` → la elección del usuario gana en ambos
  *     sentidos, y vive en `localStorage`, no en la cookie de sesión.
  *
- * Un solo breakpoint: 860 px. Arriba, sidebar flotante lateral; abajo, barra
- * inferior flotante. No hay un estado intermedio porque nadie lo diseñó.
+ * El breakpoint de la app es 860 px. La navegación es UNA barra superior fija
+ * en los dos lados del corte — abajo solo se aprietan los espacios y los
+ * rótulos del menú quedan en icono. No hay un estado intermedio porque nadie
+ * lo diseñó. La única excepción es el banco de tres columnas del cortante, que
+ * se apila a los 1200 px: ahí el corte lo pide el ancho del visor, no la
+ * pantalla.
+ *
+ * El ancho del contenido lo fija cada pantalla con `--ancho-contenido`, que se
+ * pisa por `body[data-pagina]`: el cortante necesita más que las otras dos.
  */
 
 @import url('../vendor/fuentes/fuentes.css');
@@ -41,8 +48,10 @@
 
   --radio: 12px;
   --radio-panel: 20px;
-  --sidebar-ancho: 236px;
+  --barra-alto: 60px;
+  --ancho-contenido: 900px;
   --gutter: 18px;
+  --gutter-arriba: 34px;
 
   --fuente: 'Space Grotesk', system-ui, -apple-system, sans-serif;
   --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
@@ -160,29 +169,57 @@ button {
   min-height: 100vh;
 }
 
-.sidebar {
-  position: fixed;
-  top: var(--gutter);
-  bottom: var(--gutter);
-  left: var(--gutter);
-  display: flex;
-  flex-direction: column;
-  gap: 22px;
-  width: var(--sidebar-ancho);
-  padding: 20px 14px;
-  border: 1px solid var(--borde);
-  border-radius: var(--radio-panel);
+/* `barra-superior` y no `barra` a secas: `.barra` ya existe mas abajo y es la
+   barra de PROGRESO de las filas del conversor. Como aquella se declara
+   despues, pisaba a esta en toda propiedad compartida — y ningun gate mira
+   CSS, asi que habria sido una rotura visual invisible.
+
+   Tres columnas y no un flex con `margin-inline:auto`: asi el menu queda
+   centrado respecto de la VENTANA y no del hueco que dejan la marca y el
+   bloque de usuario, que tienen anchos distintos entre si. */
+.barra-superior {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 14px;
+  height: var(--barra-alto);
+  padding: 0 var(--gutter);
+  border-bottom: 1px solid var(--borde);
   background: var(--card);
   box-shadow: var(--sombra-panel);
 }
 
+.barra-superior__aparte {
+  display: flex;
+  align-items: center;
+  justify-self: end;
+  gap: 8px;
+}
+
+/* `sticky` ocupa lugar en el flujo, asi que el contenido NO necesita compensar
+   el alto de la barra con padding — solo descontarlo del alto minimo.
+
+   El aire de ARRIBA es mayor que el de los costados a proposito: la barra es
+   sticky y proyecta sombra, y con los 18 px parejos del gutter el `<h1>` le
+   quedaba pegado. En mobile vuelve a achicarse, que ahi el alto escasea. */
 .contenido {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  min-height: 100vh;
-  padding: var(--gutter) var(--gutter) var(--gutter)
-    calc(var(--sidebar-ancho) + var(--gutter) * 2);
+  width: 100%;
+  max-width: var(--ancho-contenido);
+  min-height: calc(100vh - var(--barra-alto));
+  margin-inline: auto;
+  padding: var(--gutter-arriba) var(--gutter) var(--gutter);
+}
+
+/* El cortante convive con el visor 3D, el formulario de 10 campos y el reporte;
+   las listas del conversor y el comparador de lineas se leen mejor angostos. */
+body[data-pagina='cortante'] {
+  --ancho-contenido: 1400px;
 }
 
 .marca {
@@ -210,16 +247,7 @@ button {
 
 .nav {
   display: flex;
-  flex-direction: column;
   gap: 4px;
-}
-
-.nav__titulo {
-  padding: 0 12px 6px;
-  font-size: 9.5px;
-  font-weight: 600;
-  color: var(--texto-3);
-  letter-spacing: 0.9px;
 }
 
 .nav__item {
@@ -231,6 +259,11 @@ button {
   color: var(--texto-2);
   font-size: 13.5px;
   font-weight: 500;
+}
+
+.boton--icono {
+  min-height: 34px;
+  padding: 0 10px;
 }
 
 .nav__item:hover {
@@ -247,13 +280,6 @@ button {
 .nav__item svg {
   flex-shrink: 0;
   stroke: currentcolor;
-}
-
-.pie-sidebar {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-top: auto;
 }
 
 .usuario {
@@ -405,6 +431,55 @@ button {
   flex-shrink: 0;
 }
 
+/* ── Banco de trabajo del cortante ──────────────────────────────────────── */
+
+/* Tres columnas, y cada una es una etapa: por la IZQUIERDA entra el archivo y
+   por ahi mismo sale (las descargas quedan pegadas a lo que las produjo), por
+   la DERECHA se toca —parametros, marcador e informe—, y el visor queda en el
+   MEDIO porque es lo unico que se mira mientras se ajusta cualquiera de los
+   dos costados. Con el visor a un lado, la mitad de los controles le quedaban
+   lejos.
+
+   Grid y no flex: los costados son fijos y el medio se come lo que sobra, que
+   es exactamente `minmax(0, 1fr)`. Sin ese `0` el canvas del visor impone su
+   ancho y la columna del medio no se achica nunca. */
+.banco {
+  display: grid;
+  grid-template-columns: 290px minmax(0, 1fr) 340px;
+  gap: 16px;
+  align-items: start;
+}
+
+.banco__columna {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.banco__visor {
+  display: flex;
+  flex-direction: column;
+  min-height: 560px;
+}
+
+/* En una columna de 290 px los cinco enlaces no entran en fila: van apilados y
+   a lo ancho, que ademas los vuelve un blanco mas facil de acertar. */
+.descargas {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* El panel del marcador NO se esconde cuando el modo es solo cortante: se
+   apaga. Esconderlo hacia saltar el alto de la columna al cambiar de modo y,
+   peor, no decia nada — asi se ve que esos tres parametros existen y por que
+   ahora no cambian la pieza. El titulo y la nota quedan a opacidad plena: son
+   justamente lo que hay que poder leer. */
+.panel--inhabilitado .parametros {
+  opacity: 0.45;
+}
+
 /* ── Botones ────────────────────────────────────────────────────────────── */
 
 .boton {
@@ -502,6 +577,11 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
+.campo__caja input:disabled {
+  color: var(--texto-3);
+  cursor: not-allowed;
+}
+
 .campo__unidad {
   flex-shrink: 0;
   color: var(--texto-3);
@@ -572,6 +652,27 @@ button {
 }
 
 /* ── Chips de estado ────────────────────────────────────────────────────── */
+
+.chip-archivo__quitar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 2px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--texto-3);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chip-archivo__quitar:hover {
+  background: var(--borde-suave);
+  color: var(--texto);
+}
 
 .chip {
   display: inline-flex;
@@ -969,45 +1070,46 @@ button {
   text-align: center;
 }
 
-/* ── Barra inferior (solo mobile) ───────────────────────────────────────── */
+/* ── Responsive ─────────────────────────────────────────────────────────── */
 
-.barra-inferior {
-  display: none;
-}
-
-/* ── Responsive: un solo corte ──────────────────────────────────────────── */
-
-@media (max-width: 860px) {
-  .sidebar {
-    position: fixed;
-    top: 14px;
-    right: 14px;
-    bottom: auto;
-    left: 14px;
-    flex-direction: row;
-    align-items: center;
-    gap: 10px;
-    width: auto;
-    height: 52px;
-    padding: 0 12px;
-    border-radius: 16px;
+/* El corte de 1200 px es SOLO del banco del cortante, y no es un tamaño de
+   pantalla nuevo: es el ancho que pide el visor. Con 290 + 340 px de costados
+   fijos, abajo de eso la columna del medio queda mas angosta que los dos
+   costados juntos y deja de ser el centro de nada. Apilado no se pierde nada:
+   el orden es el mismo que en mobile —archivo → descargas → vista previa →
+   parametros → marcador → informe— y el visor pasa a tener el ancho entero. */
+@media (max-width: 1200px) {
+  .banco {
+    grid-template-columns: 1fr;
   }
 
-  .sidebar .nav,
-  .sidebar .pie-sidebar .usuario span,
-  .sidebar .tema span {
+  .banco__visor {
+    min-height: 0;
+  }
+}
+
+/* De aca para abajo, el unico corte de la app: 860 px. */
+@media (max-width: 860px) {
+  .barra-superior {
+    gap: 8px;
+    padding: 0 12px;
+  }
+
+  /* A 390 px no entran tres rotulos, la marca, el tema y el usuario en una
+     fila de 60 px. Se cae todo el texto accesorio y el menu queda en iconos
+     — que siguen teniendo nombre accesible por el `aria-label` del enlace. */
+  .barra-superior .nav__item span,
+  .marca__bajada,
+  .usuario__nombre,
+  .tema span {
     display: none;
   }
 
-  .sidebar .pie-sidebar {
-    flex-direction: row;
-    align-items: center;
-    gap: 6px;
-    margin-top: 0;
-    margin-left: auto;
+  .barra-superior .nav__item {
+    padding: 10px;
   }
 
-  .sidebar .tema {
+  .tema {
     width: auto;
     padding: 8px;
     border: 0;
@@ -1016,7 +1118,7 @@ button {
 
   .contenido {
     gap: 12px;
-    padding: 78px 14px 94px;
+    padding: 18px 14px 14px;
   }
 
   .columnas {
@@ -1049,53 +1151,17 @@ button {
     grid-column: 1 / -1;
   }
 
+  /* Acotado y no `min-height`: apilado en una sola columna, el visor tiene
+     que ocupar un alto fijo y previsible. Si crece, empuja los parametros y el
+     informe fuera de la pantalla y el resto de la pagina deja de existir. */
   .visor {
-    min-height: 280px;
+    height: 300px;
+    min-height: 0;
   }
 
   /* Las 8 muestras entran justas en 390 px; la aclaracion se cae primero. */
   .paleta__nota {
     display: none;
-  }
-
-  /* El sidebar flotante colapsa a barra inferior, también flotante. */
-  .barra-inferior {
-    position: fixed;
-    right: 14px;
-    bottom: 14px;
-    left: 14px;
-    display: flex;
-    align-items: center;
-    height: 68px;
-    padding: 0 6px;
-    border: 1px solid var(--borde);
-    border-radius: var(--radio-panel);
-    background: var(--card);
-    box-shadow: var(--sombra-panel);
-  }
-
-  .barra-inferior a {
-    display: flex;
-    flex: 1;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 3px;
-    height: 56px;
-    border-radius: 14px;
-    color: var(--texto-2);
-    font-size: 10px;
-    font-weight: 500;
-  }
-
-  .barra-inferior a[aria-current='page'] {
-    background: var(--celeste-tinte);
-    color: var(--celeste-texto);
-    font-weight: 700;
-  }
-
-  .barra-inferior svg {
-    stroke: currentcolor;
   }
 }
 

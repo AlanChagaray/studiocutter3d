@@ -11,10 +11,21 @@
 </div>
 {% endblock %}
 
-{% block contenido %}
-<div class="columnas">
+{#
+  Tres columnas, y cada una es una etapa del trabajo:
 
-  <aside class="aparte" style="display:flex;flex-direction:column;gap:14px">
+    izquierda  el archivo que entra y los archivos que salen
+    centro     la vista previa
+    derecha    los parametros —cortante arriba, marcador abajo— y el informe
+
+  El visor va al medio porque es lo unico que se mira mientras se toca
+  cualquiera de los dos costados. En mobile la grilla se vuelve una sola
+  columna y el orden de arriba hacia abajo es este mismo.
+#}
+{% block contenido %}
+<div class="banco">
+
+  <aside class="banco__columna">
     <div class="panel">
       <h2 class="panel__titulo">Archivo</h2>
       <div class="dropzone" id="zona" style="padding:22px 16px">
@@ -25,18 +36,67 @@
       </div>
       <div class="chip-archivo oculto" id="chip-archivo">
         {{ m.icono('archivo', 15) }}<span id="nombre-archivo"></span>
+        <button type="button" class="chip-archivo__quitar" id="quitar"
+                title="Quitar el archivo" aria-label="Quitar el archivo">&times;</button>
       </div>
-      <p class="lista__meta" style="margin-top:10px;line-height:1.45">
+      <p class="lista__meta" style="line-height:1.45">
         Solo SVG: el motor trabaja sobre curvas y asi la pieza sale lo mas fiel posible.
         Si tenes una imagen, pasala primero por el
-        <a href="/conversor">Convertidor</a> o por la
-        <a href="/lineas">correccion de lineas</a>.
+        <a href="/conversor">Convertidor</a> o por
+        <a href="/lineas">Correcto</a>.
       </p>
     </div>
 
+    {# Las descargas aparecen apenas el cortante esta hecho, pegadas al panel
+       del archivo que las produjo. No esperan a que la vista previa pinte: lo
+       que se baja es la misma geometria que carga el visor, asi que si el
+       visor falla el archivo esta igual de bien. #}
+    <div class="panel oculto" id="panel-descargas">
+      <h2 class="panel__titulo">Descargas</h2>
+      <div class="descargas" id="botones-descarga">
+        <a class="boton oculto" data-clave="3mf" download>{{ m.icono('bajar', 16) }} 3MF completo</a>
+        <a class="boton boton--secundario oculto" data-clave="3mf_cortador" download>3MF cortador</a>
+        <a class="boton boton--secundario oculto" data-clave="3mf_marcador" download>3MF marcador</a>
+        <a class="boton boton--secundario oculto" data-clave="stl_cortador" download>STL cortador</a>
+        <a class="boton boton--secundario oculto" data-clave="stl_marcador" download>STL marcador</a>
+      </div>
+      <div class="lista__meta" id="pista-descargas"></div>
+      <div class="lista__meta" style="line-height:1.45">
+        El 3MF completo trae los dos cuerpos anidados como se imprimen. Los sueltos son el
+        mismo cuerpo en las mismas coordenadas, para editar uno sin tocar el otro. Los STL
+        salen siempre, uno por cuerpo. El color de la vista previa no va en el archivo:
+        al imprimir lo pone el filamento.
+      </div>
+    </div>
+  </aside>
+
+  <div class="banco__visor panel panel--plano">
+    <div class="rotulo">
+      <span class="punto punto--activo"></span> VISTA PREVIA 3D
+      <span class="lista__meta" style="margin-left:auto" id="pista-visor">todavia no hay nada que mostrar</span>
+    </div>
+    <div class="visor" id="visor">
+      <div class="visor__pista">arrastrar para girar &middot; rueda para acercar</div>
+      {# La paleta ocupa el lugar de la vieja leyenda cortador/marcador: con
+         la pieza pintada de un solo color esa leyenda pasaba a mentir, y las
+         dos piezas se distinguen solas por la forma (una es pared, la otra
+         una placa con relieve). #}
+      <div class="paleta" role="group" aria-label="Color de la vista previa" id="paleta">
+        {% for c in colores %}
+        <button type="button" class="paleta__color" data-color="{{ c.hex }}"
+                style="--muestra:{{ c.hex }}" title="{{ c.nombre }}"
+                aria-label="{{ c.nombre }}"
+                aria-pressed="{{ 'true' if loop.first else 'false' }}"></button>
+        {% endfor %}
+        <span class="paleta__nota">solo la vista</span>
+      </div>
+    </div>
+  </div>
+
+  <aside class="banco__columna">
     <div class="panel">
       <div class="fila">
-        <h2 class="panel__titulo">Dimensiones</h2>
+        <h2 class="panel__titulo">Cortante</h2>
         <button type="button" class="boton boton--secundario" id="restaurar"
                 style="min-height:32px;padding:0 11px;font-size:11.5px">
           {{ m.icono('girar', 14) }} Valores por defecto
@@ -44,96 +104,47 @@
       </div>
 
       <div class="parametros">
-        {% for c in campos %}
-        <div class="campo" data-campo="{{ c.nombre }}"
-             {% if c.solo_marcador %}data-solo-marcador="1"{% endif %}>
-          <label class="campo__label" for="p-{{ c.nombre }}" title="{{ c.ayuda }}">{{ c.etiqueta }}</label>
-          <div class="campo__caja">
-            <input id="p-{{ c.nombre }}" name="{{ c.nombre }}" type="number" inputmode="decimal"
-                   value="{{ c.valor }}" step="{{ c.paso }}" min="0.01" max="{{ limite_max_mm }}"
-                   data-defecto="{{ c.valor }}">
-            <span class="campo__unidad">mm</span>
-          </div>
-          <span class="campo__error oculto" data-rol="error">{{ m.icono('error', 13) }}<span></span></span>
-        </div>
-        {% endfor %}
+        {% for c in campos if not c.solo_marcador %}{{ m.campo_parametro(c, limite_max_mm) }}{% endfor %}
       </div>
 
       <div class="limites">
         Ningun valor puede ser cero o negativo, ni superar {{ limite_max_mm|int }} mm (1 metro).
         Fuera de ese rango el servidor rechaza el pedido y te dice cual es el parametro.
-        <span class="oculto" id="nota-modo">
-          En modo <strong>Cortante</strong> los parametros del marcador no se muestran porque
-          no cambian nada de la pieza.
-        </span>
-      </div>
-
-      <label class="tema" style="cursor:pointer">
-        <span>Descargar tambien los STL</span>
-        <input type="checkbox" id="con-stl" checked>
-      </label>
-
-      <button type="button" class="boton" id="generar" disabled>
-        {{ m.icono('cortante', 17) }} Generar cortante
-      </button>
-
-      {# Generado con estos valores exactos, el boton no tiene nada que hacer:
-         volver a apretarlo daria el mismo archivo despues de otros cinco
-         segundos. Se reactiva solo cuando algo del pedido cambia. #}
-      <p class="lista__meta oculto" id="pista-generar" style="text-align:center">
-        Listo con estos valores. Cambia una medida o el modo para volver a generar.
-      </p>
-
-      <div class="aviso oculto" id="estado" role="status"></div>
-    </div>
-  </aside>
-
-  <div class="crece" style="display:flex;flex-direction:column;gap:14px;min-height:520px">
-
-    <div class="panel panel--plano crece" style="display:flex;flex-direction:column">
-      <div class="rotulo">
-        <span class="punto punto--activo"></span> VISTA PREVIA 3D
-        <span class="lista__meta" style="margin-left:auto" id="pista-visor">todavia no hay nada que mostrar</span>
-      </div>
-      <div class="visor" id="visor">
-        <div class="visor__pista">arrastrar para girar &middot; rueda para acercar</div>
-        {# La paleta ocupa el lugar de la vieja leyenda cortador/marcador: con
-           la pieza pintada de un solo color esa leyenda pasaba a mentir, y las
-           dos piezas se distinguen solas por la forma (una es pared, la otra
-           una placa con relieve). #}
-        <div class="paleta" role="group" aria-label="Color de la vista previa" id="paleta">
-          {% for c in colores %}
-          <button type="button" class="paleta__color" data-color="{{ c.hex }}"
-                  style="--muestra:{{ c.hex }}" title="{{ c.nombre }}"
-                  aria-label="{{ c.nombre }}"
-                  aria-pressed="{{ 'true' if loop.first else 'false' }}"></button>
-          {% endfor %}
-          <span class="paleta__nota">solo la vista</span>
-        </div>
       </div>
     </div>
 
-    {# Las descargas aparecen recien cuando la vista previa cargo: lo que se
-       baja es la misma geometria que se esta viendo, y verla primero es parte
-       del flujo. Hasta entonces los enlaces existen pero estan inertes. #}
-    <div class="panel oculto" id="panel-descargas">
-      <div class="fila" style="flex-wrap:wrap">
-        <h2 class="panel__titulo">Descargas</h2>
-        <div style="display:flex;gap:8px;flex-wrap:wrap" id="botones-descarga">
-          <a class="boton oculto" data-clave="3mf" download>{{ m.icono('bajar', 16) }} 3MF completo</a>
-          <a class="boton boton--secundario oculto" data-clave="3mf_cortador" download>3MF cortador</a>
-          <a class="boton boton--secundario oculto" data-clave="3mf_marcador" download>3MF marcador</a>
-          <a class="boton boton--secundario oculto" data-clave="stl_cortador" download>STL cortador</a>
-          <a class="boton boton--secundario oculto" data-clave="stl_marcador" download>STL marcador</a>
-        </div>
+    {# El grupo del marcador no se esconde en modo Cortante: se apaga. Que los
+       tres campos sigan a la vista es lo que explica que cambia el modo;
+       escondidos, el modo parecia no hacer nada. #}
+    <div class="panel" id="panel-marcador">
+      <div class="fila">
+        <h2 class="panel__titulo">Marcador</h2>
+        <span class="chip chip--ok" id="chip-marcador">incluido</span>
       </div>
-      <div class="lista__meta" id="pista-descargas"></div>
-      <div class="lista__meta" style="margin-top:6px">
-        El 3MF completo trae los dos cuerpos anidados como se imprimen. Los sueltos son el
-        mismo cuerpo en las mismas coordenadas, para editar uno sin tocar el otro.
-        El color de la vista previa no va en el archivo: al imprimir lo pone el filamento.
+
+      <div class="parametros">
+        {% for c in campos if c.solo_marcador %}{{ m.campo_parametro(c, limite_max_mm) }}{% endfor %}
+      </div>
+
+      <div class="limites oculto" id="nota-modo">
+        En modo <strong>Cortante</strong> estos tres parametros quedan inactivos: el motor
+        los ignora y no cambian nada de la pieza. Pasa a <strong>Cortante + Marcador</strong>
+        para volver a usarlos.
       </div>
     </div>
+
+    <button type="button" class="boton" id="generar" disabled>
+      {{ m.icono('cortante', 17) }} Generar cortante
+    </button>
+
+    {# Generado con estos valores exactos, el boton no tiene nada que hacer:
+       volver a apretarlo daria el mismo archivo despues de otros cinco
+       segundos. Se reactiva solo cuando algo del pedido cambia. #}
+    <p class="lista__meta oculto" id="pista-generar" style="text-align:center;margin:0">
+      Listo con estos valores. Cambia una medida o el modo para volver a generar.
+    </p>
+
+    <div class="aviso oculto" id="estado" role="status"></div>
 
     <div class="oculto" id="panel-reporte" style="display:flex;flex-direction:column;gap:12px">
       <div class="veredicto" id="veredicto">
@@ -176,8 +187,8 @@
 
       <div class="oculto" id="panel-advertencias"></div>
     </div>
+  </aside>
 
-  </div>
 </div>
 {% endblock %}
 

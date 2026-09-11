@@ -52,9 +52,9 @@ if (contenedor) {
   try {
     iniciar(contenedor);
   } catch (_) {
-    // Sin WebGL no hay visor. La pantalla espera igual el aviso de preview
-    // para habilitar las descargas, asi que hay que emitirlo cuando llegue el
-    // resultado — si no, el archivo queda generado y sin poder bajarse.
+    // Sin WebGL no hay visor. El aviso se emite igual cuando llega el
+    // resultado para que la pantalla ajuste el texto de las descargas: los
+    // archivos ya estan habilitados, lo que falta es la vista.
     const pista = document.getElementById('pista-visor');
     if (pista) pista.textContent = 'este navegador no puede mostrar la vista previa 3D';
     document.addEventListener('cortante:listo', () =>
@@ -128,10 +128,10 @@ function iniciar(host) {
   /**
    * Avisa como termino la carga.
    *
-   * Las descargas de la pantalla esperan este evento: se habilitan cuando la
-   * pieza ya se ve. Se emite tambien cuando falla, con `ok: false`, porque un
-   * visor roto no puede dejar al usuario sin poder bajar un archivo que esta
-   * perfecto.
+   * La pantalla lo usa para el texto que acompaña a las descargas: si la pieza
+   * se ve, dice que eso es exactamente lo que se baja. Se emite tambien cuando
+   * falla, con `ok: false`. Las descargas NO dependen de esto —se habilitan al
+   * terminar el trabajo—: un visor roto no dice nada del archivo.
    */
   function avisarPreview(ok) {
     document.dispatchEvent(new CustomEvent('cortante:preview', { detail: { ok } }));
@@ -157,7 +157,7 @@ function iniciar(host) {
         // Se avisa acá y no dentro de un `requestAnimationFrame`: rAF **no
         // corre en una pestaña de fondo**, y arrancar una generacion y cambiar
         // de pestaña es lo normal cuando tarda cinco segundos. Esperar el
-        // frame dejaba las descargas trabadas hasta volver a mirar.
+        // frame dejaba el aviso colgado hasta volver a mirar la pestaña.
         avisarPreview(true);
       },
       undefined,

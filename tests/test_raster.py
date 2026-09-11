@@ -84,8 +84,16 @@ def test_f1_convierte_svg(tmp_path: Path) -> None:
 
 
 def test_f1_rechaza_formato_no_soportado(tmp_path: Path) -> None:
-    origen = tmp_path / "raro.tiff"
-    Image.fromarray(_dibujo_con_macizo_y_trazo(), mode="L").save(origen, format="TIFF")
+    """El fixture es PDF y no TIFF, y el motivo importa.
+
+    Hasta que F1 acepto RAW y HEIC, el TIFF era el ejemplo obvio de "imagen que
+    el motor no abre". Ahora SI lo abre —es el contenedor de ARW, CR2, NEF y
+    DNG—, asi que hace falta un formato que siga afuera de verdad. El PDF lo
+    esta, y ademas es de los que el conversor reconoce solo para poder nombrarlo
+    al rechazarlo.
+    """
+    origen = tmp_path / "raro.pdf"
+    origen.write_bytes(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
     with pytest.raises(ImagenInvalida, match="no soportado"):
         convertir_a_jpg(origen, tmp_path / "salida.jpg")
 

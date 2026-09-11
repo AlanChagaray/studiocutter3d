@@ -2,8 +2,8 @@
 
 **Solo entra SVG.** Vectorizar aca adentro seria hacerlo a espaldas del
 usuario, sobre un archivo que no eligio y sin poder revisar el resultado; el
-Convertidor y la correccion de lineas ya dejan el SVG a la vista antes de este
-paso. Lo que llega es lo que se imprime.
+Convertidor y Correcto (la correccion de lineas) ya dejan el SVG a la vista
+antes de este paso. Lo que llega es lo que se imprime.
 
 Los 10 parametros se reciben uno por uno y no como un JSON suelto: asi FastAPI
 rechaza lo que no es un numero antes del handler, y `CutterParams` rechaza lo
@@ -16,6 +16,13 @@ campo en rojo.
 
 `CAMPOS` es la misma lista que consume la pantalla, asi que el formulario y la
 validacion no pueden discrepar: agregar un parametro es tocar un solo lugar.
+
+**Los `.stl` salen siempre.** Eran un checkbox de la pantalla y dejaron de
+serlo: exportarlos cuesta milisegundos sobre una geometria que ya esta
+calculada, y la unica consecuencia de tildarlo mal era volver a generar todo
+para conseguir un archivo que ya estaba hecho. El flag sigue existiendo en el
+motor (`generar(con_stl=...)`) y en el CLI, que son de uso programatico; la web
+no lo ofrece. Un `con_stl` que llegue en el form se ignora.
 """
 
 from __future__ import annotations
@@ -49,7 +56,7 @@ class CampoParametro:
     paso: float
     ayuda: str
     solo_marcador: bool = False
-    """True si el motor lo ignora en modo `cortante`. La pantalla lo esconde.
+    """True si el motor lo ignora en modo `cortante`. La pantalla lo apaga.
 
     No es cosmetico: un campo que no cambia nada del resultado es una promesa
     falsa. Se marca aca, del lado del que conoce el motor, y no en el template.
@@ -133,7 +140,6 @@ def generar_cortante(
     archivo: Annotated[UploadFile | None, File()] = None,
     origen: Annotated[str | None, Form()] = None,
     modo: Annotated[Literal["cortante", "cortante+marcador"], Form()] = "cortante+marcador",
-    con_stl: Annotated[bool, Form()] = True,
     lado_mayor_mm: Annotated[float, Form()] = _D.lado_mayor_mm,
     altura_base_mm: Annotated[float, Form()] = _D.altura_base_mm,
     altura_trazos_mm: Annotated[float, Form()] = _D.altura_trazos_mm,
@@ -172,7 +178,15 @@ def generar_cortante(
         usuario=usuario,
         destino_dir=destino,
         permitidos=FORMATOS_CORTANTE,
+        # El nombre del cliente entra SOLO para que la descarga se llame
+        # como el archivo original. `sanear_nombre_base` lo reduce a
+        # [A-Za-z0-9._-] y nunca toca una ruta: el archivo en disco sigue
+        # siendo `entrada.<ext>`.
+        nombre_cliente=archivo.filename if archivo is not None else None,
     )
+    # Si la entrada vino encadenada, `resolver_entrada` ya heredo el nombre del
+    # trabajo anterior; si vino por upload, sale del que acaba de subir.
+    almacen.actualizar(trabajo.id, nombre_base=subida.nombre_base)
 
     lanzar(
         almacen=almacen,
@@ -184,7 +198,6 @@ def generar_cortante(
             str(subida.ruta),
             Modo(modo).value,
             asdict(parametros),
-            con_stl,
         ),
     )
     return trabajo.como_json()

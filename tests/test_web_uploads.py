@@ -12,11 +12,15 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from app.almacen import AlmacenEnMemoria, TipoTrabajo
 from app.archivos import FORMATOS_CONVERSOR, Formato, detectar_formato, guardar_subida
 from app.config import Ajustes
 from app.errores import ErrorApi
+from cutter3d.errors import ImagenInvalida
+from cutter3d.raster import MAX_PIXELES, _abrir_raw, convertir_a_jpg
+from cutter3d.vector import a_svg
 
 WEBP_MINIMO = (
     b"RIFF\x24\x00\x00\x00WEBPVP8 \x18\x00\x00\x00\x30\x01\x00\x9d\x01\x2a"
@@ -178,10 +182,150 @@ def test_no_se_puede_encadenar_desde_un_trabajo_ajeno(
         (WEBP_MINIMO, Formato.WEBP),
         (SVG_MINIMO, Formato.SVG),
         (b"\xef\xbb\xbf  <?xml version='1.0'?><svg/>", Formato.SVG),
-        (b"GIF89a", None),
+        (b"GIF87a", Formato.GIF),
+        (b"GIF89a", Formato.GIF),
+        (b"BM\x00\x00\x00\x00", Formato.BMP),
+        (b"8BPS\x00\x01", Formato.PSD),
+        (b"\x00\x00\x01\x00\x01\x00", Formato.ICO),
+        # Los tres ISO-BMFF comparten los primeros bytes y solo los separa la
+        # marca del offset 8: mirando menos que eso, un CR3 pasa por HEIC.
+        (b"\x00\x00\x00\x1cftypheic", Formato.HEIF),
+        (b"\x00\x00\x00\x1cftypavif", Formato.AVIF),
+        (b"\x00\x00\x00\x18ftypcrx ", Formato.CR3),
+        # Los dos ordenes de bytes del contenedor TIFF. Cubre tambien a ARW,
+        # CR2, NEF y DNG, que son TIFF por dentro.
+        (b"II*\x00\x08\x00", Formato.TIFF),
+        (b"MM\x00*\x00\x00", Formato.TIFF),
         (b"", None),
         (b"%PDF-1.7", None),
+        (b"MZ\x90\x00" * 8, None),
     ],
 )
 def test_deteccion_por_contenido(bytes_: bytes, esperado: Formato | None) -> None:
     assert detectar_formato(bytes_) is esperado
+
+
+# ── Formatos nuevos, y los que quedaron deliberadamente afuera ──────────────
+
+
+def _heif(ancho: int = 40, alto: int = 30) -> bytes:
+    """HEIF real, generado con la misma libreria que despues lo lee."""
+    buffer = io.BytesIO()
+    Image.new("RGB", (ancho, alto), "red").save(buffer, format="HEIF")
+    return buffer.getvalue()
+
+
+def test_heic_se_acepta_y_se_convierte(sesion: TestClient) -> None:
+    """CA-01 — el formato con el que salen las fotos de cualquier iPhone."""
+    r = sesion.post("/api/conversor", files={"archivo": ("foto.heic", _heif(), "image/heic")})
+    assert r.status_code == 200, r.text
+    descarga = sesion.get(f"/api/trabajos/{r.json()['id']}/archivo/jpg")
+    assert descarga.content.startswith(b"\xff\xd8\xff"), "no es un JPEG"
+
+
+@pytest.mark.parametrize(
+    "cabecera",
+    [b"\x00\x00\x00\x18ftypcrx ", b"II*\x00\x08\x00\x00\x00", b"MM\x00*\x00\x00\x00\x08"],
+)
+def test_los_raw_de_camara_son_formatos_permitidos(cabecera: bytes) -> None:
+    """CA-02 — hasta donde llega la verificacion automatica, y por que.
+
+    Se verifica que los contenedores de RAW se reconocen y estan habilitados en
+    el conversor. Que la foto se decodifique de verdad necesita un RAW real de
+    camara, de decenas de MB, y el repo no versiona binarios de ese tamaño:
+    esa mitad queda como paso manual.
+    """
+    formato = detectar_formato(cabecera)
+    assert formato in (Formato.CR3, Formato.TIFF)
+    assert formato in FORMATOS_CONVERSOR
+
+
+@pytest.mark.parametrize(
+    ("etiqueta", "contenido"),
+    [
+        ("EPS", b"%!PS-Adobe-3.0 EPSF-3.0\n"),
+        ("XCF", b"gimp xcf v011\x00"),
+        ("EXR", b"\x76\x2f\x31\x01\x02\x00\x00\x00"),
+        ("DICOM", b"\x00" * 128 + b"DICM"),
+    ],
+)
+def test_lo_que_queda_afuera_se_rechaza_por_su_nombre(
+    sesion: TestClient, etiqueta: str, contenido: bytes
+) -> None:
+    """CA-03 — "no se puede usar un EPS" es accionable; "desconocido" no.
+
+    Estos cuatro no se abren a proposito (EPS necesita Ghostscript en el
+    sistema; DICOM, EXR y XCF son parsers grandes sobre archivos de usuario),
+    pero si se reconocen, que cuesta una comparacion de bytes.
+    """
+    archivo = {"archivo": ("x.bin", contenido, "application/octet-stream")}
+    r = sesion.post("/api/conversor", files=archivo)
+    assert r.status_code == 415
+    error = r.json()["error"]
+    assert error["codigo"] == "formato_no_soportado"
+    assert error["detalle"]["detectado"] == etiqueta
+    assert etiqueta in error["mensaje"], error["mensaje"]
+
+
+def test_el_tope_de_pixeles_corta_antes_de_decodificar(tmp_path: Path) -> None:
+    """CA-04 / RNF-01 — un solo limite para los dos decodificadores.
+
+    Se apaga a proposito el guard propio de Pillow: lo que se prueba es el tope
+    del motor, que es el que ademas cubre a `rawpy` — que no pasa por Pillow y
+    por lo tanto no tiene ninguna red propia.
+    """
+    origen = tmp_path / "bomba.png"
+    guard_pillow = Image.MAX_IMAGE_PIXELS
+    Image.MAX_IMAGE_PIXELS = None
+    try:
+        lado = int(MAX_PIXELES**0.5) + 200
+        Image.new("L", (lado, lado)).save(origen)
+        with pytest.raises(ImagenInvalida, match="megapixeles"):
+            convertir_a_jpg(origen, tmp_path / "s.jpg")
+    finally:
+        Image.MAX_IMAGE_PIXELS = guard_pillow
+
+
+def test_heic_tambien_llega_a_svg(sesion: TestClient) -> None:
+    """El vectorizador tiene su propio decodificador, y no lee HEIC ni RAW.
+
+    Antes de normalizar la entrada, pedir `formato=svg` sobre un HEIC no daba un
+    error: vtracer **paniqueaba en Rust**, y `pyo3` levanta esos panics como
+    `PanicException`, que hereda de `BaseException` y no de `Exception` — asi
+    que el `except` de la skill no lo veia y salia un 500.
+    """
+    archivo = {"archivo": ("foto.heic", _heif(), "image/heic")}
+    r = sesion.post("/api/conversor", files=archivo, data={"formato": "svg"})
+    assert r.status_code == 200, r.text
+    descarga = sesion.get(f"/api/trabajos/{r.json()['id']}/archivo/svg")
+    assert b"<svg" in descarga.content[:200], descarga.content[:80]
+
+
+def test_el_tope_de_pixeles_tambien_cubre_al_vectorizador(tmp_path: Path) -> None:
+    """El camino de vtracer era el unico sin ningun guard de tamaño."""
+    origen = tmp_path / "bomba.png"
+    guard_pillow = Image.MAX_IMAGE_PIXELS
+    Image.MAX_IMAGE_PIXELS = None
+    try:
+        lado = int(MAX_PIXELES**0.5) + 200
+        Image.new("L", (lado, lado)).save(origen)
+        with pytest.raises(ImagenInvalida, match="megapixeles"):
+            a_svg(origen, tmp_path / "s.svg")
+    finally:
+        Image.MAX_IMAGE_PIXELS = guard_pillow
+
+
+def test_un_tiff_comun_lo_abre_pillow_tras_el_rechazo_de_libraw(tmp_path: Path) -> None:
+    """RF-18 — el contenedor TIFF es ambiguo y lo desempata LibRaw.
+
+    Se prueba el MECANISMO, que es lo verificable sin un RAW real: ante un TIFF
+    que no es de camara, `_abrir_raw` devuelve `None` porque LibRaw lo rechaza
+    limpio, y la apertura cae en Pillow. Al reves —Pillow primero— un `.NEF` se
+    "abriria" igual, pero devolviendo el preview JPEG embebido en vez de la
+    foto: un resultado incorrecto sin ningun error a la vista.
+    """
+    origen = tmp_path / "escaneo.tiff"
+    Image.new("RGB", (50, 30), "blue").save(origen)
+    assert _abrir_raw(origen) is None, "LibRaw no deberia aceptar un TIFF comun"
+    with Image.open(convertir_a_jpg(origen, tmp_path / "s.jpg")) as imagen:
+        assert imagen.size == (50, 30)

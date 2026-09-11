@@ -17,11 +17,16 @@
     {{ m.icono('subir', 34) }}
     <div>
       <div class="dropzone__titulo">Arrastra tus archivos aca</div>
-      <div class="dropzone__ayuda">o elegilos del disco &middot; PNG, JFIF, WEBP, JPG, SVG &middot; hasta 25 MB cada uno</div>
+      <div class="dropzone__ayuda">o elegilos del disco &middot; PNG, JPG, WEBP, SVG, GIF, BMP, TIFF, PSD, HEIC, AVIF y RAW de camara &middot; hasta 25 MB cada uno</div>
     </div>
     <button type="button" class="boton" id="elegir">{{ m.icono('archivo', 17) }} Elegir archivos</button>
+    {#
+      El `accept` es una ayuda del selector de archivos, no una validacion: el
+      formato real lo decide el servidor mirando los bytes. Por eso la lista de
+      extensiones puede ser generosa sin que eso relaje nada.
+    #}
     <input type="file" id="entrada" class="sr" multiple
-           accept=".png,.jfif,.jpg,.jpeg,.webp,.svg,image/png,image/webp,image/jpeg,image/svg+xml">
+           accept=".png,.jpg,.jpeg,.jfif,.webp,.svg,.gif,.bmp,.ico,.tga,.psd,.avif,.heic,.heif,.tif,.tiff,.arw,.cr2,.cr3,.dng,.nef,.raw,image/*">
   </div>
 </div>
 
@@ -44,7 +49,7 @@
 <div class="fila oculto" id="pie">
   <span class="lista__meta" id="pista-pie"></span>
   <a class="boton boton--secundario oculto" id="seguir-lineas" href="/lineas">
-    Seguir a correccion de lineas {{ m.icono('seguir', 17) }}
+    Seguir a Correcto {{ m.icono('seguir', 17) }}
   </a>
   <a class="boton oculto" id="seguir-cortante" href="/cortante">
     Seguir a crear cortante {{ m.icono('seguir', 17) }}

@@ -28,6 +28,77 @@
   }
 })();
 
+/* ── Estado de pantalla ──────────────────────────────────────────────────── */
+
+/*
+ * Sobrevive al cambio de seccion; NO sobrevive al refresh.
+ *
+ * La app es multi-pagina: cambiar de modulo recarga y se lleva puesto todo lo
+ * que vive en una closure. `sessionStorage` lo devuelve, y el guard de abajo
+ * implementa la otra mitad del pedido — F5 arranca de cero — mirando el tipo
+ * de navegacion, que es la unica forma de distinguir "vine de otra pantalla"
+ * de "recargue esta".
+ *
+ * Una clave POR PANTALLA y no una sola con secciones adentro: cada pantalla
+ * lee y escribe la suya, y un JSON corrupto rompe una y no las tres.
+ *
+ * ⚠ Lo que NO se puede guardar es el `File` elegido del disco: no es
+ * serializable y el navegador no deja reconstruirlo sin que el usuario lo
+ * vuelva a elegir. Lo que si vuelve es todo lo demas —parametros, modo, el
+ * trabajo ya lanzado y su resultado—, asi que al volver a la pantalla el
+ * trabajo se recupera del SERVIDOR, que es la fuente de verdad.
+ */
+
+const PREFIJO_ESTADO = 'sc3d:';
+const CLAVE_DUENIO = 'sc3d:duenio';
+
+function olvidarTodoElEstado() {
+  Object.keys(sessionStorage)
+    .filter((k) => k.startsWith(PREFIJO_ESTADO))
+    .forEach((k) => sessionStorage.removeItem(k));
+}
+
+(function limpiarEstadoSiCorresponde() {
+  try {
+    // Dos motivos para arrancar de cero, y el segundo no es cosmetico:
+    //
+    //  - F5, que es lo que se pidio.
+    //  - Cambio de usuario. Cerrar sesion es una navegacion NORMAL, no una
+    //    recarga, asi que sin este chequeo los 10 parametros del cortante y
+    //    los ids de los trabajos del usuario anterior siguen en la pestaña
+    //    para el que entre despues. En el login `data-usuario` va vacio, con
+    //    lo cual pasar por ahi ya limpia.
+    //
+    // El dueño se lee de `<html>` y no de `<body>` porque esto corre antes de
+    // DOMContentLoaded —el script va sin `defer`— y ahi `document.body` es
+    // null.
+    const duenioAhora = document.documentElement.dataset.usuario || '';
+    const nav = performance.getEntriesByType('navigation')[0];
+    if ((nav && nav.type === 'reload') || sessionStorage.getItem(CLAVE_DUENIO) !== duenioAhora) {
+      olvidarTodoElEstado();
+    }
+    sessionStorage.setItem(CLAVE_DUENIO, duenioAhora);
+  } catch (_) {
+    /* sin sessionStorage no hay nada que limpiar */
+  }
+})();
+
+function leerEstado(pantalla) {
+  try {
+    return JSON.parse(sessionStorage.getItem(PREFIJO_ESTADO + pantalla) || 'null') || {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function guardarEstado(pantalla, datos) {
+  try {
+    sessionStorage.setItem(PREFIJO_ESTADO + pantalla, JSON.stringify(datos));
+  } catch (_) {
+    /* modo privado o cuota llena: se pierde al navegar, no se rompe nada */
+  }
+}
+
 /* ── Utilidades ──────────────────────────────────────────────────────────── */
 
 const $ = (sel, raiz = document) => raiz.querySelector(sel);
@@ -38,7 +109,8 @@ const MS_POLLING_RAPIDO = 800;
 const MS_POLLING_LENTO = 2000;
 const MS_HASTA_LENTO = 30000;
 const MS_LIMITE = 150000;
-const MS_ESPERA_PREVIEW = 15000;
+
+const PISTA_LISTA = 'Los archivos ya estan en el servidor: se bajan cuando quieras.';
 
 const PISTA_SIN_PREVIEW =
   'No se pudo mostrar la vista previa. Los archivos estan completos igual.';
@@ -149,12 +221,16 @@ function avisar(el, tipo, mensaje) {
 
 /* ── Dropzone reutilizable ───────────────────────────────────────────────── */
 
-function conectarZona(zona, input, alElegir) {
+function conectarZona(zona, input, alElegir, alQuitar) {
   if (!zona || !input) return;
   const boton = $('#elegir', zona) || $('#elegir');
   if (boton) boton.addEventListener('click', () => input.click());
+  // Antes esto exigia `e.target === zona`, asi que el picker solo se abria
+  // apretando el padding: el icono, el titulo y el texto de ayuda —que son casi
+  // toda la superficie de la zona— no hacian nada. Ahora abre desde cualquier
+  // punto menos los controles propios, que ya tienen su comportamiento.
   zona.addEventListener('click', (e) => {
-    if (e.target === zona) input.click();
+    if (!e.target.closest('button, a, input, select, label')) input.click();
   });
   ['dragenter', 'dragover'].forEach((evt) =>
     zona.addEventListener(evt, (e) => {
@@ -174,6 +250,18 @@ function conectarZona(zona, input, alElegir) {
   input.addEventListener('change', () => {
     if (input.files.length) alElegir(input.files);
   });
+
+  const quitar = $('#quitar');
+  if (quitar && alQuitar) {
+    quitar.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // Limpiar `value` es lo que hace que volver a elegir EL MISMO archivo
+      // vuelva a disparar `change`. Sin esto la "x" parece rota justo en el
+      // caso mas comun: quitar y reponer el mismo archivo.
+      input.value = '';
+      alQuitar();
+    });
+  }
 }
 
 /* ── Interruptor de tema ─────────────────────────────────────────────────── */
@@ -352,35 +440,118 @@ function iniciarConversor() {
   }
 }
 
+/* ── Encadenado entre pantallas ──────────────────────────────────────────── */
+
+/**
+ * Nombre real del archivo con el que arranco un trabajo.
+ *
+ * Antes las pantallas de destino mostraban un literal —"viene del conversor"—
+ * que no decia nada util: con tres pestañas abiertas no habia forma de saber
+ * cual era cual. El servidor conserva el nombre original saneado, asi que
+ * alcanza con preguntarselo.
+ *
+ * De paso VALIDA el origen: si el id no existe o vencio, se sabe al entrar y
+ * no al apretar el boton.
+ */
+async function nombreDeTrabajo(id, siNoHay) {
+  try {
+    const t = await pedirJson(`/api/trabajos/${encodeURIComponent(id)}`);
+    return t.nombre_base || siNoHay;
+  } catch (_) {
+    return null;
+  }
+}
+
 /* ── F2: correccion de lineas ────────────────────────────────────────────── */
 
 function iniciarLineas() {
   const estado = $('#estado');
   const procesar = $('#procesar');
   const swMacizos = $('#switch-macizos');
+
+  const recordado = leerEstado('lineas');
   let archivo = null;
-  const origen = new URLSearchParams(location.search).get('origen');
+  let origen = new URLSearchParams(location.search).get('origen') || recordado.origen || null;
+  let trabajoId = recordado.trabajo || null;
+
+  const recordar = () =>
+    guardarEstado('lineas', {
+      origen,
+      trabajo: trabajoId,
+      macizos: swMacizos.getAttribute('aria-checked'),
+    });
+
+  if (recordado.macizos) swMacizos.setAttribute('aria-checked', recordado.macizos);
 
   $('#boton-macizos').addEventListener('click', () => {
     const activo = swMacizos.getAttribute('aria-checked') === 'true';
     swMacizos.setAttribute('aria-checked', String(!activo));
+    recordar();
   });
 
-  conectarZona($('#zona'), $('#entrada'), (archivos) => {
-    archivo = archivos[0];
-    texto($('#nombre-archivo'), archivo.name);
+  function ponerChip(nombre) {
+    texto($('#nombre-archivo'), nombre);
     mostrar($('#chip-archivo'), true);
-    $('#img-original').src = URL.createObjectURL(archivo);
-    mostrar($('#panel-comparador'), true);
-    procesar.disabled = false;
-  });
+  }
 
-  if (origen) {
-    $('#img-original').src = urlArchivo(origen, 'jpg');
-    texto($('#nombre-archivo'), 'viene del conversor');
-    mostrar($('#chip-archivo'), true);
+  conectarZona(
+    $('#zona'),
+    $('#entrada'),
+    (archivos) => {
+      archivo = archivos[0];
+      origen = null; // un archivo del disco pisa al que venia encadenado
+      ponerChip(archivo.name);
+      $('#img-original').src = URL.createObjectURL(archivo);
+      mostrar($('#panel-comparador'), true);
+      procesar.disabled = false;
+      recordar();
+    },
+    () => {
+      archivo = null;
+      origen = null;
+      mostrar($('#chip-archivo'), false);
+      $('#img-original').removeAttribute('src');
+      mostrar($('#panel-comparador'), false);
+      procesar.disabled = true;
+      recordar();
+    }
+  );
+
+  if (origen) restaurarOrigen(origen);
+  if (trabajoId) retomarTrabajo(trabajoId);
+
+  async function restaurarOrigen(id) {
+    const nombre = await nombreDeTrabajo(id, 'viene del conversor');
+    if (nombre === null) {
+      // El origen no existe o vencio: mejor saberlo ahora que al enviar.
+      origen = null;
+      recordar();
+      avisar(estado, 'alerta', 'El archivo de la pantalla anterior ya no esta disponible.');
+      return;
+    }
+    $('#img-original').src = urlArchivo(id, 'jpg');
+    ponerChip(nombre);
     mostrar($('#panel-comparador'), true);
     procesar.disabled = false;
+  }
+
+  /** Vuelve a enganchar un trabajo que quedo corriendo al cambiar de seccion. */
+  async function retomarTrabajo(id) {
+    try {
+      const t = await pedirJson(`/api/trabajos/${encodeURIComponent(id)}`);
+      if (t.estado === 'error') return;
+      if (t.estado === 'listo') {
+        pintarResultado(t);
+        return;
+      }
+      avisar(estado, 'info', `${t.etapa}…`);
+      pintarResultado(
+        siFalloTirar(await sondear(id, (x) => avisar(estado, 'info', `${x.etapa}…`)))
+      );
+    } catch (_) {
+      trabajoId = null; // vencio por TTL: se olvida sin molestar al usuario
+      recordar();
+    }
   }
 
   procesar.addEventListener('click', async () => {
@@ -393,6 +564,8 @@ function iniciarLineas() {
     try {
       avisar(estado, 'info', 'Procesando la imagen…');
       const lanzado = await enviar('/api/lineas', datos);
+      trabajoId = lanzado.id;
+      recordar();
       const trabajo = siFalloTirar(
         await sondear(lanzado.id, (t) => avisar(estado, 'info', `${t.etapa}…`))
       );
@@ -438,12 +611,36 @@ function iniciarCortante() {
   const generar = $('#generar');
   const pistaGenerar = $('#pista-generar');
   const botonesModo = $$('.segmentado button[data-modo]');
+
+  const recordado = leerEstado('cortante');
   let archivo = null;
-  let modo = 'cortante+marcador';
-  let esperaPreview = null;
+  let modo = recordado.modo || 'cortante+marcador';
   let generando = false;
   let firmaGenerada = null;
-  const origen = new URLSearchParams(location.search).get('origen');
+  let origen = new URLSearchParams(location.search).get('origen') || recordado.origen || null;
+  let trabajoId = recordado.trabajo || null;
+
+  const entradas = () => $$('.parametros .campo[data-campo] input');
+
+  const recordar = () =>
+    guardarEstado('cortante', {
+      origen,
+      trabajo: trabajoId,
+      modo,
+      campos: Object.fromEntries(entradas().map((i) => [i.name, i.value])),
+    });
+
+  // Los 10 parametros y el modo vuelven tal como quedaron. El ARCHIVO no puede
+  // volver —un `File` no es serializable y el navegador no deja reconstruirlo—,
+  // asi que lo que se recupera es el trabajo que ya esta en el servidor. Restaurar antes de enganchar los listeners: asignar `.value`
+  // desde el codigo no dispara `input`, y no hay que guardar lo que se acaba
+  // de leer.
+  if (recordado.campos) {
+    entradas().forEach((i) => {
+      if (recordado.campos[i.name] !== undefined) i.value = recordado.campos[i.name];
+    });
+  }
+  botonesModo.forEach((o) => o.setAttribute('aria-pressed', String(o.dataset.modo === modo)));
 
   botonesModo.forEach((b) =>
     b.addEventListener('click', () => {
@@ -451,18 +648,28 @@ function iniciarCortante() {
       botonesModo.forEach((o) => o.setAttribute('aria-pressed', String(o === b)));
       aplicarModo();
       repasarGenerar();
+      recordar();
     })
   );
   aplicarModo();
 
   /**
-   * En modo `cortante` el motor ignora los parametros del marcador, asi que
-   * la pantalla los saca de encima. No se envian tampoco: un valor que no
-   * cambia nada no puede llegar a rechazar el pedido por estar fuera de rango.
+   * En modo `cortante` el motor ignora los parametros del marcador.
+   *
+   * La pantalla los APAGA en vez de esconderlos: tampoco se envian —un valor
+   * que no cambia nada no puede llegar a rechazar el pedido por estar fuera de
+   * rango—, pero que sigan a la vista es lo que muestra que el modo hace algo.
+   * Escondidos, cambiar de modo era un panel que desaparecia sin explicacion.
    */
   function aplicarModo() {
     const conMarcador = modo === 'cortante+marcador';
-    $$('.campo[data-solo-marcador]').forEach((c) => mostrar(c, conMarcador));
+    $('#panel-marcador').classList.toggle('panel--inhabilitado', !conMarcador);
+    $$('#panel-marcador input').forEach((i) => {
+      i.disabled = !conMarcador;
+    });
+    const chip = $('#chip-marcador');
+    chip.className = `chip ${conMarcador ? 'chip--ok' : 'chip--proceso'}`;
+    texto(chip, conMarcador ? 'incluido' : 'sin marcador');
     mostrar($('#nota-modo'), !conMarcador);
   }
 
@@ -483,7 +690,6 @@ function iniciarCortante() {
   const firma = () =>
     JSON.stringify([
       modo,
-      $('#con-stl').checked,
       archivo ? [archivo.name, archivo.size, archivo.lastModified] : origen,
       camposActivos().map((c) => $('input', c).value),
     ]);
@@ -495,9 +701,12 @@ function iniciarCortante() {
     mostrar(pistaGenerar, alDia && !generando);
   }
 
-  $$('.parametros input').forEach((i) => i.addEventListener('input', repasarGenerar));
-  $('#con-stl').addEventListener('change', repasarGenerar);
-
+  $$('.parametros input').forEach((i) =>
+    i.addEventListener('input', () => {
+      repasarGenerar();
+      recordar();
+    })
+  );
   $('#restaurar').addEventListener('click', () => {
     $$('.parametros input').forEach((i) => {
       i.value = i.dataset.defecto;
@@ -505,19 +714,63 @@ function iniciarCortante() {
     limpiarErroresDeCampo();
     // Asignar `.value` desde el codigo no dispara `input`: hay que repasar.
     repasarGenerar();
+    recordar();
   });
 
-  conectarZona($('#zona'), $('#entrada'), (archivos) => {
-    archivo = archivos[0];
-    texto($('#nombre-archivo'), archivo.name);
-    mostrar($('#chip-archivo'), true);
-    repasarGenerar();
-  });
+  conectarZona(
+    $('#zona'),
+    $('#entrada'),
+    (archivos) => {
+      archivo = archivos[0];
+      origen = null; // un archivo del disco pisa al que venia encadenado
+      texto($('#nombre-archivo'), archivo.name);
+      mostrar($('#chip-archivo'), true);
+      repasarGenerar();
+      recordar();
+    },
+    () => {
+      archivo = null;
+      origen = null;
+      firmaGenerada = null; // sin archivo no hay nada "al dia" que respetar
+      mostrar($('#chip-archivo'), false);
+      repasarGenerar();
+      recordar();
+    }
+  );
 
-  if (origen) {
-    texto($('#nombre-archivo'), 'viene de la pantalla anterior');
+  if (origen) restaurarOrigen(origen);
+  if (trabajoId) retomarTrabajo(trabajoId);
+
+  async function restaurarOrigen(id) {
+    const nombre = await nombreDeTrabajo(id, 'viene de la pantalla anterior');
+    if (nombre === null) {
+      origen = null;
+      repasarGenerar();
+      recordar();
+      avisar(estado, 'alerta', 'El archivo de la pantalla anterior ya no esta disponible.');
+      return;
+    }
+    texto($('#nombre-archivo'), nombre);
     mostrar($('#chip-archivo'), true);
     repasarGenerar();
+  }
+
+  /** Vuelve a enganchar un trabajo que quedo corriendo al cambiar de seccion. */
+  async function retomarTrabajo(id) {
+    try {
+      const t = await pedirJson(`/api/trabajos/${encodeURIComponent(id)}`);
+      if (t.estado === 'error') return;
+      const listo =
+        t.estado === 'listo'
+          ? t
+          : siFalloTirar(await sondear(id, (x) => avisar(estado, 'info', `${x.etapa}…`)));
+      pintarResultado(listo);
+      firmaGenerada = firma();
+      repasarGenerar();
+    } catch (_) {
+      trabajoId = null; // vencio por TTL: se olvida sin molestar al usuario
+      recordar();
+    }
   }
 
   iniciarPaleta();
@@ -530,7 +783,6 @@ function iniciarCortante() {
     if (archivo) datos.append('archivo', archivo, archivo.name);
     else if (origen) datos.append('origen', origen);
     datos.append('modo', modo);
-    datos.append('con_stl', $('#con-stl').checked ? 'true' : 'false');
     camposActivos().forEach((c) => {
       const i = $('input', c);
       datos.append(i.name, i.value);
@@ -543,6 +795,8 @@ function iniciarCortante() {
     try {
       avisar(estado, 'info', 'Enviando…');
       const lanzado = await enviar('/api/cortante', datos);
+      trabajoId = lanzado.id;
+      recordar();
       const trabajo = siFalloTirar(
         await sondear(lanzado.id, (t) => avisar(estado, 'info', `${t.etapa}…`))
       );
@@ -579,13 +833,14 @@ function iniciarCortante() {
   }
 
   /**
-   * Primero la vista previa, despues las descargas.
+   * El trabajo termino: descargas habilitadas y reporte a la vista.
    *
-   * El orden es del producto, no una limitacion: lo que se baja es la misma
-   * geometria que se esta viendo girar, y verla antes es lo que convierte al
-   * boton de descarga en una decision y no en una apuesta. Los enlaces se
-   * dibujan enseguida —para que se sepa que salio— pero **sin `href`**, que
-   * es la unica forma de que un `<a download>` sea de verdad inerte.
+   * Los enlaces se habilitan aca y no cuando la vista previa termina de
+   * pintar. Antes esperaban al visor —la idea era que se viera la pieza antes
+   * de bajarla—, pero el archivo ya esta completo en el servidor y el visor
+   * puede fallar por cosas que no dicen nada de el: un navegador sin WebGL, un
+   * GLB que no carga. Lo unico que sigue dependiendo del preview es la PISTA
+   * de abajo, que es texto y no una traba.
    */
   function pintarResultado(trabajo) {
     mostrar(estado, false);
@@ -593,46 +848,27 @@ function iniciarCortante() {
 
     $$('#botones-descarga a[data-clave]').forEach((a) => {
       const disponible = trabajo.archivos.includes(a.dataset.clave);
-      if (disponible) {
-        a.dataset.destino = urlArchivo(trabajo.id, a.dataset.clave);
-        a.removeAttribute('href');
-        a.setAttribute('aria-disabled', 'true');
-      }
+      // El `href` se quita cuando el archivo NO esta: si la generacion anterior
+      // dejo un marcador y esta no, el enlace viejo apuntaria a otro trabajo.
+      if (disponible) a.href = urlArchivo(trabajo.id, a.dataset.clave);
+      else a.removeAttribute('href');
       mostrar(a, disponible);
     });
-    texto($('#pista-descargas'), 'Se habilitan al terminar de cargar la vista previa.');
+    texto($('#pista-descargas'), PISTA_LISTA);
     mostrar($('#panel-descargas'), true);
 
     if (trabajo.archivos.includes('glb')) {
       document.dispatchEvent(
         new CustomEvent('cortante:listo', { detail: { url: urlArchivo(trabajo.id, 'glb') } })
       );
-      // Red de seguridad: si el modulo del visor ni siquiera pudo cargarse,
-      // nadie va a emitir `cortante:preview` y las descargas quedarian
-      // esperando para siempre un archivo que ya esta en disco.
-      esperaPreview = setTimeout(() => habilitarDescargas(PISTA_SIN_PREVIEW), MS_ESPERA_PREVIEW);
-    } else {
-      habilitarDescargas('Este trabajo no dejo vista previa, pero los archivos estan completos.');
     }
     pintarReporte(trabajo.reporte);
   }
 
-  function habilitarDescargas(pista) {
-    clearTimeout(esperaPreview);
-    $$('#botones-descarga a[data-clave]').forEach((a) => {
-      if (!a.dataset.destino) return;
-      a.href = a.dataset.destino;
-      a.removeAttribute('aria-disabled');
-    });
-    texto($('#pista-descargas'), pista);
-  }
-
-  // Si el visor no puede pintar —sin WebGL, o el GLB no carga— las descargas
-  // se habilitan igual: el archivo esta bien, lo que fallo es la vista.
+  // El visor solo cambia el texto de la pista. Que no haya podido pintar no
+  // deja a nadie sin poder bajar un archivo que esta perfecto.
   document.addEventListener('cortante:preview', (e) =>
-    habilitarDescargas(
-      e.detail.ok ? PISTA_CON_PREVIEW : PISTA_SIN_PREVIEW
-    )
+    texto($('#pista-descargas'), e.detail.ok ? PISTA_CON_PREVIEW : PISTA_SIN_PREVIEW)
   );
 
   /**

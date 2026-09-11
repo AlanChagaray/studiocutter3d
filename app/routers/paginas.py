@@ -7,6 +7,8 @@ nueva que se olvide de declararlo queda abierta, y eso se ve leyendo la firma
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
@@ -16,8 +18,43 @@ from .cortante import CAMPOS, COLORES, LIMITE_MAX_MM
 router = APIRouter(tags=["paginas"])
 
 
+@dataclass(frozen=True)
+class Modulo:
+    """Una entrada del menu de modulos."""
+
+    clave: str
+    """Coincide con la variable `pagina` de la plantilla y con el nombre del
+    icono en `macros.html`. Un solo valor para las tres cosas: si se separaran,
+    habria tres lugares donde equivocarse."""
+
+    ruta: str
+    etiqueta: str
+
+
+MODULOS: tuple[Modulo, ...] = (
+    Modulo("conversor", "/conversor", "Convertir"),
+    Modulo("lineas", "/lineas", "Correcto"),
+    Modulo("cortante", "/cortante", "Cortante"),
+)
+"""El menu, escrito UNA sola vez.
+
+Vive aca y no en la plantilla por lo mismo que `CAMPOS` y `COLORES`: hasta el
+ciclo anterior la lista estaba duplicada en `base.html` —una vez para el sidebar
+y otra para la barra inferior de mobile— con etiquetas distintas en cada copia
+("Convertidor" contra "Convertir"). Agregar un modulo eran dos ediciones y nadie
+lo recordaba. Un test puede exigir esta lista sin leer HTML.
+
+La `clave` sigue siendo `lineas` aunque el modulo se llame **Correcto**: es la
+llave interna —el icono en `macros.html`, la variable `pagina` del template, la
+ruta y el prefijo `/api/lineas`—, y renombrarla no cambiaria nada de lo que el
+usuario ve. El nombre visible es la `etiqueta`, y vive en esta misma linea.
+"""
+
+
 def _pantalla(request: Request, plantilla: str, usuario: str, **extra: object) -> Response:
-    return plantillas.TemplateResponse(request, plantilla, {"usuario": usuario, **extra})
+    return plantillas.TemplateResponse(
+        request, plantilla, {"usuario": usuario, "modulos": MODULOS, **extra}
+    )
 
 
 @router.get("/")

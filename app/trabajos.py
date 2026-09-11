@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import multiprocessing as mp
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -33,6 +34,24 @@ from .config import Ajustes
 from .errores import ErrorApi
 
 log = logging.getLogger("studiocutter")
+
+_NOMBRE_PLANO = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,59}\Z")
+"""Un nombre de archivo y nada mas, con la MISMA whitelist que el resto de la app.
+
+La version obvia —`^[^\\\\/]+$`, "cualquier cosa sin separadores"— tiene tres
+agujeros, los tres verificados y los tres relevantes en Windows, que es donde
+esto corre:
+
+- `$` matchea **antes de un salto de linea final**, asi que `"..\\n"` y `".\\n"`
+  pasaban y ademas esquivaban el chequeo `texto in (".", "..")`.
+- Los espacios finales pasaban, y la Win32 API los descarta: `".. "` resuelve al
+  directorio padre.
+- Los dos puntos pasaban: `"x:y"` es un flujo alternativo de datos (ADS) y
+  `"C:evil"` una ruta relativa a unidad.
+
+`\\A`/`\\Z` con `fullmatch` y una whitelist positiva cierran los tres de una, y de
+paso hacen innecesario el caso especial de `"."` y `".."`.
+"""
 
 INTERVALO_VIGILANCIA_S = 0.4
 """Cada cuanto el vigilante mira `estado.json`. Suficiente para que la barra
@@ -224,7 +243,16 @@ def _claves_conocidas(crudo: object) -> dict[str, str]:
         except ValueError:
             log.warning("el hijo declaro una clave de archivo desconocida: %r", clave)
             continue
-        validas[str(clave)] = str(nombre)
+        texto = str(nombre)
+        # El VALOR tambien se valida, no solo la clave. Hoy nadie lo usa para
+        # armar una ruta —`ruta_de` reconstruye desde `NOMBRE_DE`— asi que un
+        # `../../credenciales.json` guardado aca seria inofensivo. Se filtra
+        # igual: el dia que alguien decida consumir este valor, la defensa ya
+        # va a estar puesta en la frontera y no va a depender de que se acuerde.
+        if not _NOMBRE_PLANO.fullmatch(texto):
+            log.warning("el hijo declaro un nombre de archivo no plano: %r", texto)
+            continue
+        validas[str(clave)] = texto
     return validas
 
 

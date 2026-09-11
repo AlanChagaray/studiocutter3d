@@ -50,6 +50,14 @@ class Trabajo:
     id: str
     propietario: str
     tipo: TipoTrabajo
+    nombre_base: str | None = None
+    """Stem saneado del archivo con el que arranco el trabajo, o `None`.
+
+    Solo decide como se VE la descarga (`nombre_de_descarga`). Nunca una ruta:
+    los archivos en disco los nombran `EXTENSION` y `NOMBRE_DE`. Vive aca —y no
+    en disco— porque la descarga ya exige que el `Trabajo` exista, asi que si se
+    perdio el almacen la descarga da 404 igual y el nombre no hace falta."""
+
     estado: EstadoTrabajo = EstadoTrabajo.EN_COLA
     creado_en: datetime = field(default_factory=lambda: datetime.now(UTC))
     actualizado_en: datetime = field(default_factory=lambda: datetime.now(UTC))
@@ -64,6 +72,7 @@ class Trabajo:
         return {
             "id": self.id,
             "tipo": self.tipo.value,
+            "nombre_base": self.nombre_base,
             "estado": self.estado.value,
             "etapa": self.etapa,
             "creado_en": self.creado_en.isoformat(),

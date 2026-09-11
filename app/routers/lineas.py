@@ -46,7 +46,15 @@ def corregir(
         usuario=usuario,
         destino_dir=destino,
         permitidos=FORMATOS_LINEAS,
+        # El nombre del cliente entra SOLO para que la descarga se llame
+        # como el archivo original. `sanear_nombre_base` lo reduce a
+        # [A-Za-z0-9._-] y nunca toca una ruta: el archivo en disco sigue
+        # siendo `entrada.<ext>`.
+        nombre_cliente=archivo.filename if archivo is not None else None,
     )
+    # Si la entrada vino encadenada, `resolver_entrada` ya heredo el nombre del
+    # trabajo anterior; si vino por upload, sale del que acaba de subir.
+    almacen.actualizar(trabajo.id, nombre_base=subida.nombre_base)
 
     lanzar(
         almacen=almacen,

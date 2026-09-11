@@ -16,6 +16,7 @@ cierra el ciclo de punta a punta.
 from __future__ import annotations
 
 import os
+import re
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -138,7 +139,85 @@ def test_ciclo_completo_con_polling_y_descarga(
     descarga = sesion.get(f"/api/trabajos/{trabajo.id}/archivo/png")
     assert descarga.status_code == 200
     assert descarga.content == b"\x89PNG\r\n\x1a\ncontenido de prueba"
+    # CA-07: este trabajo lo arma una tarea falsa que nunca vio un nombre de
+    # cliente, asi que cae al id. Es el fallback, y tiene que seguir existiendo.
     assert "studiocutter-" in descarga.headers["content-disposition"]
+
+
+# ── El nombre del archivo sobrevive el pipeline ─────────────────────────────
+
+
+def test_la_descarga_conserva_el_nombre_original(sesion: TestClient, png_minimo: bytes) -> None:
+    """CA-05 — `buddy.png` baja como `buddy.jpg`, no como `studiocutter-a75088.jpg`."""
+    r = sesion.post("/api/conversor", files={"archivo": ("buddy.png", png_minimo, "image/png")})
+    assert r.status_code == 200
+    assert r.json()["nombre_base"] == "buddy"
+
+    descarga = sesion.get(f"/api/trabajos/{r.json()['id']}/archivo/jpg")
+    assert 'filename="buddy.jpg"' in descarga.headers["content-disposition"]
+
+
+@pytest.mark.parametrize(
+    "hostil",
+    [
+        "../../../evil.png",
+        "..\\..\\evil.png",
+        "C:\\fotos\\buddy.png",
+        "a" * 400 + ".png",
+        'bu"ddy.png',
+        "mi dibujo.png",
+        "...",
+    ],
+)
+def test_el_nombre_de_descarga_sale_saneado(
+    sesion: TestClient, ajustes: Ajustes, png_minimo: bytes, hostil: str
+) -> None:
+    """CA-06 / RNF-02 / RNF-03 — el nombre se ve, pero no manda.
+
+    Dos afirmaciones, y la segunda es la que sostiene todo el diseño: el nombre
+    del cliente llega al header y **el archivo en disco sigue siendo
+    `entrada.png`**. Mientras esas dos cosas valgan, conservar el nombre no
+    reabre el path traversal.
+    """
+    r = sesion.post("/api/conversor", files={"archivo": (hostil, png_minimo, "image/png")})
+    assert r.status_code == 200
+    trabajo = r.json()
+
+    escritos = sorted(p.name for p in (ajustes.dir_trabajo / trabajo["id"]).iterdir())
+    assert escritos == ["entrada.png", "salida.jpg"], escritos
+
+    base = trabajo["nombre_base"]
+    if base is not None:
+        assert len(base) <= 60
+        assert re.fullmatch(r"[A-Za-z0-9._-]+", base), base
+
+    disposicion = sesion.get(f"/api/trabajos/{trabajo['id']}/archivo/jpg").headers[
+        "content-disposition"
+    ]
+    for prohibido in ("/", "\\", "\r", "\n"):
+        assert prohibido not in disposicion, disposicion
+
+
+def test_el_nombre_se_hereda_al_encadenar(
+    sesion: TestClient, almacen: AlmacenEnMemoria, png_minimo: bytes
+) -> None:
+    """CA-08 — `buddy.png` convertido y encadenado sigue siendo `buddy`.
+
+    Es lo que hace que tres pantallas despues el `.3mf` se llame `buddy.3mf`.
+    El trabajo encadenado lanza el motor de verdad, asi que se cancela apenas
+    se comprueba lo unico que importa aca, que es el nombre.
+    """
+    primero = sesion.post(
+        "/api/conversor", files={"archivo": ("buddy.png", png_minimo, "image/png")}
+    )
+    assert primero.json()["nombre_base"] == "buddy"
+
+    segundo = sesion.post("/api/lineas", data={"origen": primero.json()["id"]})
+    assert segundo.status_code == 200, segundo.text
+    try:
+        assert segundo.json()["nombre_base"] == "buddy"
+    finally:
+        cancelar(almacen, segundo.json()["id"])
 
 
 def test_un_trabajo_fallido_llega_como_error(
@@ -288,7 +367,7 @@ def test_en_modo_cortante_los_parametros_del_marcador_son_opcionales(
     r = sesion.post(
         "/api/cortante",
         files={"archivo": ("estrella.svg", estrella, "image/svg+xml")},
-        data={"modo": "cortante", "lado_mayor_mm": "70", "con_stl": "false"},
+        data={"modo": "cortante", "lado_mayor_mm": "70"},
     )
     assert r.status_code == 200, r.text
     cancelar_trabajo(sesion, r.json()["id"])
@@ -306,6 +385,13 @@ def test_un_error_del_motor_no_devuelve_rutas_del_servidor(
     final = sondear_hasta_el_final(sesion, r.json()["id"])
     assert final["estado"] == "error"
 
+    # Se inspecciona SOLO lo que arma el servidor. `nombre_base` queda afuera a
+    # proposito: es texto que eligio el cliente, y desde que viaja en el JSON
+    # dos de los centinelas son alcanzables con un nombre de archivo legitimo
+    # —`Temp.png` dispara "Temp" y `proyecto.venv.png` dispara ".venv"—. Un
+    # fallo asi no seria una fuga del servidor, que es lo unico que este test
+    # existe para detectar.
+    del final["nombre_base"]
     cuerpo = str(final)
     for filtracion in ("C:\\", "/Users/", ".venv", str(ajustes.dir_trabajo), "Temp"):
         assert filtracion not in cuerpo, f"la respuesta filtro {filtracion!r}: {cuerpo}"
@@ -316,12 +402,16 @@ def test_un_error_del_motor_no_devuelve_rutas_del_servidor(
 
 @pytest.mark.lento
 def test_cortante_real_de_punta_a_punta(sesion: TestClient, ajustes: Ajustes) -> None:
-    """El unico test que corre el motor: POST, polling, y los archivos abren."""
+    """El unico test que corre el motor: POST, polling, y los archivos abren.
+
+    El pedido **no pide los STL** y los dos tienen que estar igual: dejaron de
+    ser una opcion de la pantalla y salen siempre.
+    """
     svg = (FIXTURES / "estrella.svg").read_bytes()
     r = sesion.post(
         "/api/cortante",
         files={"archivo": ("estrella.svg", svg, "image/svg+xml")},
-        data={"modo": "cortante+marcador", "con_stl": "true"},
+        data={"modo": "cortante+marcador"},
     )
     assert r.status_code == 200
 

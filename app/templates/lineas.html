@@ -1,12 +1,14 @@
 {% extends "base.html" %}
 {% import "macros.html" as m %}
-{% block titulo %}Correccion de lineas{% endblock %}
-{% block titulo_pagina %}Correccion de lineas{% endblock %}
+{% block titulo %}Correcto{% endblock %}
+{% block titulo_pagina %}Correcto{% endblock %}
 {% block bajada %}Blanco y negro puro, sin grises ni sombreados. Entra un JPG, sale el PNG corregido y su SVG.{% endblock %}
 
 {% block encabezado_extra %}
 <div class="chip-archivo oculto" id="chip-archivo">
   {{ m.icono('archivo', 15) }}<span id="nombre-archivo"></span>
+  <button type="button" class="chip-archivo__quitar" id="quitar"
+          title="Quitar el archivo" aria-label="Quitar el archivo">&times;</button>
 </div>
 {% endblock %}
 

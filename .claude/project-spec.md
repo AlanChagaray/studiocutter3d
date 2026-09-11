@@ -7,10 +7,12 @@
 **Última actualización:** 2026-09-11
 **Versión de plantilla:** 3
 
-> Actualizado al cerrar el **ciclo 3** (colisión continua entre extremos del cortante). El motor
-> sumó su décima dimensión, `distancia_colision_mm`, y una regla de geometría nueva: el cortador
-> puentea los bolsillos ciegos en vez de dejarlos. **192 tests** y los **7 gates** en verde.
-> Del ciclo 2 (capa web `app/`) viene el grueso de la arquitectura: 39 archivos y la capa completa.
+> Actualizado al cerrar el **ciclo 4** (6 ajustes de UI/UX de la capa web). El conversor pasó de 4 a
+> **13 formatos** de entrada —con dos decodificadores nativos nuevos—, la navegación pasó de sidebar
+> lateral a **barra superior única**, y el nombre del archivo del usuario ahora sobrevive todo el
+> pipeline. **228 tests** y los **7 gates** en verde. ⚠ El motor (`cutter3d/{geometry,solids,verify,
+> export,params,svg_io,measure}.py`) **no se tocó**: fue restricción dura del ciclo y está verificado.
+> Del ciclo 3 viene `distancia_colision_mm` y el puenteo de bolsillos ciegos; del ciclo 2, la capa web.
 
 ## Señales de frescura
 - **Manifests:** `pyproject.toml` (existe en la raíz) — `version = "0.2.0"`
@@ -18,7 +20,7 @@
 - **Dependencias clave (con versión instalada):**
   - *Motor:* numpy 2.5.3 · scipy 1.18.1 · shapely 2.1.2 · trimesh 5.1.0 · manifold3d 3.5.3 ·
     mapbox-earcut 2.1.0 · scikit-image 0.26.0 · pillow 12.3.0 · svgelements 1.9.6 ·
-    vtracer 0.6.15 · resvg-py 0.5.0 · lxml 6.1.3
+    vtracer 0.6.15 · resvg-py 0.5.0 · lxml 6.1.3 · **pillow-heif 1.7.0** · **rawpy 0.27.1**
   - *Web (extra `web`):* fastapi 0.141.1 · starlette 1.6.0 · uvicorn 0.52.4 · jinja2 3.1.6 ·
     python-multipart 0.0.32 · itsdangerous 2.2.0 · argon2-cffi 25.1.0
 - **Front vendorizado (no hay gestor de paquetes JS):** three.js **0.186.0** en
@@ -26,8 +28,8 @@
   `app/static/vendor/fuentes/` (4 archivos, 72 KB, subset latino)
 - **Lockfiles presentes:** ninguno (pip + venv, sin lock)
 - **Configs de gates presentes:** ninguna suelta — todas dentro de `pyproject.toml`
-  (`[tool.ruff]`, `[tool.ruff.lint]`, `[tool.mypy]`, `[tool.pytest.ini_options]`, `[tool.bandit]`).
-  `gitleaks` corre con su configuración por defecto.
+  (`[tool.ruff]`, `[tool.ruff.lint]`, `[tool.mypy]`, **dos bloques `[[tool.mypy.overrides]]`**,
+  `[tool.pytest.ini_options]`, `[tool.bandit]`). `gitleaks` corre con su configuración por defecto.
 
 ## Stack
 - **Lenguaje:** Python 3.13.7 (invocado como `py -3.13`; ⚠ `python` no está en PATH en esta máquina)
@@ -44,7 +46,11 @@
   - CLI: `python -m cutter3d` (`cutter3d/cli.py`), 4 subcomandos
   - API de librería: `cutter3d.generar()`
 - **Las tres funcionalidades, y cómo se ejecuta cada una:**
-  - **F1 Convertidor** (png/jfif/webp/jpg/svg → **jpg o svg**, destino elegido por archivo):
+  - **F1 Convertidor** (**13 formatos** → **jpg o svg**, destino elegido por archivo):
+    png · jpeg/jfif · webp · svg · gif · bmp · ico · tga · psd · avif · heif (HEIC/HEIF) ·
+    **tiff** (deliberadamente ambiguo: cubre TIF/TIFF comunes **y** los RAW ARW/CR2/NEF/DNG, que son
+    TIFF por dentro) · cr3. Quedan **fuera con mensaje que los nombra**: EPS (necesita Ghostscript
+    instalado en el sistema, y no lo está), DICOM, EXR y XCF.
     **síncrono**, dentro del pedido, un archivo por request. Medido: 14-45 ms a JPG y 14-190 ms a
     SVG (400 a 2000 px) — órdenes de magnitud menos que el arranque en frío del proceso hijo, que
     es de 1,09 s.
@@ -115,7 +121,24 @@
    intuición dice lo contrario —"radio grande = offset auto-intersecante = noding caro"— y por eso
    conviene que quede escrito: **si algún día se sube `LIMITE_MAX_MM`, hay que volver a medirlo**, no
    es una propiedad garantizada para cualquier arte.
-8. **XML no admite `--` adentro de un comentario.** Escribir un guion doble en el comentario de un
+8-bis. **Con tres decodificadores, el ORDEN en que se prueban decide si el resultado es correcto.**
+   Ante un contenedor TIFF o ISO-BMFF va **LibRaw primero**, nunca Pillow. El motivo no es de
+   performance: Pillow **abre** un `.NEF` sin fallar, pero devuelve el **preview JPEG embebido** en
+   vez de la foto del sensor. O sea, "probar Pillow y si falla usar LibRaw" produce una salida
+   silenciosamente incorrecta, sin ningún error a la vista. LibRaw, al revés, rechaza lo que no es
+   RAW con `LibRawFileUnsupportedError` limpio, y su `imread()` solo parsea metadata (barato): es el
+   único discriminador confiable de los dos. Vive en `cutter3d/raster.py:_abrir_como_pil`.
+
+8-ter. **vtracer no falla ante un formato que no lee: PANIQUEA en Rust, y `except Exception` no lo ve.**
+   El crate `image` no soporta HEIC, AVIF ni RAW. Ante uno de esos, `pyo3` levanta un
+   `pyo3_runtime.PanicException`, **que hereda de `BaseException` y no de `Exception`** — así que
+   el `except Exception` que envolvía la llamada lo dejaba pasar hasta el borde web y salía un 500.
+   Por eso `vector.a_svg` ahora normaliza la entrada a PNG con `raster.preparar_para_vectorizar`
+   antes de llamar a vtracer, y captura `BaseException` re-lanzando `KeyboardInterrupt`/`SystemExit`.
+   Efecto colateral valioso: **vtracer era el único camino de decodificación sin tope de píxeles**, y
+   normalizar lo puso detrás del mismo guard que los otros dos.
+
+9. **XML no admite `--` adentro de un comentario.** Escribir un guion doble en el comentario de un
    fixture `.svg` lo vuelve inválido y el parseo se cae con un error que no menciona el comentario.
    Pasó al documentar `dos_lobulos.svg`: dos tests en rojo hasta encontrarlo.
 
@@ -133,6 +156,8 @@
 | vtracer | 0.6.15 | Vectorización jpg→svg (reemplaza a potrace, sin wheel de Windows) |
 | resvg-py | 0.5.0 | Rasterizado SVG→PNG para el conversor a JPG (Rust, sin Cairo del sistema) |
 | pillow | 12.3.0 | F1/F2 — conversión y binarización de imagen; rasterizado de polígonos |
+| **pillow-heif** | **1.7.0** | **HEIC/HEIF (y AVIF) en Pillow — embebe libheif 1.23.3. Se registra al importar `raster`** |
+| **rawpy** | **0.27.1** | **RAW de cámara (ARW, CR2, CR3, DNG, NEF) — embebe LibRaw 0.22.1** |
 | lxml | 6.1.3 | Lectura del XML interno del `.3mf` |
 | **fastapi** | **0.141.1** | **Routers, dependencias, validación de formularios** |
 | **starlette** | **1.6.0** | **`SessionMiddleware`, `StaticFiles`, `TestClient`** (llega con fastapi) |
@@ -165,7 +190,7 @@ Dev: pytest 9.1.1 · ruff 0.16.6 · mypy 2.3.1 · bandit 1.9.4 · **httpx 0.28.1
 | Setup | `py -3.13 -m venv .venv` y `.venv/Scripts/python -m pip install -e ".[dev,web]"` |
 | Build | no aplica (sin build step, ni en el back ni en el front) |
 | **Dev / run (web)** | `.venv/Scripts/python -m uvicorn app.main:app --reload --port 8000` → http://127.0.0.1:8000 |
-| Test | `.venv/Scripts/python -m pytest` → **192 passed** (~66 s) — ⚠ **sin `-q`**, ver nota |
+| Test | `.venv/Scripts/python -m pytest` → **228 passed** (~71 s) — ⚠ **sin `-q`**, ver nota |
 | Test rápido | `.venv/Scripts/python -m pytest -m "not lento"` (saltea el que corre el motor real) |
 | Lint | `.venv/Scripts/python -m ruff check app cutter3d tests` |
 | CLI | `.venv/Scripts/python -m cutter3d --svg <arte.svg> --modo cortante+marcador --out <salida.3mf> --reporte` |
@@ -224,7 +249,7 @@ el grupo de dimensiones tiene **10** flags: el décimo es `--distancia-colision`
 ## Red de regresión
 - **Estado:** `caracterización` (motor) + `unit`/integración (web, con `TestClient`)
 - **Ubicación:** `tests/test_fidelidad.py` (motor) y `tests/test_web_*.py` (web), con `tests/conftest.py`
-- **Cómo se corre:** `.venv/Scripts/python -m pytest` → 192 passed (~66 s)
+- **Cómo se corre:** `.venv/Scripts/python -m pytest` → 228 passed (~71 s)
 - **Áreas cubiertas:**
   - *Motor:* el pipeline de geometría completo (`svg_io → geometry → solids → export`), verificado
     **releyendo el `.3mf` exportado**, no la malla en memoria. Los asserts numéricos SON el golden
@@ -243,9 +268,19 @@ el grupo de dimensiones tiene **10** flags: el décimo es `--distancia-colision`
   - El andamiaje aísla todo con `dependency_overrides`: ningún test toca `trabajo/` ni depende de que
     `credenciales.json` exista, y **la contraseña de prueba se genera al vuelo** — no hay ninguna
     credencial literal en el repo.
-- **Sin cobertura:** `cli.py`, `__main__.py`, el CSS, el JS del navegador y `preview3d.js`. La cadena
-  argparse → motor y el render de las pantallas están verificados por lectura y corridas manuales, no
-  por un gate.
+  - *Front (contrato, no comportamiento):* **11 tests** en `test_web_auth.py` verifican lo que el
+    servidor SIRVE — los 5 estáticos sin internet, el grafo de módulos del visor 3D recorrido con BFS,
+    los 8 colores de la paleta contra `COLORES`, que ningún hex esté escrito dos veces, el botón de
+    generar apagado con su pista, los tokens de los dos temas en el CSS, cero URLs externas, el menú
+    de módulos único con nombre accesible por ítem, el CSS sin `--sidebar-ancho`, y el estado en
+    `sessionStorage`.
+- **Sin cobertura:** `cli.py`, `__main__.py`, y el **comportamiento** del CSS y del JS.
+  ⚠ Precisión que costó una confusión: **no es que el front no tenga cobertura** — tiene los 11 tests
+  de contrato de arriba. Lo que no hay es (a) ningún **gate de calidad** que mire CSS o JS (no hay
+  eslint ni stylelint ni gestor de paquetes JS) y (b) ningún test que **ejecute** JS: no hay navegador
+  ni Playwright. La distinción importa: en el ciclo 4 apareció una colisión de clase CSS
+  (`.barra` del encabezado contra `.barra` de la barra de progreso, que declara `height: 5px`) que
+  **ningún gate ni test habría detectado** — se encontró leyendo.
 
 ## Estructura del proyecto (alto nivel)
 
@@ -278,12 +313,13 @@ studiocutter3d/
 │     ├─ js/app.js          ← tema, subidas, polling, reporte
 │     ├─ js/preview3d.js    ← three.js: entorno PMREM, sombras, encuadre automático
 │     └─ vendor/            ← three 0.186.0 + fuentes (2,4 MB, para andar sin internet)
-└─ tests/                   ← 192 tests
+└─ tests/                   ← 228 tests
    ├─ conftest.py           ← andamiaje aislado de la web
    ├─ test_params.py  test_svg_io.py  test_geometry.py  test_raster.py
    ├─ test_fidelidad.py     ← red de caracterización del motor
    ├─ test_web_auth.py  test_web_uploads.py  test_web_trabajos.py
-   └─ fixtures/             ← circulo · estrella · lineart_ojos_llenos · dos_lobulos · murcielago
+   └─ fixtures/             ← circulo · estrella · lineart_ojos_llenos · dos_lobulos · murcielago ·
+                               kitty_bruja
 ```
 
 ## Convenciones y restricciones
@@ -345,10 +381,27 @@ studiocutter3d/
   (`salida_marcador.3mf`, `salida_cortador.3mf`) son el mismo cuerpo **en las mismas coordenadas**
   — no se recentran, así que abrir los dos en el slicer los reencuentra anidados. En modo
   `cortante` no se generan: serían una copia del combinado.
-- **El cliente nunca nombra un archivo.** Lo que sube se guarda como `entrada.<ext>` con la extensión
-  sacada de **mirar los bytes** (ni el nombre ni el `Content-Type`, que los elige quien sube); lo que
-  baja se pide por una clave de un enum cerrado. No hay nada que sanitizar porque el nombre original
-  directamente no se usa.
+- **El cliente no nombra ningún archivo EN DISCO, pero sí cómo se VE la descarga.** Lo que sube se
+  guarda como `entrada.<ext>` con la extensión sacada de **mirar los bytes** (ni el nombre ni el
+  `Content-Type`, que los elige quien sube); las salidas salen de `NOMBRE_DE`, un mapa fijo. Eso no
+  cambió. Lo que sí cambió en el ciclo 4: el **stem** del nombre original, saneado con
+  `sanear_nombre_base` (whitelist `[A-Za-z0-9._-]`, tope 60), se guarda en `Trabajo.nombre_base` y
+  alimenta **solo** el `filename=` de `FileResponse`, para que `buddy.heif` baje como `buddy.jpg`.
+  **Las dos mitades nunca se cruzan** — el valor del cliente jamás participa de un `Path` —, y por eso
+  conservar el nombre no reabre el path traversal. Consecuencia aceptada de la whitelist estricta:
+  `mi dibujo.png` baja como `mi_dibujo.jpg`.
+- **`MAX_PIXELES = 89_478_485` es el tope único para los TRES decodificadores** (Pillow, LibRaw y
+  vtracer), aplicado siempre **antes** de decodificar. Es el mismo número que Pillow usa como guard de
+  decompression bomb, reusado a propósito: un solo límite. Hace falta declararlo porque `rawpy` y
+  vtracer **no pasan por Pillow** y no tienen red propia. ⚠ Residual conocido: en el camino SVG,
+  resvg ya reservó el bitmap antes de que Python pueda mirarlo — el tope acota el límite y el tipo de
+  error, no la asignación.
+- **La navegación es UNA barra superior (`.barra-superior`), en los dos lados del breakpoint.** No hay
+  sidebar lateral ni barra inferior de mobile. La lista de módulos se sirve desde
+  `app/routers/paginas.py:MODULOS` —un solo lugar, como `CAMPOS` y `COLORES`— y se dibuja con el macro
+  `nav_modulos`. ⚠ **Ojo con el nombre:** `.barra` a secas **ya existía** y es la barra de PROGRESO de
+  las filas del conversor (`estilo.css`, `height: 5px`); como se declara después, pisaría al
+  encabezado si este se llamara igual.
 - **Los mensajes de error se arman desde los atributos de la excepción, nunca con `str(exc)`.**
 - **La autorización es una dependencia (`UsuarioRequerido`), no una línea adentro del handler**: una
   ruta que se olvide de declararla queda abierta, y eso se ve leyendo la firma.

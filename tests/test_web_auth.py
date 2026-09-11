@@ -19,6 +19,7 @@ from conftest import CLAVE, USUARIO
 from fastapi.testclient import TestClient
 
 from app.routers.cortante import COLORES
+from app.routers.paginas import MODULOS
 
 PROTEGIDAS = ["/", "/conversor", "/lineas", "/cortante"]
 
@@ -263,11 +264,78 @@ def test_el_boton_de_generar_nace_apagado_y_con_su_pista(sesion: TestClient) -> 
     html = sesion.get("/cortante").text
     boton = re.search(r'<button[^>]*id="generar"[^>]*>', html)
     assert boton is not None and "disabled" in boton.group(0)
-    assert re.search(r'class="[^"]*\boculto\b[^"]*"[^>]*id="pista-generar"', html)
+    # Se busca la etiqueta por su id y despues se mira adentro, en vez de exigir
+    # `class` antes que `id`: la version anterior se ponia en rojo con solo
+    # reordenar dos atributos, que no cambia nada de lo que el test verifica.
+    pista = re.search(r'<[^>]*id="pista-generar"[^>]*>', html)
+    assert pista is not None and "oculto" in pista.group(0)
 
     js = sesion.get("/static/js/app.js").text
     assert "#pista-generar" in js
     assert "#paleta .paleta__color" in js
+
+
+def test_el_menu_de_modulos_se_dibuja_una_sola_vez(sesion: TestClient) -> None:
+    """CA-09 — un solo menu, servido desde Python.
+
+    Hasta el ciclo anterior la lista de modulos estaba escrita DOS veces en
+    `base.html` —el sidebar y la barra inferior de mobile— con etiquetas
+    distintas en cada copia, y los dos `<nav>` tenian el mismo nombre accesible.
+    Agregar un modulo eran dos ediciones y nadie se acordaba de la segunda.
+    """
+    for pagina in ("conversor", "lineas", "cortante"):
+        html = sesion.get(f"/{pagina}").text
+
+        etiquetas = re.findall(r"<nav[^>]*aria-label=\"([^\"]*)\"", html)
+        assert len(etiquetas) == len(set(etiquetas)), f"/{pagina}: dos <nav> con el mismo nombre"
+
+        enlaces = re.findall(r'class="nav__item"[^>]*href="([^"]*)"', html)
+        assert enlaces == [m.ruta for m in MODULOS], f"/{pagina}: {enlaces}"
+
+        actual = re.findall(r'nav__item[^>]*aria-current="page"', html)
+        assert len(actual) == 1, f"/{pagina}: {len(actual)} items marcados como actuales"
+
+    assert "barra-inferior" not in sesion.get("/cortante").text
+
+
+def test_cada_modulo_tiene_nombre_accesible_propio(sesion: TestClient) -> None:
+    """CA-09 — a <=860 px el rotulo se oculta y solo queda el icono.
+
+    Sin `aria-label` en el enlace, ocultar el `<span>` con CSS deja tres
+    enlaces sin nombre accesible: para un lector de pantalla la navegacion
+    desaparece justo en el tamaño donde mas se usa.
+    """
+    html = sesion.get("/conversor").text
+    for mod in MODULOS:
+        assert f'aria-label="{mod.etiqueta}"' in html, mod.etiqueta
+
+
+def test_el_css_ya_no_conoce_el_ancho_del_sidebar(sesion: TestClient) -> None:
+    """CA-10 — la columna lateral se fue, su token tambien.
+
+    `--sidebar-ancho` era el unico acople al layout viejo: si sobrevive, quedo
+    una regla calculando un corrimiento lateral que ya no existe.
+    """
+    css = sesion.get("/static/css/estilo.css").text
+    assert "--sidebar-ancho" not in css
+    assert "--barra-alto" in css and "--ancho-contenido" in css
+    # `.barra` a secas es la barra de PROGRESO de las filas del conversor. Si
+    # el encabezado volviera a llamarse asi, la pisaria y quedaria de 5 px.
+    assert ".barra-superior {" in css
+
+
+def test_el_estado_de_pantalla_vive_en_sessionstorage(sesion: TestClient) -> None:
+    """CA-11 — contrato del JS, hasta donde se puede verificar sin navegador.
+
+    No se ejecuta JS en la suite, asi que esto comprueba que las piezas estan y
+    no que funcionen: el comportamiento de verdad son los pasos manuales.
+    """
+    js = sesion.get("/static/js/app.js").text
+    assert "sessionStorage" in js
+    assert "sc3d:" in js, "falta el prefijo de las claves de estado"
+    assert "getEntriesByType('navigation')" in js, "sin esto el F5 no limpia"
+    assert "#quitar" in js, "falta el boton de quitar el archivo"
+    assert "nombreDeTrabajo" in js, "falta el nombre real en el encadenado"
 
 
 def test_el_css_define_los_dos_temas(sesion: TestClient) -> None:

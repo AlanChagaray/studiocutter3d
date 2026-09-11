@@ -49,6 +49,27 @@
 </svg>
 {%- endmacro %}
 
+{#
+  Un parametro del cortante.
+
+  El template lo dibuja DOS veces —el grupo del cortante y el del marcador— y
+  tiene que salir identico en los dos: `app.js` pinta el campo en rojo
+  buscandolo por `data-campo`, no por el grupo donde vive.
+#}
+{% macro campo_parametro(c, limite_max_mm) -%}
+<div class="campo" data-campo="{{ c.nombre }}"
+     {% if c.solo_marcador %}data-solo-marcador="1"{% endif %}>
+  <label class="campo__label" for="p-{{ c.nombre }}" title="{{ c.ayuda }}">{{ c.etiqueta }}</label>
+  <div class="campo__caja">
+    <input id="p-{{ c.nombre }}" name="{{ c.nombre }}" type="number" inputmode="decimal"
+           value="{{ c.valor }}" step="{{ c.paso }}" min="0.01" max="{{ limite_max_mm }}"
+           data-defecto="{{ c.valor }}">
+    <span class="campo__unidad">mm</span>
+  </div>
+  <span class="campo__error oculto" data-rol="error">{{ icono('error', 13) }}<span></span></span>
+</div>
+{%- endmacro %}
+
 {% macro marca(bajada='conversor de line art a cortantes') -%}
 <div class="marca">
   <span class="usuario__inicial" aria-hidden="true">sC</span>
@@ -57,4 +78,19 @@
     <span class="marca__bajada">{{ bajada }}</span>
   </span>
 </div>
+{%- endmacro %}
+
+{#
+  El menu de modulos. Recibe la lista en vez de leerla del contexto para que el
+  macro sea explicito sobre lo que necesita: se ve en la llamada qué le llega.
+#}
+{% macro nav_modulos(modulos, pagina) -%}
+<nav class="nav" aria-label="Modulos">
+  {%- for mod in modulos %}
+  <a class="nav__item" href="{{ mod.ruta }}" aria-label="{{ mod.etiqueta }}"
+     {% if pagina == mod.clave %}aria-current="page"{% endif %}>
+    {{ icono(mod.clave) }}<span>{{ mod.etiqueta }}</span>
+  </a>
+  {%- endfor %}
+</nav>
 {%- endmacro %}

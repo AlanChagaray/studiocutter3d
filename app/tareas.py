@@ -102,12 +102,16 @@ def ejecutar_cortante(
     entrada_txt: str,
     modo_txt: str,
     parametros: dict[str, float],
-    con_stl: bool,
 ) -> None:
-    """Genera el `.3mf`, el `.glb` del preview y, si se pide, los `.stl`.
+    """Genera el `.3mf`, el `.glb` del preview y los `.stl`, siempre.
 
     No vectoriza nada: la entrada ya es SVG porque el router solo acepta SVG.
     Lo que llega aca es exactamente lo que el usuario vio y aprobo.
+
+    El `con_stl` del motor queda fijo en `True`: la web no lo pregunta mas (ver
+    el docstring de `app/routers/cortante.py`), y un parametro que siempre vale
+    lo mismo en el unico llamador no es una opcion, es ruido en la frontera
+    entre procesos.
     """
     dir_trabajo = Path(dir_trabajo_txt)
     try:
@@ -125,7 +129,7 @@ def ejecutar_cortante(
             Modo(modo_txt),
             dir_trabajo / "salida.3mf",
             params=CutterParams(**parametros),
-            con_stl=con_stl,
+            con_stl=True,
         )
 
         archivos["3mf"] = resultado.ruta_3mf.name
