@@ -189,6 +189,40 @@ def test_el_murcielago_cierra_en_anillo(tmp_path: Path) -> None:
     assert any("puenteo" in aviso for aviso in r.advertencias), r.advertencias
 
 
+# ── triangulacion de la tapa ───────────────────────────────────────────────
+
+
+@pytest.mark.lento
+def test_la_kitty_cierra_con_vertices_colineales(tmp_path: Path) -> None:
+    """Line art real con un contorno de 28 huecos y puntos colineales.
+
+    Con el triangulador default de trimesh (`earcut`) este archivo no llegaba a
+    exportarse: la tapa de ese contorno salia con una arista sin par, la malla
+    quedaba con euler -53 en vez de -54, y la booleana del marcador moria con
+    `BooleanaFallida: ... Not all meshes are volumes!`. Por eso el test corre el
+    ciclo entero y relee del disco: que `generar` no aborte es la mitad del
+    punto, y la otra mitad es que la topologia cierre.
+
+    El marcador es el objeto que importa aca — es el que tiene el arte con los
+    huecos. El cortador va igual porque sale de la misma corrida y no cuesta.
+    """
+    resultado = generar(
+        FIXTURES / "kitty_bruja.svg", Modo.CORTANTE_MARCADOR, tmp_path / "kitty.3mf"
+    )
+    mallas = releer_3mf(resultado.ruta_3mf)
+
+    marcador = mallas[NOMBRE_MARCADOR]
+    assert marcador.is_watertight
+    assert marcador.euler_number == 2
+
+    cortador = mallas[NOMBRE_CORTADOR]
+    assert cortador.is_watertight
+    assert cortador.euler_number == 0
+
+    # La tapa no perdio ningun hueco: el conteo 2D tiene que sobrevivir al 3D.
+    assert resultado.reporte.huecos_original == resultado.reporte.huecos_final
+
+
 # ── RF-19: lo poco imprimible advierte, no bloquea ─────────────────────────
 
 

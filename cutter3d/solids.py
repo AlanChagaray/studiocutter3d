@@ -48,7 +48,28 @@ def _material(nombre: str, color: tuple[float, float, float, float]) -> PBRMater
 
 
 def _extruir(geom: MultiPolygon, altura: float) -> list[trimesh.Trimesh]:
-    return [trimesh.creation.extrude_polygon(parte, altura) for parte in geom.geoms]
+    """Extruye cada parte con el triangulador de `manifold`, nunca el default.
+
+    El default de trimesh es `earcut`, y `earcut` no cierra los poligonos con
+    vertices colineales: al llegar a una oreja de area cero emite un triangulo
+    degenerado y se come otro, asi que la tapa queda con una arista sin par y la
+    extrusion sale NO watertight. Con line art vectorizado pasa seguido —
+    VTracer deja tiradas de puntos colineales sobre los tramos rectos, y
+    `simplify` no los borra porque no desvian nada.
+
+    El sintoma es enganoso: el poligono 2D es valido (`is_valid`), la malla
+    tiene el area correcta y hasta el volumen correcto; lo unico que delata el
+    agujero es el numero de Euler, que da uno de mas. Despues explota lejos de
+    la causa, en la booleana, con "Not all meshes are volumes!".
+
+    `manifold` triangula los mismos anillos sin insertar vertices, asi que la
+    geometria es identica — cambia quien la corta en triangulos, no la forma.
+    Es ademas el mismo engine que ya usan las booleanas, y `manifold3d` ya es
+    dependencia dura del proyecto: el fix no agrega nada que instalar.
+    """
+    return [
+        trimesh.creation.extrude_polygon(parte, altura, engine="manifold") for parte in geom.geoms
+    ]
 
 
 def _unir(mallas: list[trimesh.Trimesh], objeto: str) -> trimesh.Trimesh:
