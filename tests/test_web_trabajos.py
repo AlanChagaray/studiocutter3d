@@ -257,6 +257,7 @@ def cancelar_trabajo(sesion: TestClient, id_: str) -> None:
         ("lado_mayor_mm", 0),
         ("lado_mayor_mm", -3),
         ("luz_mm", 1000.5),
+        ("distancia_colision_mm", 1000.5),
         ("pie_alto_mm", 0),
         ("filo_alto_mm", 99999),
     ],
@@ -272,7 +273,7 @@ def test_parametro_fuera_de_rango_es_422_y_nombra_el_campo(
     assert campo in cuerpo["mensaje"]
 
 
-def test_los_nueve_parametros_por_defecto_se_aceptan(sesion: TestClient) -> None:
+def test_los_diez_parametros_por_defecto_se_aceptan(sesion: TestClient) -> None:
     """Con los defaults, el rechazo tiene que ser por el archivo y no por un numero."""
     r = sesion.post("/api/cortante", data={})
     assert r.status_code == 422

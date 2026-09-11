@@ -9,6 +9,7 @@ import pytest
 
 from cutter3d.errors import NoConvergeError
 from cutter3d.geometry import (
+    _offset,
     construir_cortador_2d,
     construir_marcador_2d,
     construir_silueta_sola,
@@ -17,7 +18,7 @@ from cutter3d.geometry import (
     tapar_huecos,
 )
 from cutter3d.params import AjustesMotor, CutterParams
-from cutter3d.svg_io import Arte, cargar_svg
+from cutter3d.svg_io import Arte, cargar_svg, como_multipoligono
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -125,3 +126,92 @@ def test_parametros_distintos_cambian_los_offsets() -> None:
     c2 = construir_cortador_2d(silueta, p_ancho, a)
     assert c2.o1.area > c1.o1.area
     assert float(silueta.distance(c2.o1.boundary)) == pytest.approx(2.0, abs=0.02)
+
+
+def test_una_camara_tras_un_cuello_angosto_genera_bolsillo_sin_puentear() -> None:
+    """El defecto que motivo el puenteo, fijado a mano para que no vuelva callado.
+
+    Los offsets se arman aca mismo sobre la silueta CRUDA, sin pasar por
+    `construir_cortador_2d`, que es el unico que puentea: asi queda documentado
+    lo que pasa cuando no se puentea. La camara de 14,4 mm esta detras de un
+    cuello de 2,52 mm, mas angosto que 2*o2, asi que o2 lo pellizca y la camara
+    queda como celda cerrada por filo — un bolsillo ciego donde la masa se atasca
+    y el cortador sale con euler -2. El filo termina con DOS anillos: el legitimo
+    de la galletita, mas el del bolsillo.
+    """
+    p, a = CutterParams(), AjustesMotor()
+    silueta = construir_silueta_sola(arte("dos_lobulos"), p, a)
+    o1 = _offset(silueta, p.offset_o1_mm, a)
+    o2 = _offset(silueta, p.offset_o2_mm, a)
+    filo = como_multipoligono(o2.difference(o1))
+    assert sum(len(g.interiors) for g in o2.geoms) == 1, "o2 se cierra sobre el cuello"
+    assert sum(len(g.interiors) for g in filo.geoms) == 2, "el anillo legitimo mas el bolsillo"
+
+
+def test_el_puenteo_deja_el_filo_con_un_solo_anillo() -> None:
+    """La misma silueta, ahora por `construir_cortador_2d`: la muesca se rellena antes."""
+    p, a = CutterParams(), AjustesMotor()
+    silueta = construir_silueta_sola(arte("dos_lobulos"), p, a)
+    c = construir_cortador_2d(silueta, p, a)
+    assert sum(len(g.interiors) for g in c.filo.geoms) == 1
+    assert c.colisiones_puenteadas == 1
+    # Rango y no `> 0`: un puenteo degenerado de 0,001 mm2 tambien seria `> 0`
+    # y dejaria el bolsillo practicamente igual. Medido: 252,03 mm2.
+    assert 200.0 < c.area_puenteada_mm2 < 300.0
+
+
+def test_el_area_puenteada_no_decrece_con_la_distancia_de_colision() -> None:
+    """La trampa del detector: con una sola fuente de semilla no era monotono.
+
+    El material que agrega forzar la colision crece con la distancia, pero las
+    celdas ya cerradas no dependen de ella. Sembrando solo con lo primero, a
+    ciertos valores el bolsillo quedaba sin puentear. Por eso no alcanza con
+    probar el default: el filo tiene que cerrar en un anillo para los tres, y el
+    area puenteada tiene que ser no decreciente, nunca achicarse al subir la luz.
+
+    Corre sobre el murcielago y no sobre `dos_lobulos` a proposito. En
+    `dos_lobulos` la camara ya es celda cerrada de `o2`, asi que la semilla que
+    NO depende de la distancia alcanza sola y las tres areas quedan a 0,25 % una
+    de otra: el `<=` pasaria igual si el parametro no hiciera nada. En el
+    murcielago la dispersion es 13 %, y por eso se puede exigir ademas un `<`
+    estricto entre los extremos — que es el assert que falla si el parametro
+    deja de tener efecto. Cuesta 1,2 s contra 0,07 s; el poder de deteccion los
+    vale.
+    """
+    a = AjustesMotor()
+    areas: list[float] = []
+    for distancia in (0.05, 1.0, 5.0):
+        p = CutterParams(distancia_colision_mm=distancia)
+        silueta = construir_silueta_sola(arte("murcielago", p), p, a)
+        c = construir_cortador_2d(silueta, p, a)
+        assert sum(len(g.interiors) for g in c.filo.geoms) == 1, f"distancia {distancia} mm"
+        areas.append(c.area_puenteada_mm2)
+    a005, a1, a5 = areas
+    assert a005 <= a1 <= a5, f"el area puenteada decrece: {areas}"
+    assert a005 < a5, f"la distancia de colision no tuvo ningun efecto: {areas}"
+
+
+@pytest.mark.parametrize("fixture", ["circulo", "estrella", "lineart_ojos_llenos"])
+def test_sin_colisiones_no_se_puentea_nada(fixture: str) -> None:
+    """Guardia contra falsos positivos: sin muescas, la silueta no se toca.
+
+    Los tres fixtures que existian antes del ciclo: ninguno pellizca ni con 6 mm
+    de offset, asi que los tres tienen que dar cero exacto. Si alguno empieza a
+    puentear, el detector se volvio sensible de mas.
+    """
+    p, a = CutterParams(), AjustesMotor()
+    silueta = construir_silueta_sola(arte(fixture), p, a)
+    c = construir_cortador_2d(silueta, p, a)
+    assert c.colisiones_puenteadas == 0
+    assert c.area_puenteada_mm2 == 0.0
+
+
+def test_la_distancia_de_colision_no_toca_el_marcador() -> None:
+    """El parametro es de la pieza cortador: el marcador sale identico con cualquier valor."""
+    a = AjustesMotor()
+    p_corta = CutterParams(distancia_colision_mm=0.5)
+    p_larga = CutterParams(distancia_colision_mm=5.0)
+    m_corta = construir_marcador_2d(arte("lineart_ojos_llenos", p_corta), p_corta, a)
+    m_larga = construir_marcador_2d(arte("lineart_ojos_llenos", p_larga), p_larga, a)
+    assert m_corta.silueta.equals(m_larga.silueta)
+    assert m_corta.arte_final.equals(m_larga.arte_final)

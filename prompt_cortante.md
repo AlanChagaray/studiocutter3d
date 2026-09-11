@@ -22,6 +22,13 @@ compenses inventando geometría.
 Si te parece que algo del dibujo no va a imprimir bien, decímelo en la
 verificación con números. No lo arregles por tu cuenta.
 
+**Nota sobre el puenteo de colisiones.** El puenteo de las colisiones entre
+extremos que pido más abajo es una excepción que vale **solo para el cortador**
+y **nunca para el arte ni para el marcador**. El dibujo se sigue reproduciendo
+tal cual: sin cierres morfológicos, sin rellenos entre trazos y sin tapar
+muescas. Lo que se rellena es la silueta que consume el cortador, que ya es
+geometría derivada, no el arte.
+
 ## Parámetros
 
 | Parámetro | Valor |
@@ -34,6 +41,7 @@ verificación con números. No lo arregles por tu cuenta.
 | Filo del cortador | 1 mm de ancho × 10 mm de alto |
 | Pie del cortador | +1,8 mm de ancho × 2 mm de alto |
 | Ancho total del cortador | 2,8 mm desde la luz de 0,7 mm |
+| Distancia de colisión entre extremos del cortador | 1 mm |
 
 ## Cómo construir el marcador
 
@@ -78,6 +86,31 @@ Dos detalles de implementación que evitan problemas conocidos:
   mueve hasta la tolerancia y se te come la luz de 0,7 mm. Simplificá los
   offsets con tolerancia más fina (0,01 mm) por el mismo motivo.
 
+### Colisiones entre extremos
+
+La distancia de colisión **no se mide entre los extremos del dibujo: se mide
+entre las paredes externas del filo** (`o2`), que es donde las dos paredes se
+encuentran. Cuando esas dos paredes se tocan, o les queda una luz menor o igual
+a la distancia de colisión, **no quiero que el filo baje adentro de la muesca**.
+Ahí la pared tiene que terminar y seguir de largo: un contorno continuo, sin
+pared interna. La muesca queda como espacio vacío adentro de la colisión, y esa
+parte de la galletita no se corta.
+
+Pasado a la boca de la muesca en el dibujo, con los valores de la tabla queda:
+las paredes de `o2` se tocan cuando la boca mide `2 × 1,7 = 3,4 mm` o menos, y
+la distancia de colisión de 1 mm sube ese umbral a `2 × o2 + 1 = 4,4 mm`. Una
+muesca de 2,5 mm de boca entra; una de 6 mm no.
+
+El motivo es práctico. Una muesca cerrada por filo en los cuatro lados es un
+bolsillo ciego: la masa se atasca ahí adentro y el cortante se vuelve imposible
+de usar. Prefiero perder la muesca antes que eso.
+
+La forma de hacerlo es rellenar esa muesca **en una copia de la silueta, la que
+consume el cortador, antes de calcular los tres offsets**, para que `o1`, `o2` y
+`o3` salgan todos de la misma y las secciones sigan cerrando. Ojo: es una copia
+derivada y solo para el cortador. **La silueta del marcador —la base maciza de
+1 mm— no se toca**, ni acá ni en ningún lado.
+
 ## Salida
 
 - Un solo `.3mf` en milímetros, con **dos objetos nombrados** (`marcador` y
@@ -112,6 +145,9 @@ Mostrame:
 5. Confirmación de `is_watertight` en los dos objetos, releyendo el 3MF
    exportado y no la malla en memoria. Sumá el número de Euler: el marcador
    tiene que dar 2 (sin agujeros pasantes) y el cortador 0 (anillo cerrado).
+6. Cuántas colisiones entre extremos se puentearon y cuánta área de galletita
+   quedó sin cortar por eso, en mm² y en porcentaje. Mostrámelo como salga; no
+   lo arregles por tu cuenta.
 
 Si algún dato del pedido parece un error de tipeo (por ejemplo una altura en cm
 donde correspondería mm), construilo con el valor razonable y avisame.

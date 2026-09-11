@@ -1,6 +1,6 @@
 """Parametros del cortante y ajustes internos del motor.
 
-`CutterParams` son las **9 dimensiones** del producto, las que el usuario edita.
+`CutterParams` son las **10 dimensiones** del producto, las que el usuario edita.
 Sus defaults salen literalmente de `prompt_cortante.md`. La validacion de rango
 vive aca y solo aca: ningun valor <= 0, ninguno > 1000 mm.
 
@@ -19,7 +19,7 @@ from .errors import ParametroFueraDeRango
 
 @dataclass(frozen=True)
 class CutterParams:
-    """Las 9 dimensiones del cortante y el marcador, en milimetros.
+    """Las 10 dimensiones del cortante y el marcador, en milimetros.
 
     Los offsets del cortador se **derivan** de estos valores en vez de estar
     hardcodeados: si se cambia el ancho del filo, la geometria sigue siendo
@@ -36,6 +36,13 @@ class CutterParams:
     filo_alto_mm: float = 10.0
     pie_ancho_extra_mm: float = 1.8
     pie_alto_mm: float = 2.0
+    distancia_colision_mm: float = 1.0
+    """Luz remanente entre dos extremos del filo por debajo de la cual se fuerza la colision.
+
+    Se mide sobre `o2`, el borde externo del filo, que es donde las dos paredes se
+    encuentran. Con los defaults, dos extremos con una boca de silueta menor o igual
+    a 4,4 mm (2*o2 + esto) quedan fusionados y su muesca deja de cortarse.
+    """
 
     LIMITE_MAX_MM: ClassVar[float] = 1000.0
 

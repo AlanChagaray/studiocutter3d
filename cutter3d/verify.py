@@ -126,6 +126,19 @@ class ReporteFidelidad:
     zonas_contorneadas: int
     area_contorneada_mm2: float
 
+    colisiones_puenteadas: int
+    """Muescas entre extremos que el cortador puenteo en vez de intentar cortarlas."""
+
+    area_puenteada_mm2: float
+    """Area que ese puenteo le sumo a la silueta del cortador."""
+
+    area_puenteada_pct: float
+    """La misma area como fraccion de la silueta, en porciento.
+
+    El contrato pide el dato en mm2 **y en porcentaje** (igual que las muescas
+    selladas): 199 mm2 no dice nada sin saber sobre que pieza, y 4,7 % si.
+    """
+
     advertencias: tuple[str, ...]
 
     @property
@@ -272,6 +285,21 @@ def _fidelidad_del_arte(
     )
 
 
+def _advertencias_del_cortador(cortador: Cortador2D) -> list[str]:
+    """Avisos que salen de la geometria del cortador, no del arte.
+
+    Vive afuera de `verificar` por la misma razon que `_advertencias_de_trazo`
+    en `geometry`: cada aviso nuevo le suma una rama a una funcion que ya esta
+    en el limite de complejidad.
+    """
+    if not cortador.colisiones_puenteadas:
+        return []
+    return [
+        f"el cortador puenteo {cortador.colisiones_puenteadas} colision(es) entre "
+        f"extremos ({cortador.area_puenteada_mm2:.1f} mm2). Esas muescas no se cortan."
+    ]
+
+
 def verificar(
     ruta_3mf: Path,
     marcador: Marcador2D | None,
@@ -367,6 +395,7 @@ def verificar(
             f"({area_contorneada_mm2:.1f} mm2). El motor no altera el arte: "
             "el cambio se hizo antes."
         )
+    advertencias.extend(_advertencias_del_cortador(cortador))
     if luz < p.luz_mm - 0.02:
         advertencias.append(
             f"la luz minima real ({luz:.3f} mm) quedo por debajo de la nominal "
@@ -396,6 +425,14 @@ def verificar(
         huecos=huecos,
         zonas_contorneadas=zonas_contorneadas,
         area_contorneada_mm2=area_contorneada_mm2,
+        colisiones_puenteadas=cortador.colisiones_puenteadas,
+        area_puenteada_mm2=cortador.area_puenteada_mm2,
+        # Contra la silueta ORIGINAL, que es la pieza que el usuario pidio. El
+        # puenteo la agranda, asi que medirlo contra la puenteada achicaria el
+        # porcentaje justo en la proporcion que se quiere reportar.
+        area_puenteada_pct=(
+            cortador.area_puenteada_mm2 / silueta.area * 100.0 if silueta.area > 0 else 0.0
+        ),
         advertencias=tuple(advertencias),
     )
 
@@ -479,6 +516,10 @@ def render_texto(r: ReporteFidelidad) -> str:
     ap(
         f"  luz minima real      : {r.luz_minima_real_mm:.3f} mm (nominal {r.luz_nominal_mm:.3f})  "
         f"{_marca(r.luz_minima_real_mm >= r.luz_nominal_mm - 0.02)}"
+    )
+    ap(
+        f"  colisiones puenteadas: {r.colisiones_puenteadas} "
+        f"({r.area_puenteada_mm2:.1f} mm2, {r.area_puenteada_pct:.1f} %)"
     )
     ap("")
     ap("-- secciones del cortador (medidas sobre la malla exportada) --")

@@ -55,7 +55,7 @@ materiales PBR para el preview 3D, y opcionalmente dos `.stl` separados.
 > mismo archivo, el slicer ve un único cuerpo de dos cáscaras y no se pueden mover por
 > separado. El `.3mf` sigue siendo el formato recomendado; el STL es compatibilidad.
 
-Los 9 parámetros son editables y ninguno puede ser ≤ 0 ni mayor a 1000 mm:
+Los 10 parámetros son editables y ninguno puede ser ≤ 0 ni mayor a 1000 mm:
 
 | Parámetro | Flag | Default |
 |---|---|---|
@@ -68,10 +68,19 @@ Los 9 parámetros son editables y ninguno puede ser ≤ 0 ni mayor a 1000 mm:
 | Filo — alto | `--filo-alto` | 10 mm |
 | Pie — ancho extra | `--pie-ancho-extra` | 1,8 mm |
 | Pie — alto | `--pie-alto` | 2 mm |
+| Distancia de colisión entre extremos | `--distancia-colision` | 1 mm |
 
 Los offsets del cortador se **derivan** de esos valores (`o1 = luz`, `o2 = luz + filo`,
 `o3 = luz + filo + pie`), así que cambiar el filo mantiene la geometría coherente en vez de
 romperla contra constantes sueltas.
+
+`--distancia-colision` se mide **entre las paredes externas del filo (`o2`), no entre los
+extremos del dibujo**. Cuando esas paredes se tocan —o les queda una luz menor o igual a ese
+valor— el contorno sigue de largo en vez de bajar adentro de la muesca, que queda sin cortar
+para no dejar un bolsillo ciego donde se atasque la masa. Llevado a la boca de la muesca en el
+dibujo, con los defaults entra toda boca de `2 × o2 + distancia = 4,4 mm` o menos. El reporte
+dice cuántas colisiones se puentearon y cuánta área implica, en mm² y en porcentaje. Se
+reporta, no se compensa; el detalle está en el contrato.
 
 ### Las otras tres etapas
 
@@ -117,6 +126,8 @@ probar que lo que se entrega es lo que se validó.
 - Contención íntegra: el área de `original − final` tiene que ser 0.
 - Desvío del contorno (p50 / p99 / máximo) acotado por la dilatación aplicada.
 - Muescas selladas por la dilatación, en mm y en porcentaje. Se reportan, no se compensan.
+- Colisiones entre extremos que puenteó el cortador, con el área que implican en mm² y en
+  porcentaje. Mismo criterio: se reportan, no se compensan.
 - Percentiles del ancho de trazo y de los huecos entre trazos.
 - Luz mínima real entre marcador y cortador.
 - Secciones del cortador a z=1, z=5 y z=9,5, medidas **sobre la malla** y comparadas contra

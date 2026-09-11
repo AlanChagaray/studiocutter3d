@@ -1,6 +1,6 @@
-"""RF-01 — validacion de rango de los 9 parametros de dimension.
+"""RF-01 — validacion de rango de los 10 parametros de dimension.
 
-`test_rango_invalido` es exactamente 9 campos x 3 valores = **27 casos**. Ese
+`test_rango_invalido` es exactamente 10 campos x 3 valores = **30 casos**. Ese
 numero es el criterio de aceptacion, asi que los demas tests de este archivo van
 con otro nombre y no lo alteran.
 """
@@ -19,8 +19,8 @@ CAMPOS = tuple(f.name for f in fields(CutterParams))
 VALORES_INVALIDOS = (-1.0, 0.0, 1000.1)
 
 
-def test_son_nueve_campos() -> None:
-    assert len(CAMPOS) == 9
+def test_son_diez_campos() -> None:
+    assert len(CAMPOS) == 10
 
 
 @pytest.mark.parametrize("campo", CAMPOS)
@@ -43,6 +43,7 @@ def test_defaults_son_los_del_contrato() -> None:
     assert p.filo_alto_mm == 10.0
     assert p.pie_ancho_extra_mm == 1.8
     assert p.pie_alto_mm == 2.0
+    assert p.distancia_colision_mm == 1.0
 
 
 def test_offsets_derivados_dan_los_del_contrato() -> None:

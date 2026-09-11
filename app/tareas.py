@@ -202,5 +202,8 @@ def reporte_como_json(r: Any) -> dict[str, Any]:
         "huecos": dataclasses.asdict(r.huecos) if r.huecos is not None else None,
         "zonas_contorneadas": r.zonas_contorneadas,
         "area_contorneada_mm2": r.area_contorneada_mm2,
+        "colisiones_puenteadas": r.colisiones_puenteadas,
+        "area_puenteada_mm2": r.area_puenteada_mm2,
+        "area_puenteada_pct": r.area_puenteada_pct,
         "advertencias": list(r.advertencias),
     }

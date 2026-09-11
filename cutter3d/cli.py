@@ -43,6 +43,7 @@ def _agregar_parametros(sub: argparse.ArgumentParser) -> None:
     grupo.add_argument("--filo-alto", type=float, default=d.filo_alto_mm)
     grupo.add_argument("--pie-ancho-extra", type=float, default=d.pie_ancho_extra_mm)
     grupo.add_argument("--pie-alto", type=float, default=d.pie_alto_mm)
+    grupo.add_argument("--distancia-colision", type=float, default=d.distancia_colision_mm)
     ajustes = AjustesMotor()
     tuning = sub.add_argument_group("ajustes del motor")
     tuning.add_argument("--px-mm", type=float, default=ajustes.px_por_mm)
@@ -96,6 +97,7 @@ def _params_de(args: argparse.Namespace) -> CutterParams:
         filo_alto_mm=args.filo_alto,
         pie_ancho_extra_mm=args.pie_ancho_extra,
         pie_alto_mm=args.pie_alto,
+        distancia_colision_mm=args.distancia_colision,
     )
 
 

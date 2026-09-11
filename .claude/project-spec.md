@@ -4,12 +4,13 @@
 > del proyecto entre sesiones: mientras esté vigente, `inspect` NO re-analiza el stack desde
 > cero. Se regenera con aprobación cuando cambian las señales de frescura de abajo.
 
-**Última actualización:** 2026-09-10
+**Última actualización:** 2026-09-11
 **Versión de plantilla:** 3
 
-> Actualizado al cerrar el **ciclo 2** (capa web `app/`). El proyecto pasó de librería + CLI a
-> aplicación web completa: 39 archivos nuevos, 62 tests web sumados a los 105 del motor
-> (**167 en total**), y **6 gates** en verde — los 4 del ciclo 1 más `gitleaks` y `pip-audit`.
+> Actualizado al cerrar el **ciclo 3** (colisión continua entre extremos del cortante). El motor
+> sumó su décima dimensión, `distancia_colision_mm`, y una regla de geometría nueva: el cortador
+> puentea los bolsillos ciegos en vez de dejarlos. **192 tests** y los **7 gates** en verde.
+> Del ciclo 2 (capa web `app/`) viene el grueso de la arquitectura: 39 archivos y la capa completa.
 
 ## Señales de frescura
 - **Manifests:** `pyproject.toml` (existe en la raíz) — `version = "0.2.0"`
@@ -106,6 +107,17 @@
 6. **`spawn` necesita un `__main__` que sea un archivo real.** Un script pasado por stdin
    (`python - <<EOF`) hace fallar a todo proceso hijo con `OSError: Invalid argument: '<stdin>'`.
    Para probar algo que lance trabajos, hay que escribir el script a un archivo.
+7. **Un radio de cierre grande NO es más caro: es más barato.** Se midió sobre el murciélago (arte
+   real, 21 contornos) al evaluar si `distancia_colision_mm` podía ser un vector de agotamiento de
+   recursos: con radio 0,5 mm el puenteo tarda 0,046 s y pica 14,1 KB; con radio 500 mm tarda
+   **0,016 s** y pica **4,9 KB**, y el filo baja de 490 a 150 vértices. El motivo es que el cierre
+   funde la silueta en un blob con menos vértices, así que GEOS tiene *menos* trabajo, no más. La
+   intuición dice lo contrario —"radio grande = offset auto-intersecante = noding caro"— y por eso
+   conviene que quede escrito: **si algún día se sube `LIMITE_MAX_MM`, hay que volver a medirlo**, no
+   es una propiedad garantizada para cualquier arte.
+8. **XML no admite `--` adentro de un comentario.** Escribir un guion doble en el comentario de un
+   fixture `.svg` lo vuelve inválido y el parseo se cae con un error que no menciona el comentario.
+   Pasó al documentar `dos_lobulos.svg`: dos tests en rojo hasta encontrarlo.
 
 ## Dependencias y librerías principales
 | Dependencia | Versión | Para qué se usa |
@@ -153,14 +165,20 @@ Dev: pytest 9.1.1 · ruff 0.16.6 · mypy 2.3.1 · bandit 1.9.4 · **httpx 0.28.1
 | Setup | `py -3.13 -m venv .venv` y `.venv/Scripts/python -m pip install -e ".[dev,web]"` |
 | Build | no aplica (sin build step, ni en el back ni en el front) |
 | **Dev / run (web)** | `.venv/Scripts/python -m uvicorn app.main:app --reload --port 8000` → http://127.0.0.1:8000 |
-| Test | `.venv/Scripts/python -m pytest -q` → **167 passed** (~46 s) |
-| Test rápido | `.venv/Scripts/python -m pytest -q -m "not lento"` (saltea el que corre el motor real) |
+| Test | `.venv/Scripts/python -m pytest` → **192 passed** (~66 s) — ⚠ **sin `-q`**, ver nota |
+| Test rápido | `.venv/Scripts/python -m pytest -m "not lento"` (saltea el que corre el motor real) |
 | Lint | `.venv/Scripts/python -m ruff check app cutter3d tests` |
 | CLI | `.venv/Scripts/python -m cutter3d --svg <arte.svg> --modo cortante+marcador --out <salida.3mf> --reporte` |
 
+⚠ **No le agregues `-q` al comando de test.** `pyproject.toml` ya trae `addopts = "-q"`, así que un
+`-q` explícito lo vuelve **`-qq`** y pytest **suprime la línea `N passed`**: la corrida termina en el
+bloque de warnings y parece que no dijo nada. Es exactamente lo que hacía el comando documentado hasta
+el ciclo 3.
+
 El CLI tiene 4 subcomandos: **`cortante`** (default — si el primer argumento no es un subcomando
 conocido, se asume), **`jpg`** (png/jfif/webp/svg → jpg), **`lineas`** (jpg → B/N puro) y
-**`vectorizar`** (imagen → svg). La instalación registra además el comando `cutter3d`.
+**`vectorizar`** (imagen → svg). La instalación registra además el comando `cutter3d`. Desde el ciclo 3
+el grupo de dimensiones tiene **10** flags: el décimo es `--distancia-colision` (default 1 mm).
 
 **Variables de entorno** (ninguna obligatoria; ⛔ nunca en un `.env`):
 `STUDIOCUTTER_SECRET` (secreto de sesión, ≥ 32 caracteres) ·
@@ -206,17 +224,20 @@ conocido, se asume), **`jpg`** (png/jfif/webp/svg → jpg), **`lineas`** (jpg �
 ## Red de regresión
 - **Estado:** `caracterización` (motor) + `unit`/integración (web, con `TestClient`)
 - **Ubicación:** `tests/test_fidelidad.py` (motor) y `tests/test_web_*.py` (web), con `tests/conftest.py`
-- **Cómo se corre:** `.venv/Scripts/python -m pytest -q` → 167 passed
+- **Cómo se corre:** `.venv/Scripts/python -m pytest` → 192 passed (~66 s)
 - **Áreas cubiertas:**
   - *Motor:* el pipeline de geometría completo (`svg_io → geometry → solids → export`), verificado
     **releyendo el `.3mf` exportado**, no la malla en memoria. Los asserts numéricos SON el golden
     master: no se versionan `.3mf` binarios, que cambiarían con cada versión de manifold3d sin que
-    cambie nada real.
+    cambie nada real. Desde el ciclo 3 cubre además el **puenteo de colisiones entre extremos**:
+    `dos_lobulos.svg` (sintético, 12 segmentos rectos — cámara de 14,4 mm detrás de un cuello de
+    2,52 mm, la topología mínima que produce el bolsillo ciego) y `murcielago.svg` (arte vectorizado
+    real, `@pytest.mark.lento`, criterio `euler_number == 0` releído del `.3mf`).
   - *Web:* login y no-enumeración de usuarios, autorización de las 4 páginas y de la API, open
     redirect, contenido de la sesión y flags de la cookie, detección de formato por contenido, límite
     de tamaño por las dos vías, nombres de archivo hostiles, path traversal en el id, claves fuera del
     enum, propietario ajeno, ciclo completo de polling, **timeout con el hijo muerto de verdad**, tope
-    de trabajos simultáneos, un hijo que muere sin escribir, los 9 parámetros fuera de rango, y que
+    de trabajos simultáneos, un hijo que muere sin escribir, los 10 parámetros fuera de rango, y que
     ningún error devuelva rutas del servidor. Un solo test (`-m lento`) corre el motor real de punta a
     punta.
   - El andamiaje aísla todo con `dependency_overrides`: ningún test toca `trabajo/` ni depende de que
@@ -257,12 +278,12 @@ studiocutter3d/
 │     ├─ js/app.js          ← tema, subidas, polling, reporte
 │     ├─ js/preview3d.js    ← three.js: entorno PMREM, sombras, encuadre automático
 │     └─ vendor/            ← three 0.186.0 + fuentes (2,4 MB, para andar sin internet)
-└─ tests/                   ← 167 tests
+└─ tests/                   ← 192 tests
    ├─ conftest.py           ← andamiaje aislado de la web
    ├─ test_params.py  test_svg_io.py  test_geometry.py  test_raster.py
    ├─ test_fidelidad.py     ← red de caracterización del motor
    ├─ test_web_auth.py  test_web_uploads.py  test_web_trabajos.py
-   └─ fixtures/             ← circulo · estrella · lineart_ojos_llenos
+   └─ fixtures/             ← circulo · estrella · lineart_ojos_llenos · dos_lobulos · murcielago
 ```
 
 ## Convenciones y restricciones
@@ -280,6 +301,27 @@ studiocutter3d/
 - **La verificación relee el archivo exportado**, nunca la malla en memoria.
 - **Los offsets del cortador se derivan de los parámetros**, no se hardcodean: `o1 = luz`,
   `o2 = luz + filo_ancho`, `o3 = luz + filo_ancho + pie_ancho_extra`.
+- **El cortador puentea las colisiones entre extremos, y es la ÚNICA excepción a la regla de
+  fidelidad.** Cuando dos extremos quedan tan cerca que las paredes externas del filo (`o2`) se tocan
+  —o les queda una luz ≤ `distancia_colision_mm`—, la muesca se rellena **en una copia de la silueta,
+  la que consume el cortador, aguas arriba de los offsets**, para que `o1`/`o2`/`o3` salgan todos de
+  la misma y las secciones sigan cerrando. Con los defaults el umbral es una boca de `2*o2 + 1 =
+  4,4 mm`. El motivo es físico: una muesca cerrada por filo en los cuatro lados es un bolsillo ciego
+  donde la masa se atasca, y el contrato prefiere perder la muesca antes que eso. **El arte y el
+  marcador no se tocan nunca** — el puenteo vive solo en `construir_cortador_2d`, y hay un test que lo
+  fija. Se reporta con `colisiones_puenteadas` / `area_puenteada_mm2` / `area_puenteada_pct`: se mide
+  y se declara, no se compensa.
+- **El conteo de colisiones puenteadas NO es monótono.** Cuenta componentes conexas, así que al subir
+  `distancia_colision_mm` dos zonas vecinas pueden fundirse y el número baja mientras el área sube.
+  **El área sí es monótona** y es la que hay que mirar para juzgar cuánto se puenteó.
+- **La verificación es circular respecto de `distancia_colision_mm`, y conviene saberlo.** El Euler
+  esperado del cortador es `0` fijo y un anillo vale 0 sin importar cuántas muescas se rellenaron; las
+  secciones comparan contra `o3.area − o1.area` derivada de los mismos offsets ya puenteados; la luz
+  mínima solo puede alejarse. O sea: **`todo_ok=True` es compatible con un cortante tan puenteado que
+  no corte el dibujo**. Lo que protege es el default de 1 mm y que el usuario lea el porcentaje de la
+  advertencia. Es deliberado —un cortante muy puenteado es un sólido válido, y el contrato manda
+  advertir eso, no fallar— pero no hay ninguna medición que distinga "puenteó lo justo" de "puenteó
+  de más".
 - **El contorneado de macizos vive SOLO en F2** (`raster.py`), viene encendido por default y
   **siempre declara** cuántas zonas tocó y qué área. F3 nunca altera el arte.
 - **La salida de F2 va en PNG, nunca en JPG**: la compresión volvería a meter grises en el borde.

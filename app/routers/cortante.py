@@ -5,7 +5,7 @@ usuario, sobre un archivo que no eligio y sin poder revisar el resultado; el
 Convertidor y la correccion de lineas ya dejan el SVG a la vista antes de este
 paso. Lo que llega es lo que se imprime.
 
-Los 9 parametros se reciben uno por uno y no como un JSON suelto: asi FastAPI
+Los 10 parametros se reciben uno por uno y no como un JSON suelto: asi FastAPI
 rechaza lo que no es un numero antes del handler, y `CutterParams` rechaza lo
 que esta fuera de rango con el nombre del parametro adentro. **Los limites no
 se revalidan aca** — mayor que cero y hasta 1000 mm ya son invariantes del
@@ -76,6 +76,12 @@ CAMPOS: tuple[CampoParametro, ...] = (
     _campo("filo_alto_mm", "Alto del filo", 0.5, "Altura de la pared que corta"),
     _campo("pie_ancho_extra_mm", "Pie (ancho extra)", 0.1, "Refuerzo de apoyo"),
     _campo("pie_alto_mm", "Pie (alto)", 0.1, "Altura del refuerzo"),
+    _campo(
+        "distancia_colision_mm",
+        "Distancia de colision",
+        0.1,
+        "Extremos del filo mas cerca que esto se juntan y la muesca no se corta",
+    ),
 )
 
 LIMITE_MAX_MM = CutterParams.LIMITE_MAX_MM
@@ -121,8 +127,8 @@ def generar_cortante(
     usuario: UsuarioRequerido,
     almacen: AlmacenDep,
     a: AjustesDep,
-    # Todo lo que sigue va por nombre: son los 9 parametros del contrato mas
-    # las opciones, y una lista posicional de 16 seria imposible de leer.
+    # Todo lo que sigue va por nombre: son los 10 parametros del contrato mas
+    # las opciones, y una lista posicional de 17 seria imposible de leer.
     *,
     archivo: Annotated[UploadFile | None, File()] = None,
     origen: Annotated[str | None, Form()] = None,
@@ -137,6 +143,7 @@ def generar_cortante(
     filo_alto_mm: Annotated[float, Form()] = _D.filo_alto_mm,
     pie_ancho_extra_mm: Annotated[float, Form()] = _D.pie_ancho_extra_mm,
     pie_alto_mm: Annotated[float, Form()] = _D.pie_alto_mm,
+    distancia_colision_mm: Annotated[float, Form()] = _D.distancia_colision_mm,
 ) -> dict[str, object]:
     try:
         parametros = CutterParams(
@@ -149,6 +156,7 @@ def generar_cortante(
             filo_alto_mm=filo_alto_mm,
             pie_ancho_extra_mm=pie_ancho_extra_mm,
             pie_alto_mm=pie_alto_mm,
+            distancia_colision_mm=distancia_colision_mm,
         )
     except Exception as exc:
         raise traducir(exc) from exc

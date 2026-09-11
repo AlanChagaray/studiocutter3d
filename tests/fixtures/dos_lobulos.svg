@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fixture: camara ancha detras de un cuello angosto. Caso `cortante` solo.
+     Es la topologia que produce el bolsillo ciego, la misma del murcielago
+     (muesca entre oreja y ala) pero con 12 segmentos rectos en vez de 49 KB.
+
+     El cuello mide 14 unidades sobre un lado mayor de 500, o sea 2,52 mm a la
+     escala final de 90 mm. Cae dentro de la ventana (2*o1, 2*o2) = (1,4 , 3,4):
+     o1 NO lo cierra y o2 SI, asi que la camara de 80x80 unidades (14,4 mm) que
+     hay detras queda como celda cerrada por filo. Sin puentear: filo con 2
+     huecos y euler -2. Puenteado: 1 hueco y euler 0.
+
+     Ojo con lo que esta fixture NO prueba: 2,52 mm esta por debajo de 3,4, asi
+     que o2 cierra el cuello SOLO, sin necesidad de distancia_colision. Sirve
+     para el bolsillo y para el puenteo, no para medir el efecto del parametro:
+     ahi la dispersion es 0,25 % y cualquier assert pasaria. Para eso esta el
+     murcielago, donde la dispersion es 13 %. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600" viewBox="0 0 600 600">
+  <path fill="#000000" d="M50,50 L293,50 L293,150 L260,150 L260,230 L340,230 L340,150 L307,150 L307,50 L550,50 L550,550 L50,550 Z"/>
+</svg>

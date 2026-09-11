@@ -166,6 +166,29 @@ def test_modo_cortante_produce_solo_el_cortador(tmp_path: Path) -> None:
     assert mallas[NOMBRE_CORTADOR].euler_number == 0
 
 
+# ── puenteo de colisiones entre extremos ───────────────────────────────────
+
+
+@pytest.mark.lento
+def test_el_murcielago_cierra_en_anillo(tmp_path: Path) -> None:
+    """Line art real vectorizado, con dos camaras detras de cuellos angostos.
+
+    Antes del puenteo este mismo comando terminaba en `MallaNoManifold`: el
+    cortador salia con euler -2, dos bolsillos ciegos cerrados por filo. Por eso
+    NO se pasa `exigir_solido=False` — que `generar` no aborte es el punto del
+    test, y la topologia se relee del archivo como en el resto de la bateria.
+    """
+    resultado = generar(FIXTURES / "murcielago.svg", Modo.CORTANTE, tmp_path / "murcielago.3mf")
+    cortador = releer_3mf(resultado.ruta_3mf)[NOMBRE_CORTADOR]
+    assert cortador.is_watertight
+    assert cortador.euler_number == 0
+
+    r = resultado.reporte
+    assert r.colisiones_puenteadas == 2
+    assert 150 < r.area_puenteada_mm2 < 250, r.area_puenteada_mm2
+    assert any("puenteo" in aviso for aviso in r.advertencias), r.advertencias
+
+
 # ── RF-19: lo poco imprimible advierte, no bloquea ─────────────────────────
 
 
