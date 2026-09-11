@@ -1,0 +1,100 @@
+# studioCutter3D — corrida en contenedor (local o en un VPS propio).
+#
+# Render NO usa este archivo: alla el servicio se describe en `render.yaml` y la
+# plataforma pone el proxy, el TLS y el reinicio. Este compose sirve para dos
+# cosas: probar la imagen exactamente como va a correr en produccion antes de
+# publicarla, y desplegar en una maquina propia con un nginx o un Traefik
+# adelante.
+#
+#   export STUDIOCUTTER_SECRET="$(python -c 'import secrets;print(secrets.token_urlsafe(48))')"
+#   docker compose up --build
+#   → http://127.0.0.1:8000   (o PUERTO_HOST=8011 si el 8000 lo tiene el dev server)
+#
+# ⚠ `./credenciales.json` tiene que EXISTIR antes del primer `up`. Docker, ante
+# un bind mount de un archivo que no esta, crea un DIRECTORIO con ese nombre y
+# la app arranca diciendo que no hay usuarios dados de alta. Es el error mas
+# confuso de todo el despliegue y se evita mirando que el archivo este.
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: studiocutter3d:local
+    restart: unless-stopped
+
+    # Solo el loopback del host. Publicarlo en 0.0.0.0 seria exponer HTTP plano
+    # a la red: la cookie de sesion viajaria en claro. Para que lo vea alguien
+    # mas, adelante va un proxy con TLS — y ahi se prenden COOKIE_SECURE y
+    # DETRAS_DE_PROXY.
+    #
+    # El puerto DEL HOST se mueve sin tocar el archivo (`PUERTO_HOST=8011 docker
+    # compose up`): levantar el contenedor con el servidor de desarrollo ya
+    # corriendo en el 8000 es el caso de todos los dias, y con el puerto fijo
+    # `up` falla con un error de bind que no explica nada.
+    ports:
+      - "127.0.0.1:${PUERTO_HOST:-8000}:8000"
+
+    environment:
+      # Sin esto, el secreto se genera solo y vive en el volumen. Puesto, las
+      # sesiones sobreviven a que el volumen se borre.
+      STUDIOCUTTER_SECRET: "${STUDIOCUTTER_SECRET:-}"
+
+      # En localhost la conexion es HTTP plano: la cookie no puede pedir Secure
+      # (el navegador no la mandaria nunca) y no hay proxy que interpretar.
+      # Detras de un TLS propio, las dos van en "1".
+      STUDIOCUTTER_COOKIE_SECURE: "0"
+      STUDIOCUTTER_DETRAS_DE_PROXY: "0"
+
+      # 2 procesos hijo a la vez piden ~1 GB. Con el `mem_limit` de abajo entra;
+      # subir uno sin subir el otro es pedir el OOM killer.
+      STUDIOCUTTER_MAX_TRABAJOS: "2"
+
+      # Con un dominio propio adelante, llenarlo cierra el `Host` a ese nombre:
+      #   STUDIOCUTTER_HOSTS: "cortantes.midominio.com"
+
+    volumes:
+      # Las credenciales entran montadas y de solo lectura: nunca adentro de la
+      # imagen. Es el mismo lugar donde Render deja sus *secret files*, asi que
+      # la app no distingue un despliegue del otro.
+      - ./credenciales.json:/etc/secrets/credenciales.json:ro
+      # Lo unico escribible: trabajos en curso y el secreto de sesion.
+      - datos:/datos
+
+    # ── Endurecimiento del contenedor ────────────────────────────────────────
+    # Todo lo de aca abajo es acotar el daño de un "y si igual entran": no
+    # reemplaza a las defensas de la app, las respalda.
+    read_only: true # el filesystem entero de solo lectura, salvo lo de abajo
+    tmpfs:
+      # Los archivos subidos pasan por un temporal del sistema antes de llegar
+      # al directorio del trabajo. Va en RAM, sin permiso de ejecucion y con
+      # tope propio: un temporal que crece no puede llenar el disco del host.
+      - /tmp:rw,noexec,nosuid,size=256m
+    security_opt:
+      - no-new-privileges:true # ningun setuid puede escalar desde adentro
+    cap_drop:
+      - ALL # el proceso no usa una sola capability de root
+    init: true
+    mem_limit: 2g
+    memswap_limit: 2g # sin esto, el limite de memoria se escapa por el swap
+    pids_limit: 256 # techo de procesos: una fork bomb no tumba el host
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/salud', timeout=4).read()",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
+
+volumes:
+  datos:
+    # Volumen con nombre y no un bind mount del host: Docker le copia al volumen
+    # el dueño que tiene `/datos` en la imagen (uid 10001), asi que el proceso
+    # no-root puede escribir sin que nadie corra un `chown` a mano. Un bind
+    # mount de una carpeta del host llega como root y el arranque falla.

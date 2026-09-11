@@ -2,7 +2,7 @@
 
     .venv/Scripts/python -m uvicorn app.main:app --port 8000
 
-Tres cosas que solo pueden vivir aca:
+Cuatro cosas que solo pueden vivir aca:
 
 - **El limite de subida por `Content-Length`**, como middleware. Tiene que
   cortar *antes* de que Starlette lea el cuerpo: si se chequea dentro del
@@ -13,6 +13,9 @@ Tres cosas que solo pueden vivir aca:
   error sea la misma en toda la API y que ninguna ruta del servidor se escape
   al cliente.
 - **La limpieza por TTL**, como tarea de fondo del ciclo de vida.
+- **El armado del borde** (`proteccion.instalar`) y el `/salud`: son lo unico
+  que se agrega al exponer la app fuera de localhost, y el orden en que se
+  apilan los middleware solo se puede decidir donde se arma la app.
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import __version__, trabajos
+from . import __version__, proteccion, trabajos
 from .archivos import limpiar_vencidos
 from .dependencias import obtener_ajustes, obtener_almacen
 from .errores import ErrorApi, RedireccionALogin, traducir
@@ -107,9 +110,26 @@ def crear_app() -> FastAPI:
             return JSONResponse(error.como_json(), status_code=error.estado)
         return await siguiente(request)
 
+    # Freno por IP, cabeceras de seguridad y filtro de `Host`. Va DESPUES del
+    # limite de tamaño para quedar por fuera de el: asi el 413 tambien sale con
+    # las cabeceras puestas, y un pedido que ya se paso de cupo no llega
+    # siquiera a que se le lea el `Content-Length`.
+    proteccion.instalar(aplicacion, a)
+
     aplicacion.mount(
         "/static", StaticFiles(directory=str(a.raiz / "app" / "static")), name="static"
     )
+
+    @aplicacion.get("/salud", include_in_schema=False)
+    def salud() -> dict[str, str]:
+        """Latido para el orquestador (Render, compose, k8s). Sin sesion y sin datos.
+
+        Que no exija login es deliberado —quien chequea la salud no tiene
+        cuenta— y por eso no dice absolutamente nada: ni version, ni trabajos en
+        curso, ni estado del disco. Un endpoint de salud conversador es un
+        regalo de reconocimiento para cualquiera que pase.
+        """
+        return {"estado": "ok"}
 
     for router in (
         auth.router,

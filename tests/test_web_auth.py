@@ -163,9 +163,11 @@ def test_el_grafo_de_modulos_del_visor_cierra(sesion: TestClient) -> None:
     escrita a mano solo puede nombrar lo que uno ya sabe que existe, que es
     exactamente lo que este bug no era.
     """
+    # El `[^>]*` cubre el `nonce` que le pone el CSP: el import map es el unico
+    # script inline del sitio, y sin nonce el navegador no lo evalua.
     mapa = json.loads(
         re.search(
-            r'<script type="importmap">\s*(\{.*?\})\s*</script>',
+            r'<script type="importmap"[^>]*>\s*(\{.*?\})\s*</script>',
             sesion.get("/cortante").text,
             re.DOTALL,
         ).group(1)

@@ -1,0 +1,27 @@
+# Todo afuera, y despues se deja entrar lo justo.
+#
+# Es al reves de lo habitual —listar lo que sobra— y el motivo es que la lista
+# negra falla en silencio: el dia que aparezca un archivo nuevo con algo
+# sensible adentro, una lista negra lo deja pasar y nadie se entera hasta que
+# esta en una capa de la imagen. Con la lista blanca, lo nuevo se queda afuera
+# hasta que alguien lo agregue aca a proposito.
+#
+# Lo que esto mantiene FUERA del contexto de build, y por lo tanto lejos de
+# cualquier capa de la imagen:
+#   credenciales.json · sesion.key ← los dos secretos del proyecto
+#   .venv/ (cientos de MB, y compilado para Windows)
+#   trabajo/ · out/   ← salidas y archivos de usuarios
+#   .git/             ← el historial entero, con todo lo que alguna vez estuvo
+
+*
+
+!app/
+!cutter3d/
+!docker/
+!requirements.txt
+
+# Y de lo que entra, lo que igual no sirve adentro de la imagen.
+**/__pycache__/
+**/*.py[cod]
+**/.DS_Store
+**/Thumbs.db

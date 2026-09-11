@@ -29,10 +29,26 @@ from app.almacen import AlmacenEnMemoria
 from app.config import Ajustes
 from app.dependencias import obtener_ajustes, obtener_almacen
 from app.main import app
+from app.proteccion import reiniciar_frenos
 
 USUARIO = "tester"
 CLAVE = secrets.token_urlsafe(16)
 """Se genera en cada corrida: no hay ninguna contraseña escrita en el repo."""
+
+
+@pytest.fixture(autouse=True)
+def frenos_limpios() -> Iterator[None]:
+    """Los frenos por IP arrancan vacios en cada test.
+
+    Son estado de modulo —tienen que serlo: el middleware no recibe fixtures— y
+    todos los tests salen de la misma IP (`testclient`). Sin este reinicio, los
+    intentos fallidos de un test de login se le suman al siguiente y el orden de
+    ejecucion decidiria quien pasa: la clase de test intermitente que despues
+    nadie puede reproducir.
+    """
+    reiniciar_frenos()
+    yield
+    reiniciar_frenos()
 
 
 @pytest.fixture

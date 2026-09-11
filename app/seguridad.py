@@ -38,21 +38,53 @@ usuario existe.
 """
 
 
+VARIABLE_CREDENCIALES = "STUDIOCUTTER_CREDENCIALES_JSON"
+"""Las credenciales completas, en JSON, adentro de una variable de entorno.
+
+Existe por el contenedor. `credenciales.json` esta gitignoreado —y tiene que
+seguir estandolo—, asi que una imagen construida desde el repo no lo trae y una
+imagen que lo trajera seria peor: los hashes quedarian en una capa, y cualquiera
+con acceso al registro se los lleva. Las dos formas sanas de que el secreto
+llegue al contenedor sin pasar por la imagen son montar el archivo (lo que hace
+`docker-compose` y lo que hacen los *secret files* de Render) o esta variable,
+para las plataformas donde montar un archivo no es practico.
+
+**Si estan las dos fuentes gana la variable**, que es la que se configura en el
+panel de la plataforma: tiene que poder corregir un montaje viejo sin
+reconstruir nada. Borrarla devuelve el control al archivo.
+"""
+
+
 def cargar_usuarios(a: Ajustes) -> dict[str, str]:
-    """Lee `credenciales.json` y devuelve {usuario: hash}."""
+    """Devuelve {usuario: hash}. Primero la variable de entorno, si no el archivo."""
+    crudo = os.environ.get(VARIABLE_CREDENCIALES, "").strip()
+    if crudo:
+        return _parsear(crudo, origen=VARIABLE_CREDENCIALES)
     if not a.archivo_credenciales.is_file():
         raise ErrorDeConfiguracion(
-            f"falta {a.archivo_credenciales.name}: no hay ningun usuario dado de alta"
+            f"falta {a.archivo_credenciales.name} y {VARIABLE_CREDENCIALES} esta vacia: "
+            "no hay ningun usuario dado de alta"
         )
+    return _parsear(
+        a.archivo_credenciales.read_text(encoding="utf-8"), origen=a.archivo_credenciales.name
+    )
+
+
+def _parsear(crudo: str, *, origen: str) -> dict[str, str]:
+    """JSON de credenciales a {usuario: hash}, venga de donde venga.
+
+    El mensaje de error nombra el origen —archivo o variable— porque con dos
+    fuentes posibles, "el formato no es el esperado" sin decir de que no alcanza
+    para saber donde mirar.
+    """
     try:
-        datos = json.loads(a.archivo_credenciales.read_text(encoding="utf-8"))
-        entradas = datos["usuarios"]
+        entradas = json.loads(crudo)["usuarios"]
+        return {str(e["usuario"]): str(e["hash"]) for e in entradas}
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
         raise ErrorDeConfiguracion(
-            f"{a.archivo_credenciales.name} no tiene el formato esperado "
+            f"{origen} no tiene el formato esperado "
             '({"usuarios": [{"usuario": ..., "hash": ...}]})'
         ) from exc
-    return {str(e["usuario"]): str(e["hash"]) for e in entradas}
 
 
 def verificar_credenciales(usuario: str, clave: str, a: Ajustes) -> bool:

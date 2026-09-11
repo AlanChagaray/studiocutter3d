@@ -150,6 +150,21 @@ mallas.
 
 Nada de fallbacks silenciosos.
 
+## Despliegue
+
+La app corre en contenedor, y publicada suma las defensas de borde que en localhost no
+hacen falta (freno de fuerza bruta, CSP con nonce, `Host` permitido, cabeceras de
+seguridad). Todo eso, el paso a paso de Render y los números de memoria medidos están en
+**[DESPLIEGUE.md](DESPLIEGUE.md)**.
+
+```bash
+export STUDIOCUTTER_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+docker compose up --build      # → http://127.0.0.1:8000
+```
+
+Las credenciales **no viajan en la imagen**: se montan desde `credenciales.json` (o llegan
+por `STUDIOCUTTER_CREDENCIALES_JSON`). Son las mismas que se usan en local.
+
 ## Desarrollo
 
 ```bash

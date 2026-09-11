@@ -33,3 +33,11 @@
 # libreria contra el codigo propio, y sin esto el lenguaje del repo lo decide
 # three.
 app/static/vendor/** linguist-vendored
+
+# Los scripts del contenedor, ademas, no admiten CRLF ni por accidente: un
+# shebang con retorno de carro hace que Linux busque un interprete llamado
+# "/bin/sh\r" y el error diga que el archivo no existe. Va explicito aunque
+# `* text=auto eol=lf` ya lo cubra: esto no es una preferencia de formato, es un
+# requisito de ejecucion.
+*.sh text eol=lf
+Dockerfile text eol=lf

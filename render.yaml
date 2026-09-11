@@ -1,0 +1,87 @@
+# studioCutter3D en Render — Blueprint del servicio.
+#
+# Con este archivo en la raiz del repo, Render arma el servicio solo:
+# dashboard → New → Blueprint → elegir el repo. Lo que queda por hacer a mano
+# son las dos cosas que NO pueden vivir en un archivo versionado: las
+# credenciales y el dominio. Estan marcadas con `sync: false`, que es
+# justamente "Render me lo va a preguntar en el panel".
+#
+# El paso a paso completo, incluida la carga de `credenciales.json` como secret
+# file, esta en DESPLIEGUE.md.
+
+services:
+  - type: web
+    name: studiocutter3d
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+
+    # ⚠ El default de Render es `master` y esta rama se llama `main`. Sin esta
+    # linea, el primer deploy falla diciendo que no encuentra la rama.
+    branch: main
+    region: oregon
+
+    # `starter` = 512 MB. Medido en esta misma imagen: el servidor en reposo usa
+    # ~105 MB y un cortante del fixture mas pesado (murcielago, 21 contornos)
+    # lleva el contenedor a ~225 MB, con un pico del proceso hijo de ~290 MB.
+    # Entra —por eso STUDIOCUTTER_MAX_TRABAJOS va en 1—, pero sin lugar para un
+    # segundo trabajo simultaneo. Para dos o tres a la vez hay que pasar a
+    # `standard` (2 GB) y subir la variable en la misma proporcion.
+    plan: starter
+
+    # Una sola instancia, y no es una limitacion del plan: el almacen de
+    # trabajos, el registro de procesos hijo y los frenos por IP viven en
+    # memoria del proceso. Con dos instancias, el trabajo lanzado en una seria
+    # un 404 en la otra. Escalar esto empieza por mover ese estado afuera.
+    numInstances: 1
+
+    healthCheckPath: /salud
+
+    envVars:
+      # Firma de la cookie de sesion. `generateValue` produce un valor aleatorio
+      # de 256 bits en base64 (44 caracteres, mas que los 32 que exige la app) y
+      # Render lo conserva entre deploys: sin esto, cada deploy cerraria todas
+      # las sesiones abiertas.
+      - key: STUDIOCUTTER_SECRET
+        generateValue: true
+
+      # Render termina el TLS en su borde y habla HTTP con el contenedor. Las
+      # dos variables son las dos mitades de ese hecho: la cookie viaja con
+      # `Secure`, y la app aprende a leer `X-Forwarded-Proto` (para armar URLs
+      # `https://`) y `X-Forwarded-For` (para saber quien pide de verdad).
+      - key: STUDIOCUTTER_COOKIE_SECURE
+        value: "1"
+      - key: STUDIOCUTTER_DETRAS_DE_PROXY
+        value: "1"
+
+      # Ver la nota del plan. En `standard` (2 GB) este numero puede ir a 3.
+      - key: STUDIOCUTTER_MAX_TRABAJOS
+        value: "1"
+
+      # El dominio propio, para cerrar el header `Host`. Se completa en el panel
+      # con el nombre real —`studiocutter3d.onrender.com`, o el dominio propio si
+      # se agrega uno—. Se pueden poner varios separados por coma. Dejarlo vacio
+      # tambien funciona: acepta cualquier Host, que es lo que hay hoy.
+      - key: STUDIOCUTTER_HOSTS
+        sync: false
+
+      # Las credenciales, SOLO si se eligio cargarlas como variable en vez de
+      # como secret file. Es el JSON entero de `credenciales.json` en una linea.
+      # Si se usa el secret file (recomendado), esta variable se borra del panel
+      # y la app lee `/etc/secrets/credenciales.json`, que es el default de la
+      # imagen.
+      - key: STUDIOCUTTER_CREDENCIALES_JSON
+        sync: false
+# ── Disco persistente: por que NO esta puesto ────────────────────────────────
+# Se puede agregar, y en Render se veria asi:
+#
+#     disk:
+#       name: datos
+#       mountPath: /datos
+#       sizeGB: 1
+#
+# No hace falta, y conviene saber por que antes de pagarlo. En `/datos` viven
+# dos cosas: los trabajos en curso —que vencen a las 6 h y son descartables por
+# diseño— y `sesion.key`, que solo se usa si `STUDIOCUTTER_SECRET` esta vacia, y
+# no lo esta. O sea: sin disco no se pierde nada que importe. Un reinicio en el
+# medio de un cortante lo pierde, pero eso pasa con disco y sin disco.

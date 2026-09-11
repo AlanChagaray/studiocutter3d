@@ -243,8 +243,13 @@
 {# Los modulos de three (GLTFLoader, OrbitControls) importan de 'three' por
    nombre. El import map es lo que traduce ese nombre al archivo vendorizado,
    sin tocar los archivos de la libreria — asi siguen siendo diffeables contra
-   la version 0.186.0 original. #}
-<script type="importmap">
+   la version 0.186.0 original.
+
+   El `nonce` es lo unico que el CSP le permite a un script inline, y este es
+   el unico inline de todo el sitio. Lo pone `proteccion.py` en cada pedido:
+   sin el, el import map no se evalua, `preview3d.js` no encuentra 'three' y la
+   vista previa desaparece sin un solo error a la vista. #}
+<script type="importmap" nonce="{{ request.state.csp_nonce }}">
 {"imports": {"three": "/static/vendor/three/three.module.js"}}
 </script>
 <script type="module" src="{{ url_for('static', path='/js/preview3d.js') }}"></script>
