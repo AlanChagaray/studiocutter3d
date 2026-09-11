@@ -619,6 +619,9 @@ function iniciarCortante() {
   let firmaGenerada = null;
   let origen = new URLSearchParams(location.search).get('origen') || recordado.origen || null;
   let trabajoId = recordado.trabajo || null;
+  // El default es `3d` y se valida contra la lista: un valor raro en
+  // `sessionStorage` no puede dejar la pantalla sin ninguna vista visible.
+  let vista = recordado.vista === 'imagen' ? 'imagen' : '3d';
 
   const entradas = () => $$('.parametros .campo[data-campo] input');
 
@@ -627,6 +630,7 @@ function iniciarCortante() {
       origen,
       trabajo: trabajoId,
       modo,
+      vista,
       campos: Object.fromEntries(entradas().map((i) => [i.name, i.value])),
     });
 
@@ -773,7 +777,22 @@ function iniciarCortante() {
     }
   }
 
-  iniciarPaleta();
+  // El color de la PIEZA es uno para las dos vistas y se ofrece en las dos
+  // (`#paleta` flota sobre el visor 3D, `#paleta-pieza` va en la barra de la
+  // imagen). El del FONDO existe solo en la imagen, y arranca en la segunda
+  // muestra: con el fondo y la pieza del mismo color no se ve nada.
+  iniciarPaleta({
+    selectores: ['#paleta', '#paleta-pieza'],
+    clave: 'color-visor',
+    evento: 'cortante:color',
+  });
+  iniciarPaleta({
+    selectores: ['#paleta-fondo'],
+    clave: 'color-fondo',
+    evento: 'cortante:fondo',
+    indiceDefecto: 1,
+  });
+  iniciarVistas();
 
   generar.addEventListener('click', async () => {
     limpiarErroresDeCampo();
@@ -872,42 +891,90 @@ function iniciarCortante() {
   );
 
   /**
-   * Paleta del visor.
+   * Una paleta de color de la vista previa.
    *
-   * Cambia el color de la pieza en pantalla y nada mas: el `.3mf` y el `.glb`
-   * salen con los materiales del motor, y al imprimir el color lo pone el
-   * filamento. Por eso no reactiva el boton de generar ni se manda al
-   * servidor. Se recuerda en `localStorage`, igual que el tema.
+   * Cambia lo que se ve en pantalla y nada mas: el `.3mf` y el `.glb` salen
+   * con los materiales del motor, y al imprimir el color lo pone el filamento.
+   * Por eso no reactiva el boton de generar ni se manda al servidor. Se
+   * recuerda en `localStorage`, igual que el tema.
    *
    * La lista de colores la dibuja el template desde `COLORES` del router: aca
    * no hay ningun codigo de color escrito, solo el que trae cada boton.
+   *
+   * **Recibe VARIOS contenedores y sincroniza por valor, no por elemento.** El
+   * color de la pieza se ofrece en dos lugares —la paleta que flota sobre el
+   * visor 3D y la de la barra de la vista imagen— y es un solo valor: apretar
+   * una muestra tiene que marcar la del mismo color en las dos. Comparar por
+   * `dataset.color` en vez de por identidad del boton es todo lo que hace
+   * falta para eso, y es lo que evita tener que mantener dos paletas en
+   * sincronia a mano.
    */
-  function iniciarPaleta() {
-    const muestras = $$('#paleta .paleta__color');
+  function iniciarPaleta({ selectores, clave, evento, indiceDefecto = 0 }) {
+    const muestras = selectores.flatMap((sel) => $$(`${sel} .paleta__color`));
     if (!muestras.length) return;
 
     let guardado = null;
     try {
-      guardado = localStorage.getItem('color-visor');
+      guardado = localStorage.getItem(clave);
     } catch (_) {
-      /* sin localStorage se arranca con el primero, que es el default */
+      /* sin localStorage se arranca con el default, que lo marca el template */
     }
 
-    const aplicar = (boton, recordar) => {
-      muestras.forEach((o) => o.setAttribute('aria-pressed', String(o === boton)));
-      document.dispatchEvent(
-        new CustomEvent('cortante:color', { detail: { color: boton.dataset.color } })
-      );
+    const aplicar = (color, recordar) => {
+      muestras.forEach((o) => o.setAttribute('aria-pressed', String(o.dataset.color === color)));
+      document.dispatchEvent(new CustomEvent(evento, { detail: { color } }));
       if (!recordar) return;
       try {
-        localStorage.setItem('color-visor', boton.dataset.color);
+        localStorage.setItem(clave, color);
       } catch (_) {
         /* sin persistencia: el color vale para esta pagina igual */
       }
     };
 
-    muestras.forEach((b) => b.addEventListener('click', () => aplicar(b, true)));
-    aplicar(muestras.find((b) => b.dataset.color === guardado) || muestras[0], false);
+    muestras.forEach((b) => b.addEventListener('click', () => aplicar(b.dataset.color, true)));
+
+    // Un color guardado que ya no este en `COLORES` se descarta: la paleta del
+    // servidor manda, y si cambio la lista el valor viejo no existe mas.
+    const disponibles = muestras.map((b) => b.dataset.color);
+    const inicial = disponibles.includes(guardado)
+      ? guardado
+      : disponibles[indiceDefecto] || disponibles[0];
+    aplicar(inicial, false);
+  }
+
+  /**
+   * Las dos vistas previas de la misma geometria.
+   *
+   * `3d` es el visor de siempre y no cambia en nada; `imagen` es la foto
+   * cenital descargable. Lo unico que hace esta funcion es mostrar una y
+   * esconder la otra: quien las dibuja es `preview3d.js`, que tiene el
+   * contexto de WebGL.
+   *
+   * El aviso `cortante:vista` no es decorativo. La vista imagen **no tiene
+   * loop de render** —es una toma fija, se rinde solo cuando algo cambia—, asi
+   * que mientras estuvo escondida su canvas midio 0 y no pudo pintarse. El
+   * aviso es lo que la despierta al volver.
+   */
+  function iniciarVistas() {
+    const botones = $$('.segmentado--vistas button[data-vista]');
+    if (!botones.length) return;
+
+    const aplicar = (elegida) => {
+      vista = elegida;
+      botones.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.vista === elegida)));
+      mostrar($('#visor'), elegida === '3d');
+      mostrar($('#vista-imagen'), elegida === 'imagen');
+      mostrar($('#pista-imagen'), elegida === 'imagen');
+      document.dispatchEvent(new CustomEvent('cortante:vista', { detail: { vista: elegida } }));
+    };
+
+    botones.forEach((b) =>
+      b.addEventListener('click', () => {
+        aplicar(b.dataset.vista);
+        recordar();
+      })
+    );
+    aplicar(vista);
   }
 }
 

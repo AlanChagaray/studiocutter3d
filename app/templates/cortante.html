@@ -70,25 +70,72 @@
     </div>
   </aside>
 
+  {# Dos vistas de la misma geometria, y el titulo del panel ya no nombra a
+     ninguna: "VISTA PREVIA" arriba y las dos opciones abajo.
+
+       3D      el visor de siempre — se gira, se acerca, no cambio nada
+       Imagen  una foto cenital lista para descargar en JPG
+
+     Las dos salen del MISMO `.glb`: la imagen no es un render aparte ni una
+     reconstruccion, es la misma malla con otra camara y otra luz. Por eso el
+     color de la pieza es uno solo y las dos paletas que lo ofrecen —la que
+     flota sobre el visor y la de la barra de la imagen— mueven el mismo
+     valor. #}
   <div class="banco__visor panel panel--plano">
     <div class="rotulo">
-      <span class="punto punto--activo"></span> VISTA PREVIA 3D
+      <span class="punto punto--activo"></span> VISTA PREVIA
       <span class="lista__meta" style="margin-left:auto" id="pista-visor">todavia no hay nada que mostrar</span>
     </div>
+
+    <div class="vistas">
+      <div class="segmentado segmentado--vistas" role="group" aria-label="Tipo de vista previa">
+        <button type="button" data-vista="3d" aria-pressed="true">
+          {{ m.icono('cubo', 15) }} 3D
+        </button>
+        <button type="button" data-vista="imagen" aria-pressed="false">
+          {{ m.icono('imagen', 15) }} Imagen
+        </button>
+      </div>
+      <span class="lista__meta oculto" id="pista-imagen">cenital &middot; fondo liso &middot; JPG de 2048 px</span>
+    </div>
+
     <div class="visor" id="visor">
       <div class="visor__pista">arrastrar para girar &middot; rueda para acercar</div>
       {# La paleta ocupa el lugar de la vieja leyenda cortador/marcador: con
          la pieza pintada de un solo color esa leyenda pasaba a mentir, y las
          dos piezas se distinguen solas por la forma (una es pared, la otra
          una placa con relieve). #}
-      <div class="paleta" role="group" aria-label="Color de la vista previa" id="paleta">
-        {% for c in colores %}
-        <button type="button" class="paleta__color" data-color="{{ c.hex }}"
-                style="--muestra:{{ c.hex }}" title="{{ c.nombre }}"
-                aria-label="{{ c.nombre }}"
-                aria-pressed="{{ 'true' if loop.first else 'false' }}"></button>
-        {% endfor %}
-        <span class="paleta__nota">solo la vista</span>
+      {{ m.paleta(colores, 'paleta', 'Color de la vista previa', nota='solo la vista') }}
+    </div>
+
+    {# El lienzo es CUADRADO y lo que se ve es exactamente lo que se baja: el
+       JPG sale de este mismo canvas con la misma camara, solo subido a 2048
+       px. Un preview panoramico con una descarga cuadrada recortaria algo que
+       el usuario nunca vio. #}
+    <div class="vista-imagen oculto" id="vista-imagen">
+      <div class="lienzo-caja">
+        <div class="lienzo" id="lienzo"></div>
+      </div>
+
+      <div class="imagen-controles">
+        <div class="imagen-controles__grupo">
+          <span class="imagen-controles__rotulo">Pieza</span>
+          {{ m.paleta(colores, 'paleta-pieza', 'Color del cortante', clase='muestras') }}
+        </div>
+        <div class="imagen-controles__grupo">
+          <span class="imagen-controles__rotulo">Fondo</span>
+          {# Arranca en la segunda muestra y no en la primera a proposito: con
+             el fondo y la pieza del mismo color no se ve nada, y la pieza
+             arranca en la primera. #}
+          {{ m.paleta(colores, 'paleta-fondo', 'Color del fondo', clase='muestras', activo=1) }}
+        </div>
+        {# Nace apagado con el motivo puesto: sin cortante generado no hay nada
+           que fotografiar. Lo prende `preview3d.js` cuando el `.glb` cargo —es
+           el unico que sabe si la imagen se puede producir. #}
+        <button type="button" class="boton" id="bajar-imagen" disabled
+                title="Genera el cortante para poder descargar la imagen">
+          {{ m.icono('bajar', 16) }} Descargar JPG
+        </button>
       </div>
     </div>
   </div>

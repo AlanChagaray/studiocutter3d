@@ -944,6 +944,125 @@ body[data-pagina='cortante'] {
   font-size: 10.5px;
 }
 
+/* La misma muestra, en linea dentro de una barra de controles en vez de
+   flotando sobre el canvas. Lo unico que cambia es el posicionamiento: el
+   boton sigue siendo `.paleta__color`, con su relleno en `--muestra`. */
+.muestras {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── Vista previa: selector de vista ────────────────────────────────────── */
+
+.vistas {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--borde-suave);
+}
+
+/* Mas chico que el segmentado del encabezado: aca no elige que se genera,
+   elige que se esta mirando. Los 44 px de alto del otro lo hacian competir
+   con el titulo del panel. */
+.segmentado--vistas button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 14px;
+  font-size: 12.5px;
+}
+
+.vistas .lista__meta {
+  margin-left: auto;
+  font-size: 10.5px;
+}
+
+/* ── Vista imagen (foto cenital descargable) ────────────────────────────── */
+
+.vista-imagen {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* El `min-height: 0` es lo que deja al lienzo achicarse: sin el, un item de
+   flex no baja de su contenido y el cuadrado desborda el panel. */
+.lienzo-caja {
+  display: grid;
+  flex: 1;
+  place-items: center;
+  min-height: 0;
+  padding: 16px;
+  background: var(--card-2);
+}
+
+/* Cuadrado, y el JPG sale con esta misma relacion: lo que se ve es lo que se
+   baja. El fondo de la pieza lo pinta el canvas (color elegido en la paleta),
+   asi que aca solo va el marco que lo separa del panel.
+
+   El cuadrado mas grande que entra en la caja se consigue con `height: 100%` +
+   `aspect-ratio` + `max-width: 100%`: si la caja es mas ancha que alta manda el
+   alto, y si es mas alta que ancha el `max-width` recorta y el aspecto baja el
+   alto solo. El `min-height` es la red: si el porcentaje no resolviera —el alto
+   de la caja sale del flex, no de un valor escrito— el lienzo quedaria en cero
+   y no habria nada que mirar. Con el piso, lo peor que pasa es que el cuadrado
+   sea de 300 px. */
+.lienzo {
+  position: relative;
+  width: auto;
+  height: 100%;
+  min-height: 300px;
+  max-width: 100%;
+  max-height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  aspect-ratio: 1;
+  box-shadow: var(--sombra-panel);
+}
+
+.lienzo canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.imagen-controles {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 18px;
+  padding: 12px 15px;
+  border-top: 1px solid var(--borde-suave);
+}
+
+.imagen-controles__grupo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.imagen-controles__rotulo {
+  color: var(--texto-2);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.imagen-controles .boton {
+  margin-left: auto;
+  min-height: 38px;
+  padding: 0 16px;
+  font-size: 12.5px;
+}
+
 /* ── Reporte de fidelidad ───────────────────────────────────────────────── */
 
 .metricas {
@@ -1157,6 +1276,33 @@ body[data-pagina='cortante'] {
   .visor {
     height: 300px;
     min-height: 0;
+  }
+
+  /* El lienzo NO se acota como el visor 3D: apilado se lleva el ancho entero
+     de la columna, y es lo que corresponde. El visor esta topeado en 300 px
+     porque es algo que se orbita mientras se miran los parametros; la imagen
+     es el entregable, y mirarla en un cuadrado de 300 px en el telefono es no
+     poder juzgarla.
+
+     ⚠ Y no se acota con `height` aca aunque parezca el lugar: `.lienzo-caja`
+     es item de un flex en columna con `flex: 1`, asi que en el eje principal
+     manda `flex-basis` y un `height` escrito no hace absolutamente nada. El
+     que topea de verdad es el `max-width: 100%` del lienzo, que a este lado
+     del corte es la restriccion que ata — medido: 431 px de cuadrado en un
+     viewport de 485. */
+  .lienzo-caja {
+    padding: 12px;
+  }
+
+  /* A 390 px la fila de tres bloques no entra: cada uno pasa a su renglon y
+     el boton a lo ancho, que ademas lo vuelve mas facil de acertar. */
+  .imagen-controles__grupo {
+    width: 100%;
+  }
+
+  .imagen-controles .boton {
+    width: 100%;
+    margin-left: 0;
   }
 
   /* Las 8 muestras entran justas en 390 px; la aclaracion se cae primero. */
