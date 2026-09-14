@@ -67,22 +67,26 @@ const CALIDADES_JPG = [0.92, 0.86, 0.78, 0.7, 0.6];
  * normal— y el centro sale sin distorsion. */
 const FOV_JPG = 32;
 
-/* Direccion de la luz clave, y de ahi el largo de la sombra.
+/* Direccion de la luz principal — la del VISOR, y de ahi el largo de la sombra.
  *
- * Se declara una sola vez porque **el encuadre depende de ella**: la sombra se
- * corre `SOMBRA_POR_MM` milimetros por cada milimetro de alto de la pieza, en
- * el eje x y en el z, y si el cuadro no la contempla sale cortada. Tenerlas
- * separadas —un vector para la luz y un margen a ojo para la camara— es
- * exactamente como se cortaba antes: con 58 grados de elevacion la sombra de
- * una pieza de 14 mm se corre 6,1 mm, y el aire que dejaba el margen fijo eran
- * 6,0. Entraba por casualidad, y con una pieza mas alta no entraba.
+ * Es el mismo vector que usa `agregarLuces`, declarado aca arriba para que no
+ * haya dos verdades: **el encuadre de la foto depende de el**. La sombra se
+ * corre `SOMBRA_POR_MM` milimetros por cada milimetro de alto de la pieza, y
+ * si el cuadro no la contempla sale cortada.
  *
- * 1,6 sobre la hipotenusa de 0,7 y 0,7 son 58 grados. Mas alta lava el
- * relieve del marcador; mas baja alarga tanto la sombra que la pieza tiene que
- * achicarse para que entre.
+ * Que salga del visor y no de un vector propio es justamente el pedido: la
+ * foto tiene que verse igual que la vista 3D, y la direccion de la luz —con
+ * su sombra— es la mitad de eso. La otra mitad es el reparto de paneles, que
+ * SI cambia entre las dos vistas: ver la nota de `ESTUDIO_ORBITA`.
+ *
+ * ⚠ Va ACA ARRIBA y no al lado de `agregarLuces`, que seria su lugar natural,
+ * por la misma razon que `ESTUDIO_ORBITA` (ver su nota): las dos vistas se
+ * inicializan mas arriba que el final del archivo, y un `const` declarado
+ * despues esta en zona muerta temporal. Una funcion se hubiera hoisteado; un
+ * `const` no.
  */
-const DIR_CLAVE = [-0.7, 1.6, -0.7];
-const SOMBRA_POR_MM = Math.abs(DIR_CLAVE[0]) / DIR_CLAVE[1];
+const DIR_PRINCIPAL = [70, 130, 90];
+const SOMBRA_POR_MM = Math.hypot(DIR_PRINCIPAL[0], DIR_PRINCIPAL[2]) / DIR_PRINCIPAL[1];
 
 /* Lugar maximo que se le cede a la sombra, en veces el radio de la pieza. No
    ata en ninguna proporcion normal —una pieza de 90 mm y 14 mm de alto pide
@@ -104,79 +108,64 @@ const TOPE_SOMBRA = 0.4;
  */
 const MARGEN_JPG = 1.06;
 
-/* Intensidad de cada panel de la caja de estudio, por vista.
+/* Los paneles de la caja de estudio: intensidad y color de cada uno.
  *
- * El visor 3D usa `ORBITA`, que es la caja original: cenital fuerte, porque
- * ahi la pieza gira y lo que se busca es que se lea el volumen desde cualquier
- * angulo.
+ * **Son dos repartos y la diferencia es una sola idea:** el visor mira la
+ * pieza en angulo y la foto la mira a plomo. Un panel cenital fuerte es lo que
+ * le da volumen a la pieza mientras gira; visto a plomo ese mismo panel cae
+ * por igual sobre el plato y sobre el fondo del surco, y como nada lo tapa ahi
+ * adentro —no hay oclusion ambiental— el grabado se borra.
  *
- * `FOTO.estudio` es la de la toma a plomo, y **casi invierte el reparto**. El
- * motivo es geometrico: en una toma cenital el panel de arriba ilumina por
- * igual la cara del plato y la cara del relieve —las dos son horizontales y
- * miran al mismo lado—, asi que todo lo que le sobra es lavado que borra el
- * marcador. La luz lateral, en cambio, separa las PAREDES del relieve del
- * plato, que es lo unico que hace que un grabado se lea. Y sale gratis en
- * sombras: el `environment` no proyecta ninguna.
+ * Medido con el modelo del estudio corrido fuera del navegador, sobre la pieza
+ * Rosa vista a plomo (niveles de luminancia sRGB, de 0 a 255):
  *
- * ⚠ Vive ACA ARRIBA y no al lado de `crearEntorno`, que seria su lugar
- * natural: `crearEntorno` la toma como valor por defecto de un parametro, y
+ *   reparto          plato   plato-surco   plato-pared   gris neutro
+ *   ESTUDIO_ORBITA     221        9,5          34,1      pared azulada
+ *   ESTUDIO_FOTO       193       29,1          31,2      neutro
+ *
+ * El grabado pasa de 9,5 niveles de contraste a 29,1 —de no leerse a leerse—
+ * y las paredes conservan los suyos. Lo que se paga es que la pieza deja de
+ * salir 72 niveles por encima de su propio color, que era justamente lo que
+ * la hacia ver lavada.
+ *
+ * `frio` y `calido` son los dos paneles laterales. El visor los tiene
+ * tinteados a proposito (azul de un lado, ambar del otro: es lo que evita que
+ * un plastico mate parezca plastilina mientras gira). La foto los pone
+ * **blancos**: es un archivo que el usuario se lleva, y el color de la pieza
+ * tiene que ser el que eligio, no el que le puso la caja de luces.
+ *
+ * ⚠ Viven ACA ARRIBA y no al lado de `crearEntorno`, que seria su lugar
+ * natural: `crearEntorno` toma uno como valor por defecto de un parametro, y
  * las dos vistas se inicializan mas arriba que el final del archivo. Un
  * `const` declarado despues esta en zona muerta temporal, asi que la llamada
  * tiraba `ReferenceError` — y lo peor es que no se veia: el `try` del arranque
  * se lo comia y la pantalla decia "este navegador no puede generar la imagen".
  * Una funcion se hubiera hoisteado; un `const` no.
  */
-const ESTUDIO_ORBITA = { cenital: 3.2, lateral: 1.5, contra: 0.9, piso: 1.0 };
-
-/* Los numeros de la toma cenital, juntos.
- *
- * Estan agrupados y no repartidos por el codigo porque **se ajustan juntos**:
- * subir la clave sin bajar la exposicion vuelve a quemar el plato del
- * marcador, y bajar el entorno sin subir la clave apaga la pieza entera. Lo
- * que se busca con el reparto es que la mayor parte de la luz venga de una
- * direccion —la clave— y no del ambiente, porque el ambiente rellena
- * justamente las sombras del relieve que hay que ver.
- */
-const FOTO = {
-  exposicion: 0.82,
-  clave: 3.4, // luz principal, 58 grados de elevacion
-  cenital: 0.26, // relleno casi a plomo; el que pone el nucleo del contacto
-  hemisferico: 0.14, // rebote del fondo sobre la pieza
-  sombraPiso: 0.85, // opacidad del ShadowMaterial del piso
-  biasNormal: 0.02, // en mm — ver la nota de `iniciarImagen`
-  estudio: { cenital: 0.3, lateral: 1.8, contra: 0.6, piso: 0.35 },
-
-  /* Difusion de cada sombra: cuanto se abre su penumbra (`shadow.radius`).
-   *
-   * Es lo que convierte una sombra de silueta recortada en una de fuente
-   * grande. Escala con el mapa y no con milimetros, y el frustum de sombra
-   * escala con la pieza, asi que la penumbra sale **proporcional** al tamaño
-   * del cortante: la foto se ve igual con uno de 40 mm que con uno de 200.
-   *
-   * Las dos difusiones son distintas y ese es el punto: la clave va muy
-   * abierta y arma la penumbra ancha; la cenital va mas cerrada y arma el
-   * apoyo pegado al contacto. Una sola sombra no puede ser las dos cosas.
-   *
-   * Medido contra la foto de referencia (32% de caida, 18 niveles por 1% del
-   * ancho): con 45 la sombra cae 29% con 9 niveles — la misma presencia que la
-   * foto y el doble de difuminada, que es lo que se pidio. Antes de esto caia
-   * 34% de golpe, en un escalon de 50 niveles.
-   */
-  mapaSombra: 2048, // lado del shadow map de cada luz
-  difusionClave: 45,
-  difusionCenital: 11,
-
-  /* Aporte de cada sombra al oscurecimiento (`getShadowMask` los multiplica).
-   *
-   * Bajos y distintos para que la sombra **no sea pareja**: donde llega solo
-   * la clave el fondo baja ~10%, y donde se superponen las dos ~19%. Asi la
-   * sombra es apenas un velo lejos de la pieza y se cierra contra el apoyo,
-   * que es como cae una sombra de verdad. Con un solo valor alto quedaba una
-   * mancha de densidad uniforme, que es justo lo que se veia "marcado".
-   */
-  aporteClave: 0.45,
-  aporteCenital: 0.65,
+const ESTUDIO_ORBITA = {
+  cenital: 3.2, lateral: 1.5, contra: 0.9, piso: 1.0, frio: 0xd8ecf7, calido: 0xfff0dd,
 };
+const ESTUDIO_FOTO = {
+  cenital: 0.8, lateral: 1.3, contra: 1.3, piso: 0.5, frio: 0xffffff, calido: 0xffffff,
+};
+
+/* Cuanta luz SIN DIRECCION queda en la foto: el hemisferico y el relleno.
+ *
+ * Es la otra mitad de `ESTUDIO_FOTO` y obedece al mismo razonamiento: toda luz
+ * que llega de todos lados por igual entra tambien al fondo del surco, y lo
+ * que no se distingue no es el grabado sino la diferencia entre el grabado y
+ * el plato. Bajarla es lo que hace que la sombra propia del relieve valga.
+ */
+const AMBIENTE_FOTO = { hemisferico: 0.35, relleno: 0.45 };
+
+/* La exposicion, una sola para las dos vistas.
+ *
+ * Vive en una constante y no repetida en cada vista porque es la perilla
+ * GLOBAL: moverla sube o baja todo por igual, el plato y el fondo del surco,
+ * asi que no sirve para recuperar el relieve —eso lo hace el reparto de
+ * paneles— y si sirve para que las dos vistas no se separen sin querer. */
+const EXPOSICION_VISOR = 1.05;
+
 
 /* ── Ganchos de la pantalla ──────────────────────────────────────────────── */
 
@@ -234,6 +223,52 @@ function pintarPieza(raiz, color) {
     });
   });
 }
+
+/* ── Puente con `app.js` para exportar la foto ───────────────────────────── */
+
+/**
+ * Lo que la vista imagen deja para que la invoquen, o `null` si no hay vista.
+ *
+ * `app.js` es script clasico y este archivo es modulo: **no pueden importarse**
+ * y el unico canal es el bus de `CustomEvent` sobre `document`. Que la funcion
+ * viva en una variable de modulo —y no adentro del listener— es lo que permite
+ * lo de abajo: el listener se registra SIEMPRE, incluso si `iniciarImagen`
+ * tiro por falta de WebGL.
+ */
+let exportarFoto = null;
+
+/**
+ * Aviso sobre el estado de la foto. Dos motivos, y hay que distinguirlos.
+ *
+ * - `'carga'`: el modelo cargo (o no). Sirve para decidir si la entrada del
+ *   JPG se ofrece, y llega sola cada vez que se genera un cortante.
+ * - `'exportar'`: la respuesta a un `cortante:exportar` concreto.
+ *
+ * ⚠ **Sin el motivo, quien espera una exportacion se come el aviso de carga.**
+ * Si un `.glb` termina de cargar justo entre el clic y la respuesta del `PUT`,
+ * la promesa de `pedirFoto` resolvia antes de tiempo y la descarga arrancaba
+ * con la subida todavia en vuelo — o sea un ZIP con la foto vieja, que es
+ * exactamente lo que este diseño existe para evitar.
+ */
+function avisarImagen(ok, error = null, motivo = 'carga') {
+  if (error) pista('pista-imagen', error);
+  document.dispatchEvent(new CustomEvent('cortante:imagen', { detail: { ok, error, motivo } }));
+}
+
+/* El listener va ACA ARRIBA y no adentro de `iniciarImagen` a proposito.
+ *
+ * Si estuviera adentro, un navegador sin WebGL —donde `iniciarImagen` tira y
+ * el `try` del arranque se lo come— dejaria el evento sin nadie escuchando, y
+ * `app.js` se quedaria esperando una respuesta que no llega nunca. La
+ * alternativa seria un timeout del otro lado, que es adivinar. Asi siempre hay
+ * alguien que contesta, aunque la respuesta sea que no se puede. */
+document.addEventListener('cortante:exportar', (e) => {
+  if (!exportarFoto) {
+    avisarImagen(false, 'este navegador no puede generar la imagen', 'exportar');
+    return;
+  }
+  exportarFoto(e.detail.id);
+});
 
 /** Centra el objeto en X/Z y lo apoya en y = 0. Devuelve su tamaño. */
 function apoyar(objeto) {
@@ -320,9 +355,10 @@ if (lienzo) {
   try {
     iniciarImagen(lienzo);
   } catch (_) {
-    // El boton de descarga nace apagado en el HTML, asi que alcanza con
-    // explicar por que se queda asi. La vista 3D y las descargas del .3mf no
-    // se enteran: son independientes de esto.
+    // `exportarFoto` se queda en `null`, asi que el listener de arriba le
+    // contesta que no se puede a quien pida la foto —el grupo de descargas
+    // esconde la entrada del JPG y el ZIP avisa que va sin ella—. La vista 3D
+    // y las descargas del .3mf no se enteran: son independientes de esto.
     pista('pista-imagen', 'este navegador no puede generar la imagen');
   }
 }
@@ -333,7 +369,7 @@ function iniciar(host) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  renderer.toneMappingExposure = EXPOSICION_VISOR;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -435,14 +471,28 @@ function iniciar(host) {
 /* ── Vista imagen: foto cenital descargable ──────────────────────────────── */
 
 /**
- * La misma pieza, fotografiada a plomo sobre un fondo liso.
+ * La misma pieza que el visor, con su misma sombra, a plomo y con luz neutra.
  *
- * Existe para lo que antes obligaba a imprimir, sacar una foto, editarla y
- * recien entonces publicarla. Por eso las decisiones no son las del visor:
+ * El aspecto se comparte por construccion y no por copia: las mismas funciones
+ * (`crearEntorno`, `agregarLuces`, `agregarPiso`), la misma exposicion, el
+ * mismo tone mapping, el mismo tipo de sombra y la misma direccion de luz
+ * principal. Lo unico propio de esta vista es **cuanta luz sin direccion hay**
+ * —`ESTUDIO_FOTO` mas `neutralizarAmbiente`—, y ninguna de las dos cosas toca
+ * la luz que proyecta la sombra.
  *
- * - **Camara cenital y centrada**, como una foto flat-lay de producto. Se
- *   mira, no se orbita: no hay `OrbitControls` ni `setAnimationLoop`. Es una
- *   toma fija y se rinde de a un frame, cuando algo cambia.
+ * ⚠ Por que no es literalmente el mismo estudio: lo fue durante un ciclo y no
+ * servia como foto. A plomo, el panel cenital del visor cae por igual sobre el
+ * plato y sobre el fondo del surco —ahi adentro no hay oclusion ambiental que
+ * lo tape—, asi que el grabado del marcador quedaba en 9,5 niveles de
+ * contraste sobre 255: estaba dibujado, pero no se leia, y la pieza salia 72
+ * niveles por encima de su propio color. Con el reparto de esta vista son
+ * 29,1. Los numeros y el metodo estan en la nota de `ESTUDIO_ORBITA`.
+ *
+ * Lo que NO cambio, porque es lo que hace que esto sea una foto y no el visor:
+ *
+ * - **Camara cenital y centrada**, como una flat-lay de producto. Se mira, no
+ *   se orbita: no hay `OrbitControls` ni `setAnimationLoop`. Toma fija, se
+ *   rinde de a un frame cuando algo cambia.
  * - **El cuadro es cuadrado y el preview es el JPG.** El canvas se sube a
  *   2048 px solo para exportar, con la misma camara y el mismo aspecto 1:1.
  *   Un preview panoramico con una descarga cuadrada recortaria algo que el
@@ -450,14 +500,12 @@ function iniciar(host) {
  * - **El fondo es el color elegido, plano y parejo de borde a borde.** Va como
  *   `scene.background`, que es un `clearColor`: no lo toca el tone mapping ni
  *   ninguna luz, asi que el hex que sale en el JPG es exactamente el de la
- *   muestra. La unica cosa que lo altera es la sombra, que es el punto.
- * - **Dos sombras, no una.** Una luz clave a 70 grados tira la sombra corrida
- *   hacia un lado —con la camara a plomo, la de abajo de la pieza la tapa la
- *   pieza, asi que sin esa inclinacion no se veria ninguna— y una cenital casi
- *   a plomo agrega el nucleo oscuro pegado al contacto. Las dos con
- *   `shadow.intensity` parcial: `getShadowMask()` multiplica el aporte de cada
- *   luz, asi que donde se superponen queda mas oscuro. Eso es lo que separa una
- *   pieza apoyada de una pieza pegada, y es todo el realismo de la toma.
+ *   muestra. Lo unico que lo altera es la sombra, que es el punto.
+ * - **Sin grilla.** El piso es el mismo `agregarPiso` del visor pedido con
+ *   `grilla: false`: recibe la sombra y nada mas. Una cuadricula sobre un
+ *   fondo liso es exactamente lo que esta foto no tiene que tener.
+ * - **El frustum de sombra se ajusta a la pieza.** Ver `encuadrarLuz`: es lo
+ *   unico de la luz del visor que NO se copia tal cual, y el motivo esta ahi.
  */
 function iniciarImagen(host) {
   // `preserveDrawingBuffer` no es opcional: `toBlob` es asincronico y sin esto
@@ -465,38 +513,18 @@ function iniciarImagen(host) {
   // JPG saldria en negro, y solo en algunos navegadores.
   const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  // Las cinco lineas que siguen son, literalmente, las del visor. Si alguna
+  // se toca alla y no aca, las dos vistas dejan de verse igual — que es
+  // exactamente lo que este ciclo vino a arreglar.
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  // Mas baja que la del visor (1,05), y no por gusto: con la pieza llenando el
-  // cuadro y el plato del marcador de frente al lente, la exposicion del visor
-  // dejaba las caras de arriba en 240 sobre un maximo de 243 — todo el
-  // marcador apretado en el 2% mas alto del rango, donde ningun sombreado
-  // tiene lugar para verse. Medido en la region del marcador: de 241,7 de
-  // media a 219, y el detalle local casi al doble.
-  renderer.toneMappingExposure = FOTO.exposicion;
+  renderer.toneMappingExposure = EXPOSICION_VISOR;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.shadowMap.enabled = true;
-  /* `PCFShadowMap` —el del medio— y no el `PCFSoftShadowMap` del visor.
-   *
-   * Suena al reves y no lo es: **`PCFSoftShadowMap` ignora `shadow.radius`**.
-   * Filtra con un kernel fijo de pocos texels, asi que su borde es suave dos o
-   * tres pixeles y despues es un escalon. Medido contra la foto de referencia,
-   * su transicion daba 1,3% del ancho de imagen contra el 5,8% de la foto, y
-   * encima de densidad pareja: eso es lo que se leia como "sombra marcada".
-   * `PCFShadowMap` **si** escala su muestreo con `shadow.radius`, y con eso la
-   * penumbra se abre todo lo que haga falta.
-   *
-   * Tambien se probo `VSMShadowMap`, que desenfoca el mapa de verdad y da la
-   * penumbra mas pareja de las tres. Se descarto por el FONDO: filtra luz
-   * donde no hay nada que sombree y lo deja con bandas diagonales de 4 o 5
-   * niveles (desvio 0,77 contra 0,00 de PCF). Con un fondo liso de un color
-   * elegido por el usuario eso se ve, y el pedido era que el fondo sea liso.
-   * Ceñir el rango de profundidad —el consejo habitual para VSM— lo empeora
-   * aca, por el motivo que explica `encuadrarLuz`. */
-  renderer.shadowMap.type = THREE.PCFShadowMap;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   host.appendChild(renderer.domElement);
 
   const escena = new THREE.Scene();
-  escena.environment = crearEntorno(renderer, FOTO.estudio);
+  escena.environment = crearEntorno(renderer, ESTUDIO_FOTO);
   escena.background = new THREE.Color(0x808080); // se pisa abajo con la paleta
 
   const camara = new THREE.PerspectiveCamera(FOV_JPG, 1, 1, 4000);
@@ -508,64 +536,30 @@ function iniciarImagen(host) {
   camara.position.set(0, 100, 0);
   camara.lookAt(0, 0, 0);
 
-  // El `groundColor` del hemisferico es el rebote del fondo sobre la pieza:
-  // sube con el color del fondo, como pasa en una mesa de fotos real. Sin eso
-  // la pieza queda pegoteada arriba del fondo en vez de apoyada en el.
-  //
-  // Va bajo por lo mismo que el panel cenital del entorno: un hemisferico
-  // ilumina el plato y el relieve casi igual, asi que de mas solo aporta
-  // lavado. Lo que hace falta de el es el rebote de color, no exposicion.
-  const cielo = new THREE.HemisphereLight(0xffffff, 0x808080, FOTO.hemisferico);
-  escena.add(cielo);
-
-  /* ⚠ `normalBias` es el ajuste que decide si el marcador se ve o no.
-   *
-   * Estaba en 0,35 — **milimetros**, copiado del visor, donde la pieza se ve
-   * de lejos y entera. Sobre un relieve de 2 mm eso es un corrimiento del 17%
-   * de la altura del trazo: la consulta al shadow map se va tan afuera de la
-   * superficie que **borra justo las sombras propias del relieve**, que son
-   * las que dibujan el grabado. Medido: el plato y la cara del trazo salian
-   * los dos en 240 y entre ellos no habia mas que una linea de un pixel.
-   *
-   * Con 0,02 mm las sombras del relieve vuelven a existir. El precio posible
-   * es acne de sombra en las caras planas, y lo que lo mantiene a raya es que
-   * el frustum es chico: `radio * 2.2` sobre 2048 texels son ~0,05 mm por
-   * texel, dos veces mas fino que el bias que se saco.
-   */
-
-  // La luz clave se lleva la mayor parte del presupuesto, y a 58 grados en vez
-  // de los 70 de antes. Las dos cosas van juntas y apuntan a lo mismo: la
-  // sombra propia del relieve pasa de 0,36 a 0,62 veces la altura del trazo
-  // —de una linea a una banda que se lee—, y que la luz venga de UNA direccion
-  // en vez del ambiente es lo que evita que esa sombra se rellene sola. Es el
-  // movimiento que hace un fotografo para que un sello se vea: bajar la luz y
-  // apagar el relleno.
-  const clave = new THREE.DirectionalLight(0xffffff, FOTO.clave);
-  ajustarSombra(clave, FOTO.difusionClave, FOTO.aporteClave);
-  escena.add(clave);
-
-  const cenital = new THREE.DirectionalLight(0xfaf6ef, FOTO.cenital);
-  ajustarSombra(cenital, FOTO.difusionCenital, FOTO.aporteCenital);
-  escena.add(cenital);
+  const { cielo, principal, relleno } = agregarLuces(escena);
+  neutralizarAmbiente({ cielo, relleno });
 
   // `ShadowMaterial` es transparente salvo donde cae la sombra: el fondo pasa
   // intacto por abajo y se oscurece solo lo que se tiene que oscurecer. Es lo
   // que deja tener sombra Y fondo liso de un color exacto al mismo tiempo — un
   // piso con material iluminado meteria un degradado que el fondo no debe
-  // tener.
-  const piso = new THREE.Mesh(
-    new THREE.PlaneGeometry(1, 1),
-    new THREE.ShadowMaterial({ opacity: FOTO.sombraPiso })
-  );
-  piso.rotation.x = -Math.PI / 2;
-  piso.receiveShadow = true;
-  escena.add(piso);
+  // tener. Sin grilla: el fondo de la foto es liso.
+  //
+  // ⚠ **A este piso NO se le aplica `pintarPiso`, y es deliberado.** El del
+  // visor sigue al tema porque el fondo se lo pone el CSS de la pagina, y una
+  // sombra pensada para fondo claro se pierde sobre uno oscuro. La foto no
+  // tiene tema: su fondo lo elige la paleta y el resultado es un ARCHIVO que
+  // el usuario se lleva. Un JPG cuyo contenido cambiara segun si la pantalla
+  // estaba en claro u oscuro seria peor que la diferencia que esto deja —en
+  // tema oscuro la sombra del visor es mas densa que la de la foto—, asi que
+  // se prefiere que el archivo sea siempre el mismo.
+  const piso = agregarPiso(escena, { grilla: false });
 
-  const boton = document.getElementById('bajar-imagen');
   let modelo = null;
   let color = colorElegido('#paleta-pieza') || colorElegido('#paleta');
   let sucio = true;
   let exportando = false;
+  let listo = false;
 
   aplicarFondo(colorElegido('#paleta-fondo'));
 
@@ -586,14 +580,16 @@ function iniciarImagen(host) {
       pintarPieza(modelo, color);
       escena.add(modelo);
       encuadrar(modelo);
-      if (boton) {
-        boton.disabled = false;
-        boton.removeAttribute('title');
-      }
+      listo = true;
+      avisarImagen(true);
       renderizar();
     },
     () => {
-      pista('pista-imagen', 'no se pudo cargar la imagen');
+      // Sin modelo no hay foto, y la pantalla tiene que DECIRLO: el grupo de
+      // descargas esconde la entrada del JPG y el ZIP avisa que va sin ella.
+      // Los .3mf y los .stl no se enteran — son independientes de esto.
+      listo = false;
+      avisarImagen(false, 'no se pudo cargar la imagen');
     }
   );
 
@@ -616,15 +612,35 @@ function iniciarImagen(host) {
     renderizar();
   });
 
-  if (boton) boton.addEventListener('click', descargar);
+  /* La otra mitad del guard contra fotografiar la pieza equivocada.
+   *
+   * Entre que llega un `cortante:listo` nuevo y que el `.glb` termina de
+   * cargar pasan cientos de milisegundos o segundos, y en todo ese rato
+   * `modelo` sigue siendo la pieza ANTERIOR. Sin esto, un pedido de
+   * exportacion en esa ventana rendia y subia el cortante viejo como foto del
+   * trabajo nuevo. Se baja aca y lo vuelve a subir `cuandoCargue`, que es el
+   * unico que sabe que el modelo que hay corresponde al trabajo que se pidio. */
+  document.addEventListener('cortante:listo', () => {
+    listo = false;
+  });
+
+  // Lo que `app.js` invoca cuando el usuario pide el JPG o el ZIP. Se registra
+  // ACA, con la vista viva; el listener del evento vive a nivel de modulo para
+  // poder contestar que no se puede aun cuando esta funcion nunca corrio.
+  exportarFoto = subir;
 
   function aplicarFondo(hex) {
     if (!hex) return;
     escena.background.set(hex);
+    // El `groundColor` del hemisferico es el rebote del fondo sobre la pieza:
+    // sube con el color elegido, como pasa en una mesa de fotos real. Sin eso
+    // la pieza queda pegoteada arriba del fondo en vez de apoyada en el. Es la
+    // unica diferencia con el hemisferico del visor, y es la misma idea: el
+    // rebote viene de lo que la pieza tiene abajo.
     cielo.groundColor.set(hex);
   }
 
-  /** Camara a plomo sobre el centro de la pieza, y las dos luces a su escala. */
+  /** Camara a plomo sobre el centro de la pieza, y la luz a su escala. */
   function encuadrar(objeto) {
     const tamano = apoyar(objeto);
     const radio = Math.max(tamano.x, tamano.z) / 2 || 1;
@@ -652,40 +668,35 @@ function iniciarImagen(host) {
     camara.far = alto * 4;
     camara.updateProjectionMatrix();
 
-    // Arriba-izquierda del cuadro: con `camara.up` en -Z, el +X del mundo es
-    // la derecha de la foto y el -Z es el arriba. La sombra sale entonces
-    // hacia abajo-derecha, y cuanto se corre lo dice `SOMBRA_POR_MM`, que es
-    // el mismo numero que uso el encuadre de arriba.
-    encuadrarLuz(clave, new THREE.Vector3(...DIR_CLAVE), radio);
-    // Casi a plomo: su sombra apenas sobresale del contorno y es la que pone
-    // el nucleo oscuro del contacto.
-    encuadrarLuz(cenital, new THREE.Vector3(0.22, 6, 0.3), radio);
+    // La direccion es la MISMA del visor (`DIR_PRINCIPAL`) — es la mitad de
+    // que las dos vistas se vean iguales. Lo que cambia es la escala, y solo
+    // la escala: ver la nota de `encuadrarLuz`.
+    encuadrarLuz(principal, new THREE.Vector3(...DIR_PRINCIPAL), radio);
 
-    piso.scale.set(radio * 14, radio * 14, 1);
-    // Apenas por debajo del apoyo de la pieza: coplanar con la cara de abajo
-    // el shadow map alterna entre los dos y la sombra sale moteada.
-    piso.position.y = -radio * 0.004;
+    piso.escala(radio * 3.5);
   }
 
-  /** Deja una luz lista para tirar sombra difusa: resolucion, blur y aporte. */
-  function ajustarSombra(luz, difusion, aporte) {
-    luz.castShadow = true;
-    luz.shadow.mapSize.set(FOTO.mapaSombra, FOTO.mapaSombra);
-    // En 0 y no negativo: con el muestreo abierto de `radius`, un bias
-    // negativo corre la comparacion lo suficiente como para dejar un halo
-    // claro alrededor del contacto.
-    luz.shadow.bias = 0;
-    luz.shadow.normalBias = FOTO.biasNormal;
-    luz.shadow.radius = difusion;
-    luz.shadow.intensity = aporte;
-  }
-
+  /**
+   * Lo unico de la luz del visor que NO se copia tal cual — y hace falta.
+   *
+   * `agregarLuces` deja la luz en una posicion fija y con un frustum de sombra
+   * fijo de ±160. Alla esta bien: la pieza se ve entera y de lejos, y 160 la
+   * cubre. **Aca no**, por dos motivos que van juntos:
+   *
+   * 1. `lado_mayor_mm` admite hasta 1000, asi que una pieza de mas de 320 mm
+   *    se sale del frustum y **se queda sin sombra** — desaparecida, no mas
+   *    chica.
+   * 2. Aunque entrara, repartir 2048 texels sobre un frustum de mas del doble
+   *    de la pieza vuelve la sombra un escalon en vez de un borde, y en una
+   *    exportacion de 2048 px eso se ve.
+   *
+   * Ajustarlo a la pieza es invisible en el resultado: el frustum no cambia el
+   * aspecto, solo la resolucion con que se calcula. Las dos vistas siguen
+   * viendose iguales.
+   */
   function encuadrarLuz(luz, direccion, radio) {
     luz.position.copy(direccion).normalize().multiplyScalar(radio * 9);
     const c = luz.shadow.camera;
-    // Ajustado a la pieza y no a la escena: el shadow map tiene 2048 px y
-    // repartirlos sobre un frustum de mas del doble de la pieza es lo que
-    // vuelve la sombra un escalon en vez de un borde.
     c.left = -radio * 2.2;
     c.right = radio * 2.2;
     c.top = radio * 2.2;
@@ -736,30 +747,62 @@ function iniciarImagen(host) {
     renderizar();
   }).observe(host);
 
-  async function descargar() {
-    if (exportando || !modelo) return;
+  /**
+   * Rinde la foto y la sube al trabajo. **Se corre antes de cada descarga.**
+   *
+   * Es lo que sostiene que lo que baja sea lo que se esta viendo: la foto
+   * depende del color de la pieza y del fondo, que el usuario puede cambiar en
+   * cualquier momento. Subir al renderizar —con o sin espera— abriria una
+   * ventana en la que el servidor tiene una foto vieja y nadie se entera, que
+   * es exactamente el fallback silencioso que este proyecto no se permite.
+   *
+   * El costo es un render de 2048 px y una subida por descarga. Se paga: es un
+   * clic explicito del usuario, no una tecla de la paleta.
+   */
+  async function subir(id) {
+    // Contesta hasta para decir que no puede: es la unica salida de esta
+    // funcion que antes se iba muda, y quien la llama espera una respuesta
+    // sin la cual se queda esperando para siempre.
+    if (exportando) {
+      avisarImagen(false, 'ya hay una exportacion en curso', 'exportar');
+      return;
+    }
+    if (!modelo || !listo) {
+      avisarImagen(false, 'todavia no hay imagen para exportar', 'exportar');
+      return;
+    }
     exportando = true;
-    if (boton) boton.disabled = true;
     pista('pista-imagen', 'armando el JPG…');
     try {
       const blob = await aJpg();
       if (!blob) {
-        pista('pista-imagen', 'no se pudo generar el JPG');
+        avisarImagen(false, 'no se pudo generar el JPG', 'exportar');
         return;
       }
-      bajarBlob(blob, nombreDescarga());
+      const cuerpo = new FormData();
+      // El nombre es de relleno: el servidor guarda por `NOMBRE_DE` y este
+      // valor no toca ninguna ruta. Va uno fijo justamente para dejar claro
+      // que el cliente no nombra nada.
+      cuerpo.append('archivo', blob, 'vista.jpg');
+      const r = await fetch(`/api/trabajos/${encodeURIComponent(id)}/imagen`, {
+        method: 'PUT',
+        body: cuerpo,
+      });
+      if (!r.ok) {
+        avisarImagen(false, 'el servidor rechazo la imagen', 'exportar');
+        return;
+      }
       const mb = (blob.size / 1024 / 1024).toFixed(2);
-      pista('pista-imagen', `JPG descargado · ${mb} MB`);
+      pista('pista-imagen', `JPG listo · ${mb} MB`);
+      avisarImagen(true, null, 'exportar');
     } catch (_) {
       // Rendir a 2048 px es lo mas caro que hace esta pantalla y es donde se
-      // puede perder el contexto de WebGL. Sin este `catch` la excepcion se
-      // escapa del handler del click, queda como rechazo sin atender y —lo
-      // peor— la pista se queda en "armando el JPG…" para siempre: el boton
-      // vuelve a estar vivo pero el cartel dice que no.
-      pista('pista-imagen', 'no se pudo generar el JPG');
+      // puede perder el contexto de WebGL; la subida puede fallar por red.
+      // Sin este `catch` la excepcion queda como rechazo sin atender y —lo
+      // peor— quien espera el `cortante:imagen` no recibe nunca su respuesta.
+      avisarImagen(false, 'no se pudo generar el JPG', 'exportar');
     } finally {
       exportando = false;
-      if (boton) boton.disabled = false;
       sucio = true;
       renderizar();
     }
@@ -799,37 +842,6 @@ function iniciarImagen(host) {
   }
 }
 
-/**
- * El JPG se llama como el archivo que el usuario subio.
- *
- * Se lee del chip de la pantalla y no del servidor porque este archivo no pasa
- * por el servidor: sale del canvas. Se sanea con la misma whitelist que usa
- * `sanear_nombre_base` en `app/archivos.py` —`[A-Za-z0-9._-]`, tope 60— para
- * que la descarga se vea igual que las del `.3mf`.
- */
-function nombreDescarga() {
-  const chip = document.getElementById('nombre-archivo');
-  const base = ((chip && chip.textContent) || '')
-    .replace(/\.[^.]*$/, '')
-    .replace(/[^A-Za-z0-9._-]+/g, '_')
-    .replace(/^[._-]+/, '')
-    .slice(0, 60);
-  return `${base || 'cortante'}-vista.jpg`;
-}
-
-function bajarBlob(blob, nombre) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = nombre;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  // Revocar en el mismo turno le corta la descarga a algunos navegadores: se
-  // libera despues, cuando ya la agarro.
-  setTimeout(() => URL.revokeObjectURL(url), 30000);
-}
-
 /* ── Entorno, luces y piso ───────────────────────────────────────────────── */
 
 /** Caja de paneles emisivos convertida a mapa de entorno. Sin archivos. */
@@ -850,8 +862,8 @@ function crearEntorno(renderer, reparto = ESTUDIO_ORBITA) {
   };
 
   panel(0xffffff, reparto.cenital, [12, 8], [0, 7, 0], [Math.PI / 2, 0, 0]); // cenital
-  panel(0xd8ecf7, reparto.lateral, [10, 8], [-7, 2, 2], [0, Math.PI / 2, 0]); // relleno frio
-  panel(0xfff0dd, reparto.contra, [10, 8], [7, 2, -2], [0, -Math.PI / 2, 0]); // contra calido
+  panel(reparto.frio, reparto.lateral, [10, 8], [-7, 2, 2], [0, Math.PI / 2, 0]); // lateral
+  panel(reparto.calido, reparto.contra, [10, 8], [7, 2, -2], [0, -Math.PI / 2, 0]); // contra
   panel(0x2a3138, reparto.piso, [16, 16], [0, -3, 0], [-Math.PI / 2, 0, 0]); // piso
 
   const objetivo = pmrem.fromScene(cuarto, 0.04);
@@ -859,11 +871,22 @@ function crearEntorno(renderer, reparto = ESTUDIO_ORBITA) {
   return objetivo.texture;
 }
 
+/**
+ * Las luces del visor. **Devuelve las que hacen falta ajustar despues.**
+ *
+ * La vista 3D las usa tal cual y descarta el retorno. La vista imagen se queda
+ * con las tres: `principal` para reajustarle el frustum a la pieza (ver la
+ * nota de `encuadrarLuz`), `cielo` tanto para que el rebote siga al color del
+ * fondo como para bajarlo, y `relleno` para neutralizarlo — las dos ultimas
+ * via `neutralizarAmbiente`. Ver tambien la nota de `encuadrarLuz` sobre por
+ * que el frustum fijo de aca abajo no sirve para exportar.
+ */
 function agregarLuces(escena) {
-  escena.add(new THREE.HemisphereLight(0xffffff, 0x9fb4c0, 0.55));
+  const cielo = new THREE.HemisphereLight(0xffffff, 0x9fb4c0, 0.55);
+  escena.add(cielo);
 
   const principal = new THREE.DirectionalLight(0xffffff, 2.1);
-  principal.position.set(70, 130, 90);
+  principal.position.set(...DIR_PRINCIPAL);
   principal.castShadow = true;
   principal.shadow.mapSize.set(2048, 2048);
   principal.shadow.bias = -0.0006;
@@ -879,9 +902,41 @@ function agregarLuces(escena) {
   const relleno = new THREE.DirectionalLight(0xdcf0fb, 0.7);
   relleno.position.set(-90, 50, -70);
   escena.add(relleno);
+
+  return { cielo, principal, relleno };
 }
 
-function agregarPiso(escena) {
+/**
+ * Deja el ambiente de la foto neutro y mas bajo. **No toca `principal`.**
+ *
+ * Que la luz principal no aparezca aca es la mitad del punto: es la que
+ * proyecta la sombra, y la sombra tenia que quedar igual. Conserva la
+ * direccion, el color y la intensidad del visor, y la mancha sobre el fondo la
+ * pinta `ShadowMaterial` con una opacidad fija que no depende de ninguna luz,
+ * asi que ni siquiera indirectamente cambia. Lo unico que se mueve es cuanta
+ * luz sin direccion hay rellenando el grabado.
+ *
+ * El relleno del visor es celeste (`0xdcf0fb`) para enfriar la cara en sombra
+ * mientras la pieza gira. A plomo eso llega como un tinte azul sobre las
+ * paredes del grabado —medido sobre un gris neutro: 4 niveles de rojo abajo y
+ * 3 de azul arriba—. En blanco queda en cero, que es lo que se pidio.
+ */
+function neutralizarAmbiente({ cielo, relleno }) {
+  cielo.intensity = AMBIENTE_FOTO.hemisferico;
+  relleno.color.set(0xffffff);
+  relleno.intensity = AMBIENTE_FOTO.relleno;
+}
+
+/**
+ * El piso: un plano que solo recibe sombra, y opcionalmente la grilla.
+ *
+ * `grilla` es una opcion y no dos funciones distintas para que el piso siga
+ * teniendo **un solo dueño**: la vista 3D la quiere —es la referencia de
+ * escala mientras la pieza gira— y la foto no, porque el pedido es un fondo
+ * liso. Que la diferencia sea un booleano explicito y no un piso paralelo es
+ * lo que evita que las dos vistas se separen sin que nadie se entere.
+ */
+function agregarPiso(escena, { grilla: conGrilla = true } = {}) {
   const sombra = new THREE.Mesh(
     new THREE.PlaneGeometry(1, 1),
     new THREE.ShadowMaterial({ opacity: 0.24 })
@@ -898,7 +953,15 @@ function agregarPiso(escena) {
     escala(mayor) {
       const lado = Math.max(mayor * 4, 200);
       sombra.scale.set(lado, lado, 1);
-      if (grilla) escena.remove(grilla);
+      if (!conGrilla) return;
+      if (grilla) {
+        escena.remove(grilla);
+        // `remove` lo saca del grafo pero no libera nada de la GPU. Regenerar
+        // diez veces mientras se prueban medidas es lo normal en esta
+        // pantalla, asi que sin esto queda una grilla por generacion.
+        grilla.geometry.dispose();
+        grilla.material.dispose();
+      }
       grilla = new THREE.GridHelper(lado, Math.round(lado / 10), 0x8fa8b6, 0x8fa8b6);
       grilla.material.transparent = true;
       grilla.material.opacity = 0.16;

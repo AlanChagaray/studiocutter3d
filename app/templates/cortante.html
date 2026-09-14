@@ -59,13 +59,22 @@
         <a class="boton boton--secundario oculto" data-clave="3mf_marcador" download>3MF marcador</a>
         <a class="boton boton--secundario oculto" data-clave="stl_cortador" download>STL cortador</a>
         <a class="boton boton--secundario oculto" data-clave="stl_marcador" download>STL marcador</a>
+        {# La imagen es un archivo del trabajo como cualquier otro, y por eso
+           vive aca y no al lado del visor. La diferencia esta en el clic: la
+           foto la rinde el navegador, asi que `app.js` la sube ANTES de dejar
+           que el link navegue — para que lo que baja sea lo que se esta
+           viendo, y no lo que se veia cuando se abrio la vista. #}
+        <a class="boton boton--secundario oculto" data-clave="jpg_vista" download>Imagen JPG</a>
+        <button type="button" class="boton boton--todo oculto" id="bajar-todo">
+          {{ m.icono('bajar', 16) }} Descargar todo (ZIP)
+        </button>
       </div>
       <div class="lista__meta" id="pista-descargas"></div>
       <div class="lista__meta" style="line-height:1.45">
         El 3MF completo trae los dos cuerpos anidados como se imprimen. Los sueltos son el
         mismo cuerpo en las mismas coordenadas, para editar uno sin tocar el otro. Los STL
         salen siempre, uno por cuerpo. El color de la vista previa no va en el archivo:
-        al imprimir lo pone el filamento.
+        al imprimir lo pone el filamento. El ZIP trae todo esto junto.
       </div>
     </div>
   </aside>
@@ -124,18 +133,13 @@
         </div>
         <div class="imagen-controles__grupo">
           <span class="imagen-controles__rotulo">Fondo</span>
-          {# Arranca en la segunda muestra y no en la primera a proposito: con
-             el fondo y la pieza del mismo color no se ve nada, y la pieza
-             arranca en la primera. #}
-          {{ m.paleta(colores, 'paleta-fondo', 'Color del fondo', clase='muestras', activo=1) }}
+          {# Arranca en blanco, igual que la pieza. Se veia raro tenerlos
+             iguales —pieza blanca sobre fondo blanco no se distingue— hasta
+             que la foto paso a usar la luz del visor: con esa luz la pieza
+             proyecta sombra y tiene volumen propio, asi que se lee sobre el
+             blanco. Y el blanco es lo que se pidio para el fondo. #}
+          {{ m.paleta(colores, 'paleta-fondo', 'Color del fondo', clase='muestras') }}
         </div>
-        {# Nace apagado con el motivo puesto: sin cortante generado no hay nada
-           que fotografiar. Lo prende `preview3d.js` cuando el `.glb` cargo —es
-           el unico que sabe si la imagen se puede producir. #}
-        <button type="button" class="boton" id="bajar-imagen" disabled
-                title="Genera el cortante para poder descargar la imagen">
-          {{ m.icono('bajar', 16) }} Descargar JPG
-        </button>
       </div>
     </div>
   </div>

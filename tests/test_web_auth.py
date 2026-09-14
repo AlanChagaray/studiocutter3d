@@ -18,6 +18,7 @@ import pytest
 from conftest import CLAVE, USUARIO
 from fastapi.testclient import TestClient
 
+from app.archivos import SUFIJO_DESCARGA, ClaveArchivo
 from app.routers.cortante import COLORES
 from app.routers.paginas import MODULOS
 
@@ -137,6 +138,16 @@ _IMPORTA_SUELTO = re.compile(r"""\bimport\s*(['"])([^'"]+)\1""")
 """`import './x.js'` por efecto colateral, sin nombres."""
 
 
+def _sin_comentarios(codigo: str) -> str:
+    """El JS sin prosa.
+
+    Hace falta cada vez que un test afirma sobre el CODIGO: este repo comenta
+    denso y explica en los comentarios lo que saco, asi que un `x in js` pelado
+    encuentra el nombre en la explicacion de por que ya no esta.
+    """
+    return _COMENTARIO_LINEA.sub("", _COMENTARIO_BLOQUE.sub("", codigo))
+
+
 def _especificadores(codigo: str) -> set[str]:
     """Los modulos de los que depende este modulo.
 
@@ -226,13 +237,15 @@ def _paleta(html: str, ident: str) -> list[str]:
 
 # id del contenedor -> nombre del color que tiene que arrancar marcado.
 #
-# El fondo arranca en el segundo y no en el primero a proposito: con el fondo y
-# la pieza del mismo color la foto sale de un solo tono, y la pieza arranca en
-# el primero.
+# Los tres arrancan en Blanco, y el fondo cambio en este ciclo (venia en Gris).
+# Antes tenerlos iguales dejaba la foto de un solo tono, porque el estudio de
+# luz de la vista imagen apenas proyectaba sombra sobre el fondo. Con la luz
+# del visor la pieza tiene volumen y sombra propia, asi que se lee sobre
+# blanco — y blanco es lo que se pidio para el fondo de la foto.
 PALETAS = {
     "paleta": "Blanco",
     "paleta-pieza": "Blanco",
-    "paleta-fondo": "Gris",
+    "paleta-fondo": "Blanco",
 }
 
 
@@ -267,9 +280,31 @@ def test_las_tres_paletas_dibujan_los_ocho_colores(sesion: TestClient) -> None:
         assert len(marcadas) == 1, f"#{ident} tiene que arrancar con una sola muestra elegida"
         assert _atributo(marcadas[0], "aria-label") == inicial, ident
 
-    # Los dos defaults tienen que ser distintos: si alguien los iguala, la
-    # primera foto sale de un solo tono y parece que la vista esta rota.
-    assert PALETAS["paleta-fondo"] != PALETAS["paleta-pieza"]
+    # El fondo de la foto arranca en blanco. Es un pedido explicito, no una
+    # consecuencia: se afirma para que nadie lo "arregle" volviendo al gris.
+    assert PALETAS["paleta-fondo"] == COLORES[0].nombre
+
+
+def test_el_default_de_las_paletas_lo_marca_solo_el_template(sesion: TestClient) -> None:
+    """La muestra inicial se declara en UN lugar: el `activo` del macro.
+
+    Este test existe por un bug de este mismo ciclo. `app.js` tenia un segundo
+    default (`indiceDefecto`) para que el fondo arrancara en la segunda
+    muestra, y al mover el del template y no el del JS el HTML servido marcaba
+    blanco mientras la pantalla mostraba gris: `iniciarPaleta` reescribe
+    `aria-pressed` en todas las muestras al arrancar, asi que el JS gana
+    siempre.
+
+    **No lo vio ningun test**, y no podia verlo: los de paleta validan el HTML
+    con regex y en este proyecto ninguna prueba ejecuta JS. Lo unico que si se
+    puede afirmar desde la suite es que no exista la segunda fuente de verdad.
+    """
+    js = sesion.get("/static/js/app.js").text
+    codigo = _COMENTARIO_LINEA.sub("", _COMENTARIO_BLOQUE.sub("", js))
+    assert "disponibles[0]" in codigo, "el JS tiene que aplicar la primera muestra"
+    assert "indiceDefecto" not in codigo, (
+        "volvio el segundo default de las paletas; el unico es el `activo` del macro"
+    )
 
 
 def test_ningun_color_de_la_paleta_esta_escrito_dos_veces(sesion: TestClient) -> None:
@@ -418,28 +453,90 @@ IDS_VISTA_IMAGEN = (
     "vista-imagen",
     "paleta-pieza",
     "paleta-fondo",
-    "bajar-imagen",
+    "bajar-todo",
     "pista-imagen",
 )
 
 
 def test_los_ids_de_la_vista_imagen_existen_en_las_dos_puntas(sesion: TestClient) -> None:
     html = sesion.get("/cortante").text
-    js = sesion.get("/static/js/app.js").text + sesion.get("/static/js/preview3d.js").text
+    js = _sin_comentarios(
+        sesion.get("/static/js/app.js").text + sesion.get("/static/js/preview3d.js").text
+    )
     for ident in IDS_VISTA_IMAGEN:
         assert f'id="{ident}"' in html, f"la pantalla no dibuja #{ident}"
-        assert ident in js, f"ningun script maneja #{ident}"
+        # Con `#` o con `getElementById`, no el nombre suelto: que la palabra
+        # "lienzo" aparezca en el archivo no prueba que alguien lo busque.
+        assert f"'#{ident}'" in js or f"getElementById('{ident}')" in js, (
+            f"ningun script busca #{ident}"
+        )
 
 
-def test_el_boton_de_la_imagen_nace_apagado_con_el_motivo(sesion: TestClient) -> None:
-    """Sin cortante generado no hay nada que fotografiar, y se dice."""
+#: El grupo de descargas, en orden. La foto va con los demas archivos y el ZIP
+#: cierra: es lo que se pidio, "la imagen en el mismo grupo que los .stl".
+CLAVES_DESCARGA = (
+    "3mf",
+    "3mf_cortador",
+    "3mf_marcador",
+    "stl_cortador",
+    "stl_marcador",
+    "jpg_vista",
+)
+
+
+def test_el_grupo_de_descargas_incluye_la_imagen_y_el_zip(sesion: TestClient) -> None:
+    """La foto es un archivo mas del grupo, y ya no tiene boton propio.
+
+    El boton viejo (`#bajar-imagen`, al lado del visor) bajaba del canvas. Se
+    saco a proposito: dos lugares para bajar lo mismo, con dos nombres de
+    archivo distintos, era justamente el problema.
+    """
     html = sesion.get("/cortante").text
-    boton = re.search(r'<button[^>]*id="bajar-imagen"[^>]*>', html, re.DOTALL)
-    assert boton is not None
-    assert "disabled" in boton.group(0)
-    assert "title=" in boton.group(0), "un boton apagado sin motivo no se entiende"
-    # Lo prende el modulo del visor, que es el unico que sabe si el .glb cargo.
-    assert "boton.disabled = false" in sesion.get("/static/js/preview3d.js").text
+    grupo = re.search(r'<div[^>]*id="botones-descarga"[^>]*>(.*?)</div>', html, re.DOTALL)
+    assert grupo is not None, "no existe el grupo de descargas"
+    cuerpo = grupo.group(1)
+
+    assert re.findall(r'data-clave="([^"]+)"', cuerpo) == list(CLAVES_DESCARGA)
+    assert re.search(r'<button[^>]*id="bajar-todo"', cuerpo), "el ZIP no esta en el grupo"
+    assert 'id="bajar-imagen"' not in html, "quedo el boton viejo de bajar la imagen"
+
+    # Las TRES puntas de la clave de la foto atadas entre si: el enum del
+    # servidor, el `data-clave` del template y el literal de `app.js`. Sin esto
+    # un typo o un rename en el JS rompia la entrada de la foto con toda la
+    # suite en verde, porque cada lado se comparaba contra su propia constante.
+    assert ClaveArchivo.JPG_VISTA.value in CLAVES_DESCARGA
+    js = _sin_comentarios(sesion.get("/static/js/app.js").text)
+    assert f"CLAVE_FOTO = '{ClaveArchivo.JPG_VISTA.value}'" in js
+
+
+def test_el_handshake_distingue_carga_de_exportacion(sesion: TestClient) -> None:
+    """`cortante:imagen` lleva motivo, y los dos lados lo miran.
+
+    El mismo evento avisa dos cosas distintas: que el modelo cargo (`carga`) y
+    que una exportacion termino (`exportar`). Sin distinguirlas, un `.glb` que
+    terminara de cargar entre el clic y la respuesta del PUT resolvia la
+    promesa de `pedirFoto` antes de tiempo — la descarga arrancaba con la
+    subida en vuelo y el ZIP se llevaba la foto vieja, que es exactamente lo
+    que el `await` existe para impedir. En el otro sentido: un fallo
+    transitorio de exportacion no puede esconder la entrada del JPG.
+    """
+    visor = _sin_comentarios(sesion.get("/static/js/preview3d.js").text)
+    app = _sin_comentarios(sesion.get("/static/js/app.js").text)
+
+    assert "motivo = 'carga'" in visor, "el motivo por defecto es el aviso de carga"
+    assert "'exportar'" in visor, "las respuestas a una exportacion tienen que marcarse"
+    # Quien espera una exportacion acepta solo su respuesta...
+    assert "motivo === 'exportar'" in app
+    # ...y quien decide si la entrada se ofrece mira solo la carga.
+    assert "motivo !== 'carga'" in app
+
+
+def test_el_tres_mf_completo_sigue_siendo_la_accion_primaria(sesion: TestClient) -> None:
+    """Agregar el ZIP no le saco el primer plano al archivo que mas se busca."""
+    html = sesion.get("/cortante").text
+    enlace = re.search(r'<a[^>]*data-clave="3mf"[^>]*>', html)
+    assert enlace is not None
+    assert "boton--secundario" not in enlace.group(0)
 
 
 def test_los_eventos_entre_la_pantalla_y_el_visor_cierran(sesion: TestClient) -> None:
@@ -449,11 +546,61 @@ def test_los_eventos_entre_la_pantalla_y_el_visor_cierran(sesion: TestClient) ->
     ellos, se hablan por eventos del documento—, asi que un nombre cambiado de
     un solo lado deja la mitad del pipeline muda y sin ningun error.
     """
-    app = sesion.get("/static/js/app.js").text
-    visor = sesion.get("/static/js/preview3d.js").text
-    for evento in ("cortante:color", "cortante:fondo", "cortante:vista"):
-        assert evento in app, f"app.js no emite {evento}"
-        assert evento in visor, f"preview3d.js no escucha {evento}"
+    app = _sin_comentarios(sesion.get("/static/js/app.js").text)
+    visor = _sin_comentarios(sesion.get("/static/js/preview3d.js").text)
+
+    # ⚠ Sobre el CODIGO y verificando la DIRECCION, no `evento in archivo`.
+    # Asi estaba escrito y no servia para lo que decia custodiar: los cinco
+    # nombres aparecen tambien en los comentarios que explican el handshake,
+    # asi que borrar el `dispatchEvent` y el `addEventListener` y dejar la
+    # prosa lo dejaba verde — justo el caso que cuelga la pantalla.
+    for evento, emisor, oyente in (
+        ("cortante:color", app, visor),
+        ("cortante:fondo", app, visor),
+        ("cortante:vista", app, visor),
+        ("cortante:exportar", app, visor),
+        # El unico que viaja al reves: lo emite el visor y lo espera la pantalla.
+        ("cortante:imagen", visor, app),
+    ):
+        # Del lado del emisor alcanza con el literal —`iniciarPaleta` recibe el
+        # nombre como dato y despacha con la variable, asi que exigir
+        # `CustomEvent('...'` seria exigir una forma de escribirlo—, pero del
+        # lado del oyente el `addEventListener` va literal siempre. Lo que este
+        # test agrega respecto de como estaba es la DIRECCION: antes pedia el
+        # nombre en los dos archivos y un handshake invertido pasaba igual.
+        assert f"'{evento}'" in emisor, f"nadie emite {evento}"
+        assert f"addEventListener('{evento}'" in oyente, f"nadie escucha {evento}"
+        assert f"addEventListener('{evento}'" not in emisor, (
+            f"{evento} se escucha del lado que tiene que emitirlo"
+        )
+
+
+def test_la_respuesta_del_handshake_llega_aunque_no_haya_visor(sesion: TestClient) -> None:
+    """Sin WebGL tambien hay que contestar, y por eso el oyente no vive adentro.
+
+    Si el listener de `cortante:exportar` se registrara dentro de
+    `iniciarImagen`, un navegador sin WebGL —donde esa funcion tira y el `try`
+    del arranque se lo come— dejaria el evento sin nadie escuchando y el clic
+    en "Descargar todo" se colgaria sin decir nada. La alternativa del otro
+    lado seria un timeout, que es adivinar.
+    """
+    js = sesion.get("/static/js/preview3d.js").text
+
+    # La propiedad es "a nivel de modulo", o sea SIN indentacion — no "mas
+    # arriba que otra funcion". Comparar offsets dejaba pasar que el oyente se
+    # mudara adentro de `iniciar()`, que esta antes en el archivo y tambien
+    # puede tirar sin WebGL: el test quedaba verde y la garantia que nombra,
+    # destruida.
+    assert re.search(r"^document\.addEventListener\('cortante:exportar'", js, re.MULTILINE), (
+        "el oyente de `cortante:exportar` tiene que estar a nivel de modulo, sin indentar"
+    )
+    assert "avisarImagen(false, 'este navegador no puede generar la imagen', 'exportar')" in js
+
+    # Y del otro lado, la red que hace que el ZIP no dependa del visor: los
+    # archivos ya estan en el servidor, asi que una vista que no contesta no
+    # puede dejar la descarga colgada.
+    app = _sin_comentarios(sesion.get("/static/js/app.js").text)
+    assert "MS_ESPERA_FOTO" in app, "falta el tope de espera del handshake"
 
 
 def test_la_imagen_se_exporta_en_jpg_y_con_tope_de_tamano(sesion: TestClient) -> None:
@@ -467,14 +614,23 @@ def test_la_imagen_se_exporta_en_jpg_y_con_tope_de_tamano(sesion: TestClient) ->
     assert "image/jpeg" in js, "la descarga tiene que ser JPG"
     assert "2 * 1024 * 1024" in js, "falta el tope de 2 MB"
     assert "CALIDADES_JPG" in js, "sin escalera de calidad el tope no se puede respetar"
-    assert "-vista.jpg" in js, "la descarga tiene que salir con extension .jpg"
+    assert "LADOS_JPG = [2048" in js, "el lado de exportacion sigue siendo 2048 px"
     # `toBlob` es asincronico: sin esto el buffer ya se limpio cuando el
     # navegador lo va a leer y el JPG sale en negro.
     assert "preserveDrawingBuffer" in js
+    # El `-vista.jpg` dejo de armarse en JS: ahora la foto se sube al trabajo y
+    # el nombre lo pone el servidor, con el mismo criterio que el `.3mf`.
+    assert SUFIJO_DESCARGA[ClaveArchivo.JPG_VISTA] == "-vista.jpg"
+    # La URL y el verbo juntos, no dos substrings sueltos: separados, mover el
+    # endpoint a cualquier otra ruta que contenga `/imagen` pasaba igual.
+    subida = re.search(
+        r"fetch\(`(/api/trabajos/[^`]*?/imagen)`,\s*\{\s*method:\s*'PUT'", _sin_comentarios(js)
+    )
+    assert subida is not None, "la foto tiene que subirse con PUT a /api/trabajos/{id}/imagen"
 
 
-def test_la_imagen_es_cenital_con_fondo_liso_y_sombra(sesion: TestClient) -> None:
-    """Las cuatro decisiones de la toma, cada una con su mecanismo en el codigo."""
+def test_la_imagen_es_cenital_con_fondo_liso(sesion: TestClient) -> None:
+    """Lo que NO cambio del rediseño: sigue siendo una toma a plomo sobre liso."""
     js = sesion.get("/static/js/preview3d.js").text
     # Cenital: una camara que mira a plomo no tiene vertical propia. Sin este
     # `up` explicito entra en gimbal lock y la pieza sale de costado.
@@ -487,76 +643,159 @@ def test_la_imagen_es_cenital_con_fondo_liso_y_sombra(sesion: TestClient) -> Non
     assert "ShadowMaterial" in js
     # Sombra EN el cortante: las paredes del filo sombreandose entre si.
     assert "o.receiveShadow = true" in js and "o.castShadow = true" in js
-    # Dos sombras con aporte parcial: `getShadowMask()` multiplica el de cada
-    # luz, asi que donde se superponen queda el nucleo oscuro del contacto.
-    assert "aporteClave" in js and "aporteCenital" in js, "falta el aporte de cada sombra"
-    assert "luz.shadow.intensity = aporte" in js, "el aporte no llega a la luz"
 
 
-def test_la_sombra_es_difusa_y_no_una_silueta_pegada(sesion: TestClient) -> None:
-    """La sombra tiene que degradar, no recortar.
+def _reparto(codigo: str, nombre: str) -> dict[str, float]:
+    """Un reparto de paneles del estudio, leido del JS como numeros.
 
-    Medido contra la foto de referencia (`tests/ejemplo-sombras.png`), que cae
-    32% con 18 niveles por 1% del ancho: asi queda en 29% con 9 — la misma
-    presencia y el doble de difuminada. Antes caia 34% de golpe, en un escalon
-    de 50 niveles, y eso es lo que se veia "marcado".
+    Se parsea en vez de afirmar sobre el texto porque lo que hay que fijar es
+    una RELACION entre dos repartos ("el de la foto tiene menos cenital que el
+    del visor"), no un valor. Si manana hay que retocar el numero, el test
+    tiene que seguir cuidando la garantia en lugar de pedir que lo actualicen.
+    """
+    bloque = re.search(rf"const {nombre} = \{{(.*?)\}};", codigo, re.DOTALL)
+    assert bloque, f"no existe el reparto {nombre}"
+    return {
+        clave: float(int(valor, 16)) if valor.startswith("0x") else float(valor)
+        for clave, valor in re.findall(r"(\w+):\s*(0x[0-9a-fA-F]+|[\d.]+)", bloque.group(1))
+    }
+
+
+def test_la_foto_comparte_la_maquinaria_del_visor(sesion: TestClient) -> None:
+    """Las dos vistas salen de las mismas funciones, no de dos rigs paralelos.
+
+    Se afirma sobre los MECANISMOS y no sobre el resultado, porque en este
+    proyecto ningun test ejecuta JS: que las dos vistas se armen con las mismas
+    funciones, la misma exposicion y el mismo tipo de sombra es lo mas cerca
+    que la suite puede estar de "tienen el mismo aspecto". Lo que la foto
+    realmente muestra es CV-01, manual.
+
+    Lo que SI cambia entre las dos —cuanta luz sin direccion hay— lo cuida
+    `test_la_luz_de_la_foto_es_neutra_y_no_toca_la_sombra`. Este test dice que
+    esa es la unica diferencia.
     """
     js = sesion.get("/static/js/preview3d.js").text
+    codigo = _sin_comentarios(js)
 
-    # El tipo de shadow map es el ajuste que decide si esto es posible:
-    # `PCFSoftShadowMap` —el del visor— IGNORA `shadow.radius`, asi que su
-    # borde es suave dos pixeles y despues es un escalon.
-    assert "THREE.PCFShadowMap" in js, "sin PCFShadowMap el radio de difusion no hace nada"
-    assert "luz.shadow.radius = difusion" in js, "la difusion no llega a la luz"
+    # Una sola caja de estudio y un solo rig de luces para las dos vistas: la
+    # foto no arma los suyos, le pasa su reparto a la misma funcion.
+    assert codigo.count("crearEntorno(renderer)") == 1, "el visor va con el reparto por default"
+    assert codigo.count("crearEntorno(renderer, ESTUDIO_FOTO)") == 1, "la foto pasa el suyo"
+    # Con el `;` para contar las LLAMADAS y no la definicion, que tambien dice
+    # `agregarLuces(escena)`.
+    assert codigo.count("agregarLuces(escena);") == 2, "las dos vistas comparten el rig de luces"
 
-    # Las dos sombras tienen difusion distinta: la clave arma la penumbra ancha
-    # y la cenital el apoyo pegado al contacto. Iguales, la sombra queda de
-    # densidad pareja, que es justo lo que se veia mal.
-    clave = re.search(r"\bdifusionClave:\s*([0-9.]+)", js)
-    cenital = re.search(r"\bdifusionCenital:\s*([0-9.]+)", js)
-    assert clave is not None and cenital is not None, "faltan las difusiones"
-    assert float(clave.group(1)) >= 30, "la penumbra ancha necesita un radio grande"
-    assert float(cenital.group(1)) < float(clave.group(1)), (
-        "la sombra de contacto tiene que ser mas cerrada que la penumbra ancha"
+    # La exposicion y el tipo de sombra salen de un solo lugar cada uno.
+    #
+    # Se afirma la INVARIANTE ("no hay una segunda fuente") y no el numero de
+    # copias: contar `== 2` fijaba la duplicacion, asi que extraer las lineas
+    # compartidas a un helper —que es justo lo que el codigo pide— ponia el test
+    # en rojo mientras la garantia se volvia mas fuerte. Un test no puede
+    # castigar el refactor que el ciclo quiere.
+    assert re.search(r"EXPOSICION_VISOR = 1\.05", js), "la exposicion del visor es 1,05"
+    assert not re.search(r"toneMappingExposure\s*=\s*[0-9]", js), (
+        "la exposicion no puede escribirse como numero: la unica fuente es la constante"
     )
-
-    # El fondo liso no se negocia: VSM da una penumbra mas pareja pero filtra
-    # luz y deja bandas diagonales sobre el fondo (desvio 0,77 contra 0,00).
-    assert "THREE.VSMShadowMap" not in js.replace("`VSMShadowMap`", ""), (
-        "VSM raya el fondo; si vuelve, medir el desvio del fondo antes"
+    assert "toneMappingExposure = EXPOSICION_VISOR" in js
+    assert "THREE.PCFSoftShadowMap" in js
+    assert not re.search(r"THREE\.PCFShadowMap\b", js), (
+        "el mapa de sombra de la foto tiene que ser el mismo del visor"
     )
+    assert codigo.count("new THREE.ShadowMaterial(") == 1, "un solo material de sombra"
+
+    # Y la direccion de la luz principal es literalmente la misma constante.
+    assert "DIR_PRINCIPAL" in js
+    assert "principal.position.set(...DIR_PRINCIPAL)" in js
+
+    # El rig de foto VIEJO —luz clave propia, dos sombras, exposicion mas baja—
+    # no puede volver. Sobre el CODIGO y no sobre la prosa: los comentarios
+    # nombran lo que se saco justamente para contar por que.
+    for retirado in ("const FOTO", "ajustarSombra", "aporteClave", "aporteCenital"):
+        assert retirado not in codigo, f"volvio el rig de foto viejo: {retirado}"
 
 
-def test_la_foto_no_lava_el_relieve_del_marcador(sesion: TestClient) -> None:
-    """Los dos ajustes que deciden si el marcador se distingue o no.
+def test_la_luz_de_la_foto_es_neutra_y_no_toca_la_sombra(sesion: TestClient) -> None:
+    """El pedido: sin brillo lavando el grabado, luz neutra, la sombra igual.
 
-    Son los dos que ya estuvieron mal una vez, y los dos fallan **en silencio**:
-    la imagen sale, se descarga, y el relieve simplemente no esta. Medido en la
-    region del marcador, con el bias grande el detalle local daba 6,7 y el plato
-    salia en 241 de 243 de maximo; con estos valores da 11,8 y 219.
+    Son tres garantias distintas y se afirman por separado, siempre en RELACION
+    contra el visor y no contra numeros sueltos: si manana hay que retocar un
+    valor, el test tiene que seguir cuidando la garantia.
+
+    Ninguna de estas afirmaciones puede decir como se ve la foto — eso es CV-01
+    y se mira con los ojos. Lo que si dicen es que las tres decisiones que
+    hacen que se vea asi siguen tomadas.
     """
     js = sesion.get("/static/js/preview3d.js").text
+    codigo = _sin_comentarios(js)
 
-    # 1. `normalBias` en milimetros. Con 0,35 —el valor del visor, donde la
-    #    pieza se ve entera y de lejos— el corrimiento es el 17% de la altura
-    #    de un trazo de 2 mm y borra justo las sombras propias del relieve.
-    bias = re.search(r"\bbiasNormal:\s*([0-9.]+)", js)
-    assert bias is not None, "falta `biasNormal` en el bloque FOTO"
-    assert float(bias.group(1)) <= 0.05, (
-        f"normalBias de {bias.group(1)} mm borra el relieve del marcador; "
-        "el del visor 3D (0,4) no sirve para una toma cenital de cerca"
+    orbita = _reparto(codigo, "ESTUDIO_ORBITA")
+    foto = _reparto(codigo, "ESTUDIO_FOTO")
+    ambiente = _reparto(codigo, "AMBIENTE_FOTO")
+
+    # 1. Sin lavado. El panel cenital cae por igual sobre el plato y sobre el
+    #    fondo del surco —ahi adentro no hay oclusion ambiental que lo tape—,
+    #    asi que en una toma a plomo es lo que borra el grabado. Tiene que
+    #    pesar bastante menos que en el visor, donde en cambio es lo que le da
+    #    volumen a la pieza mientras gira.
+    assert foto["cenital"] < orbita["cenital"] / 2, (
+        "el panel cenital del visor es lo que lava el grabado visto a plomo"
     )
 
-    # 2. La toma cenital NO puede reusar la caja de estudio del visor: su panel
-    #    de arriba ilumina igual el plato y el relieve, y eso es exactamente el
-    #    lavado que tapa el marcador.
-    assert "ESTUDIO_ORBITA" in js and "estudio:" in js, "faltan los dos repartos de estudio"
-    orbita = re.search(r"ESTUDIO_ORBITA = \{ cenital: ([0-9.]+)", js)
-    foto = re.search(r"estudio: \{ cenital: ([0-9.]+)", js)
-    assert orbita is not None and foto is not None
-    assert float(foto.group(1)) < float(orbita.group(1)), (
-        "el panel cenital de la foto tiene que ser MAS debil que el del visor"
+    # 2. Luz neutra. Los dos paneles laterales de la foto son del mismo blanco;
+    #    el visor conserva los suyos tinteados, y que sigan siendo distintos
+    #    entre si es la prueba de que no se unificaron de un lado por accidente.
+    assert foto["frio"] == foto["calido"] == float(0xFFFFFF), "la foto va con paneles blancos"
+    assert orbita["frio"] != orbita["calido"], "el visor conserva su tinte"
+    assert "relleno.color.set(0xffffff)" in codigo, "el relleno de la foto tambien va blanco"
+
+    #    Y con menos ambiente que el visor, que es lo que deja que la sombra
+    #    propia del relieve valga algo.
+    cielo = re.search(r"const cielo = new THREE\.HemisphereLight\(([^)]*)\)", codigo)
+    relleno = re.search(r"const relleno = new THREE\.DirectionalLight\(([^)]*)\)", codigo)
+    assert cielo and relleno, "el rig del visor declara el hemisferico y el relleno"
+    assert ambiente["hemisferico"] < float(cielo.group(1).split(",")[-1])
+    assert ambiente["relleno"] < float(relleno.group(1).split(",")[-1])
+
+    # 3. La sombra queda igual. Lo unico que la proyecta es `principal`, y
+    #    ningun ajuste de la foto la toca: que `neutralizarAmbiente` no pueda
+    #    nombrarla es la garantia. Si alguien le baja la intensidad ahi adentro
+    #    para "suavizar", este test lo frena.
+    neutraliza = re.search(r"function neutralizarAmbiente\(.*?\n\}", codigo, re.DOTALL)
+    assert neutraliza, "la foto neutraliza su ambiente en una sola funcion"
+    assert "principal" not in neutraliza.group(0), (
+        "neutralizarAmbiente no puede tocar la luz que proyecta la sombra"
     )
+    assert not re.search(r"\bprincipal\.(intensity|color)\b", codigo), (
+        "la intensidad y el color de la luz principal son los del visor, sin retoque"
+    )
+
+
+def test_la_vista_imagen_no_dibuja_la_grilla(sesion: TestClient) -> None:
+    """El fondo de la foto es liso: la cuadricula es del visor y solo del visor.
+
+    La grilla tiene un solo lugar donde se crea (`agregarPiso`) y la foto pide
+    explicitamente que no se dibuje. Un `GridHelper` suelto en otro lado seria
+    justo la forma de que reapareciera sin que nadie lo note.
+    """
+    js = sesion.get("/static/js/preview3d.js").text
+    assert js.count("new THREE.GridHelper(") == 1, "la grilla se crea en un solo lugar"
+    assert "agregarPiso(escena, { grilla: false })" in js, "la foto tiene que pedir piso sin grilla"
+    assert "agregarPiso(escena)" in js, "el visor 3D si conserva la grilla"
+
+
+def test_la_luz_de_la_foto_escala_con_la_pieza(sesion: TestClient) -> None:
+    """Lo unico de la luz del visor que la foto NO copia tal cual, y hace falta.
+
+    `agregarLuces` deja el frustum de sombra fijo en ±160, que alcanza cuando
+    la pieza se ve entera y de lejos. En una exportacion a 2048 px no: como
+    `lado_mayor_mm` admite hasta 1000, una pieza de mas de 320 mm se saldria
+    del frustum y **se quedaria sin sombra** —desaparecida, no mas chica—, y
+    eso sale en el archivo que el usuario se lleva.
+    """
+    js = sesion.get("/static/js/preview3d.js").text
+    assert "encuadrarLuz(principal" in js, "la luz de la foto tiene que reajustarse a la pieza"
+    assert re.search(r"c\.left = -radio \* [0-9.]+", js), "el frustum se mide en radios de pieza"
+    assert re.search(r"c\.far = radio \* [0-9.]+", js)
 
 
 def test_no_hay_ninguna_url_externa_en_lo_que_se_sirve(sesion: TestClient) -> None:

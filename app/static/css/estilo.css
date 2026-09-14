@@ -463,7 +463,7 @@ body[data-pagina='cortante'] {
   min-height: 560px;
 }
 
-/* En una columna de 290 px los cinco enlaces no entran en fila: van apilados y
+/* En una columna de 290 px los enlaces no entran en fila: van apilados y
    a lo ancho, que ademas los vuelve un blanco mas facil de acertar. */
 .descargas {
   display: flex;
@@ -516,6 +516,26 @@ body[data-pagina='cortante'] {
   background: var(--card);
   color: var(--texto-2);
   box-shadow: none;
+}
+
+/* "Descargar todo" cierra el grupo de descargas, separado del resto por un
+   aire mayor que el `gap` de 8 px de `.descargas`.
+
+   Va ultimo y no primero a proposito: el orden de los archivos sueltos ya se
+   conoce, y meter la accion nueva arriba moveria de lugar el 3MF completo, que
+   es lo que la gente busca primero. El aire dice que es de otra naturaleza —se
+   lleva todo lo de arriba junto— sin robarle el primer plano.
+
+   ⚠ **Vive ACA y no al lado de `.descargas`, que seria su lugar tematico.**
+   Un modificador y su bloque base tienen la MISMA especificidad (0,1,0), asi
+   que decide el orden en el archivo. Declarada antes de `.boton`, esta regla
+   perdia `padding-top`, `border-top` y `border-radius` contra el `padding`,
+   `border` y `border-radius` de la base: de las cuatro propiedades sobrevivia
+   solo el margen, y la separacion que este comentario explicaba simplemente no
+   se dibujaba. Es la misma clase de colision que la nota de `.barra` del spec
+   base, y tampoco la ve ningun gate: no hay linter de CSS en el proyecto. */
+.boton--todo {
+  margin-top: 10px;
 }
 
 .boton--fantasma {
@@ -1056,13 +1076,6 @@ body[data-pagina='cortante'] {
   text-transform: uppercase;
 }
 
-.imagen-controles .boton {
-  margin-left: auto;
-  min-height: 38px;
-  padding: 0 16px;
-  font-size: 12.5px;
-}
-
 /* ── Reporte de fidelidad ───────────────────────────────────────────────── */
 
 .metricas {
@@ -1294,15 +1307,11 @@ body[data-pagina='cortante'] {
     padding: 12px;
   }
 
-  /* A 390 px la fila de tres bloques no entra: cada uno pasa a su renglon y
-     el boton a lo ancho, que ademas lo vuelve mas facil de acertar. */
+  /* A 390 px los dos bloques de paleta no entran en una fila: cada uno pasa a
+     su renglon. (Eran tres hasta que el boton de bajar la imagen se mudo al
+     grupo de descargas, que es donde vive ahora junto al resto de archivos.) */
   .imagen-controles__grupo {
     width: 100%;
-  }
-
-  .imagen-controles .boton {
-    width: 100%;
-    margin-left: 0;
   }
 
   /* Las 8 muestras entran justas en 390 px; la aclaracion se cae primero. */

@@ -4,15 +4,20 @@
 > del proyecto entre sesiones: mientras esté vigente, `inspect` NO re-analiza el stack desde
 > cero. Se regenera con aprobación cuando cambian las señales de frescura de abajo.
 
-**Última actualización:** 2026-09-11
+**Última actualización:** 2026-09-14
 **Versión de plantilla:** 3
 
-> Actualizado al cerrar el **ciclo 4** (6 ajustes de UI/UX de la capa web). El conversor pasó de 4 a
-> **13 formatos** de entrada —con dos decodificadores nativos nuevos—, la navegación pasó de sidebar
-> lateral a **barra superior única**, y el nombre del archivo del usuario ahora sobrevive todo el
-> pipeline. **228 tests** y los **7 gates** en verde. ⚠ El motor (`cutter3d/{geometry,solids,verify,
-> export,params,svg_io,measure}.py`) **no se tocó**: fue restricción dura del ciclo y está verificado.
-> Del ciclo 3 viene `distancia_colision_mm` y el puenteo de bolsillos ciegos; del ciclo 2, la capa web.
+> Actualizado al cerrar el **ciclo 5** (descargar todo en ZIP · la foto del cortante como archivo del
+> trabajo · rediseño del render de la foto). La capa web sumó **2 endpoints** y el contrato de archivos
+> una clave (`jpg_vista`); la vista imagen comparte con el visor las funciones, la exposición y la
+> sombra, pero lleva **su propio reparto de paneles, neutro y sin cenital fuerte**. **303 tests**
+> (eran 228) y los **8 gates** en verde.
+> ⚠ El motor (`cutter3d/`), `pyproject.toml` y `requirements.txt` **no se tocaron**: fue restricción
+> dura del ciclo y está verificado con `git diff --name-only`.
+>
+> Del ciclo 4 viene el conversor de **13 formatos**, la **barra superior única** y que el nombre del
+> archivo del usuario sobreviva todo el pipeline; del ciclo 3, `distancia_colision_mm` y el puenteo de
+> bolsillos ciegos; del ciclo 2, la capa web.
 
 ## Señales de frescura
 - **Manifests:** `pyproject.toml` (existe en la raíz) — `version = "0.2.0"`
@@ -58,6 +63,19 @@
     polling desde el navegador. No es un `ProcessPoolExecutor` y el motivo es concreto: **el pool no
     sabe imponer un timeout**. `future.result(timeout=N)` corta la espera, no al worker. Con un
     `Process` dedicado, `join(timeout)` + `terminate()` da un timeout real con stdlib pura.
+- **Los archivos de un trabajo se mueven por `app/routers/trabajos.py`, en las dos direcciones.**
+  Desde el ciclo 5 son cinco endpoints, y el tercero es el único camino de escritura del cliente:
+  - `GET /{id}` (polling) · `GET /{id}/archivo/{clave}` (descarga suelta) · `DELETE /{id}` (cancelar).
+  - **`GET /{id}/zip`** — arma un ZIP al vuelo con `claves_descargables` (todo menos `CLAVES_INTERNAS`,
+    o sea sin el `.glb`), con los miembros nombrados por `nombre_de_descarga` — el mismo criterio que
+    la descarga suelta. Se sirve con `StreamingResponse` y **no** con `FileResponse`: ver el hallazgo
+    10. Los `.3mf` y el JPG entran con `ZIP_STORED` porque ya están comprimidos.
+  - **`PUT /{id}/imagen`** — recibe la foto cenital que rindió el navegador. Cuatro defensas en orden:
+    propietario → tipo `CORTANTE` (404, no 403) → estado `LISTO` (409) → `guardar_subida` decidiendo
+    por los BYTES, con `destino_nombre=NOMBRE_DE[JPG_VISTA]`. El cliente sigue sin nombrar nada.
+  - La foto **es un archivo del trabajo como cualquier otro** (`jpg_vista` → `vista.jpg`): se baja por
+    el mismo endpoint, con el mismo criterio de nombre, y entra en el ZIP. La sube el front
+    **on-demand al hacer clic**, no con debounce: lo que baja es lo que se está viendo.
 - **Frontera entre procesos:** `app/tareas.py`. Recibe solo primitivos y `str` de rutas, no devuelve
   nada, y **nunca deja escapar una excepción**: el resultado viaja por `estado.json`, escrito de forma
   atómica en el directorio del trabajo. Su ausencia **significa fallo, no "todavía no"**.
@@ -141,6 +159,29 @@
 9. **XML no admite `--` adentro de un comentario.** Escribir un guion doble en el comentario de un
    fixture `.svg` lo vuelve inválido y el parseo se cae con un error que no menciona el comentario.
    Pasó al documentar `dos_lobulos.svg`: dos tests en rojo hasta encontrarlo.
+10. **`FileResponse` retorna ANTES de correr su `background` si el `Range` es inválido.** Starlette
+   soporta `Range` y ante un header malformado (`Range: bytes=abc`) o insatisfacible devuelve
+   400/416 con un `return` temprano que **saltea** la línea del `BackgroundTask`. Un ZIP que se arma
+   en un temporal y se borra ahí queda en disco, y como cada pedido escribe una copia completa de
+   todas las salidas, **el cliente amplifica disco con un solo header**. Por eso `descargar_todo`
+   usa `StreamingResponse`. Y hay un segundo nivel: con `StreamingResponse`, una desconexión
+   **cancela** la tarea del stream y el generador queda suspendido en su `yield` sin que nadie le
+   llame `close()`, así que su `finally` corre **por refcount del recolector, no por flujo de
+   control**. Lo que realmente sostiene el borrado es el `unlink` con el descriptor ya abierto: en
+   POSIX el archivo se sigue sirviendo y el espacio se recupera solo.
+11. **`almacen.actualizar()` refresca `actualizado_en` SIEMPRE**, y de ese campo depende `vencidos()`
+   — o sea el TTL de 6 h, que es la **única cota de disco total** del diseño. Hasta el ciclo 5
+   ninguna acción del cliente escribía sobre un trabajo ya terminado, así que no se notaba; el
+   `PUT /imagen` fue el primero, y sin restaurar el valor previo un PUT de tres bytes cada cinco
+   horas dejaba un directorio con todas las salidas vivo para siempre. El arreglo de fondo es un
+   `tocar=False` en el almacén; hoy está mitigado en el router. ⚠ La mitigación funciona **porque
+   `AlmacenEnMemoria` devuelve la instancia viva**: el `Protocol` no lo promete, así que con un
+   `AlmacenSQLite` se pierde — y el test que la cubre seguiría en verde.
+12. **`uvicorn` está fijado SIN `[standard]`, y eso es una defensa, no una omisión.** Sin ese extra el
+   writer HTTP es `h11`, que valida los valores de header de respuesta contra el ABNF y **rechaza
+   CR/LF**. Instalar `uvicorn[standard]` cambia a `httptools`, que **no valida**. Importa desde el
+   ciclo 5: el `content-disposition` del ZIP se arma a mano, y su única defensa propia es que
+   `base_es_segura` use `fullmatch` (con `match`, comillas, `;`, CR y LF pasan todos).
 
 ## Dependencias y librerías principales
 | Dependencia | Versión | Para qué se usa |
@@ -190,7 +231,7 @@ Dev: pytest 9.1.1 · ruff 0.16.6 · mypy 2.3.1 · bandit 1.9.4 · **httpx 0.28.1
 | Setup | `py -3.13 -m venv .venv` y `.venv/Scripts/python -m pip install -e ".[dev,web]"` |
 | Build | no aplica (sin build step, ni en el back ni en el front) |
 | **Dev / run (web)** | `.venv/Scripts/python -m uvicorn app.main:app --reload --port 8000` → http://127.0.0.1:8000 |
-| Test | `.venv/Scripts/python -m pytest` → **228 passed** (~71 s) — ⚠ **sin `-q`**, ver nota |
+| Test | `.venv/Scripts/python -m pytest` → **302 passed** (~76 s) — ⚠ **sin `-q`**, ver nota |
 | Test rápido | `.venv/Scripts/python -m pytest -m "not lento"` (saltea el que corre el motor real) |
 | Lint | `.venv/Scripts/python -m ruff check app cutter3d tests` |
 | CLI | `.venv/Scripts/python -m cutter3d --svg <arte.svg> --modo cortante+marcador --out <salida.3mf> --reporte` |
@@ -220,6 +261,7 @@ el grupo de dimensiones tiene **10** flags: el décimo es `--distancia-colision`
 | SAST | `.venv/Scripts/python -m bandit -c pyproject.toml -r app cutter3d` | `app/` + `cutter3d/` | 0 hallazgos medio/alto |
 | **Secretos** | **`gitleaks dir app` / `cutter3d` / `tests`, y `gitleaks git .`** | fuentes + historial | **0 hallazgos** |
 | **CVEs** | **`.venv/Scripts/python -m pip_audit`** | todo el venv | **0 vulnerabilidades conocidas** |
+| **Sintaxis JS** | **`node --check <archivo>`** | los `.js` del diff | **0 errores de parseo** |
 
 **Notas — excepciones documentadas, no deuda escondida:**
 
@@ -243,13 +285,21 @@ el grupo de dimensiones tiene **10** flags: el décimo es `--distancia-colision`
   manifold3d solo por definir la tarea del hijo.
 - **Sin baseline, y corresponde**: el proyecto nació en el ciclo 1 con la deuda en cero. Cualquier
   hallazgo de gate es del ciclo que lo produjo.
-- **Ningún gate mira el CSS ni el JS.** Es el bloque más grande y menos verificable del ciclo 2
-  (22 KB de CSS, 25 KB de JS): se contrasta contra los 8 artboards a ojo, y nada más.
+- **`node --check` es el único gate que mira el JS, y solo valida que parsee.** Se agregó en el ciclo
+  5 al descubrir que **`node` está instalado en esta máquina**: no lo usa el proyecto —sigue sin
+  bundler, sin `package.json` y sin build step— pero está disponible, no agrega ninguna dependencia y
+  cubre de errores de sintaxis los 65 KB de JS que antes no miraba nada. ⚠ **No es un linter**: no
+  ve estilo, variables sin usar ni nada semántico. Si algún día se quiere eso, eslint exigiría
+  `package.json` y `node_modules`, que es justamente lo que el proyecto evitó.
+- **Ningún gate mira el CSS**, y sigue siendo el bloque menos verificable: se contrasta a ojo contra
+  los artboards. Ya costó dos veces — la colisión de `.barra` en el ciclo 4 y, en el ciclo 5, un
+  `.boton--todo` declarado **antes** de `.boton` cuyas propiedades quedaban pisadas por tener la
+  misma especificidad. Las dos las encontró una lectura, no una herramienta.
 
 ## Red de regresión
 - **Estado:** `caracterización` (motor) + `unit`/integración (web, con `TestClient`)
 - **Ubicación:** `tests/test_fidelidad.py` (motor) y `tests/test_web_*.py` (web), con `tests/conftest.py`
-- **Cómo se corre:** `.venv/Scripts/python -m pytest` → 228 passed (~71 s)
+- **Cómo se corre:** `.venv/Scripts/python -m pytest` → 302 passed (~76 s)
 - **Áreas cubiertas:**
   - *Motor:* el pipeline de geometría completo (`svg_io → geometry → solids → export`), verificado
     **releyendo el `.3mf` exportado**, no la malla en memoria. Los asserts numéricos SON el golden
@@ -268,7 +318,7 @@ el grupo de dimensiones tiene **10** flags: el décimo es `--distancia-colision`
   - El andamiaje aísla todo con `dependency_overrides`: ningún test toca `trabajo/` ni depende de que
     `credenciales.json` exista, y **la contraseña de prueba se genera al vuelo** — no hay ninguna
     credencial literal en el repo.
-  - *Front (contrato, no comportamiento):* **11 tests** en `test_web_auth.py` verifican lo que el
+  - *Front (contrato, no comportamiento):* **17 tests** en `test_web_auth.py` verifican lo que el
     servidor SIRVE — los 5 estáticos sin internet, el grafo de módulos del visor 3D recorrido con BFS,
     los 8 colores de la paleta contra `COLORES`, que ningún hex esté escrito dos veces, el botón de
     generar apagado con su pista, los tokens de los dos temas en el CSS, cero URLs externas, el menú
@@ -372,10 +422,34 @@ studiocutter3d/
   así que la pantalla los esconde y el formulario no los manda. `luz_mm` **sí** se usa en los dos
   modos: es `offset_o1`, donde arranca el filo. La marca vive en `CampoParametro.solo_marcador`,
   del lado que conoce el motor, no en el template.
-- **Las descargas del cortante se habilitan después de la vista previa**, no junto con ella: lo que
-  se baja es la misma geometría que se está viendo. Si el visor falla (sin WebGL, GLB que no carga,
-  o el módulo que ni siquiera arranca) se habilitan igual — hay tres caminos que lo garantizan,
-  incluido un timeout de 15 s en `app.js`: un visor roto no puede dejar un archivo bueno sin bajar.
+- **Las descargas del cortante se habilitan al TERMINAR el trabajo, no después de la vista previa.**
+  El archivo ya está completo en el servidor, y el visor puede fallar por cosas que no dicen nada de
+  él (sin WebGL, un GLB que no carga). Lo único que sigue dependiendo del preview es el TEXTO de la
+  pista, que es texto y no una traba.
+  ⚠ Esto se invirtió en el ciclo 4: antes esperaban al visor y había un `MS_ESPERA_PREVIEW` de 15 s
+  para destrabarlas. Ese timeout **se borró en el commit `63c1574`** y el spec base lo siguió
+  describiendo hasta el ciclo 5. El único tope que queda en `app.js` es `MS_ESPERA_FOTO` (30 s) y
+  cubre otra cosa: el handshake de la foto.
+- **La foto del cortante es la excepción, y por eso se sube on-demand.** Es el único "archivo" que no
+  existe en el servidor cuando el trabajo termina: la rinde el navegador. Se sube al hacer clic —no
+  con debounce al renderizar— porque depende del color de la pieza y del fondo, que se pueden cambiar
+  en cualquier momento: subir antes abriría una ventana en la que el servidor tiene una foto vieja y
+  nadie se entera. El ZIP **no depende de ella**: si no se puede generar, baja igual y la pantalla
+  dice por qué, con el motivo real y no con un texto fijo.
+- **La foto comparte el rig del visor pero no su reparto de luz, y la diferencia está medida.**
+  Las dos vistas se arman con las mismas funciones (`crearEntorno`, `agregarLuces`, `agregarPiso`),
+  la misma exposición, el mismo tone mapping y la misma dirección de luz principal — lo único propio
+  de la foto es cuánta luz **sin dirección** hay (`ESTUDIO_FOTO` + `neutralizarAmbiente`). El motivo
+  es geométrico: vista a plomo, el panel cenital del visor cae por igual sobre el plato y sobre el
+  fondo del surco —ahí adentro no hay oclusión ambiental que lo tape—, así que el grabado del
+  marcador quedaba en **9,5 niveles de contraste sobre 255** y la pieza salía 72 niveles por encima
+  de su propio color. Con el reparto de la foto son **29,1**. ⚠ La luz principal **no se toca**: es
+  la que proyecta la sombra, y `neutralizarAmbiente` no puede ni nombrarla (hay un test que lo
+  exige). Medido con un modelo del estudio corrido en node, fuera del navegador.
+- **La vista imagen no sigue el tema claro/oscuro, y el visor sí.** Es deliberado: el visor se dibuja
+  sobre el fondo de la página, pero la foto es un ARCHIVO que el usuario se lleva, y su contenido no
+  puede depender de una preferencia de UI. Consecuencia aceptada: en tema oscuro la sombra del visor
+  es más densa que la de la foto.
 - **El `.3mf` se entrega combinado y también por objeto.** El combinado es el archivo bueno: los
   dos cuerpos en su posición anidada real, que es lo que se imprime. Los sueltos
   (`salida_marcador.3mf`, `salida_cortador.3mf`) son el mismo cuerpo **en las mismas coordenadas**

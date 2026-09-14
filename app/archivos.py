@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from .almacen import AlmacenTrabajos
-from .config import Ajustes
+from .config import MB, Ajustes
 from .errores import ErrorApi
 
 NOMBRE_ESTADO = "estado.json"
@@ -101,6 +101,21 @@ vectorizarlo, y una vectorizacion escondida adentro del cortante es una perdida
 de fidelidad que el usuario no eligio ni puede revisar. Vectorizar es trabajo
 del Convertidor y de F2, que dejan el SVG a la vista antes de este paso."""
 
+FORMATOS_VISTA = frozenset({Formato.JPEG})
+"""Lo unico que acepta el PUT de la foto del cortante.
+
+No se reusa `FORMATOS_LINEAS` aunque hoy valga lo mismo: que coincidan es
+casualidad, no un contrato compartido. El dia que F2 acepte PNG, este no
+tiene por que seguirlo."""
+
+LIMITE_VISTA_BYTES = 4 * MB
+"""Tope propio de la foto, mas ceñido que `tamano_maximo_bytes` (25 MB).
+
+El navegador ya la acota a 2 MB por construccion (`TOPE_BYTES` en
+`preview3d.js`), asi que 4 deja margen para el peor caso de la escalera de
+calidades y nada mas. El limite general es para el arte que sube el usuario;
+esto lo produce nuestro propio front y se sabe cuanto pesa."""
+
 
 class ClaveArchivo(StrEnum):
     """Lo unico que el cliente puede pedir. Fuera de esta lista es 4xx."""
@@ -114,6 +129,12 @@ class ClaveArchivo(StrEnum):
     JPG = "jpg"
     PNG = "png"
     SVG = "svg"
+    JPG_VISTA = "jpg_vista"
+    """La foto cenital del cortante, rendida por el navegador y subida aca.
+
+    **No es `JPG`**, que es la salida del Convertidor (`salida.jpg`). Son dos
+    archivos distintos, producidos por dos cosas distintas, y darles la misma
+    clave haria que un trabajo encadenado pisara uno con el otro."""
 
 
 NOMBRE_DE: dict[ClaveArchivo, str] = {
@@ -126,6 +147,7 @@ NOMBRE_DE: dict[ClaveArchivo, str] = {
     ClaveArchivo.JPG: "salida.jpg",
     ClaveArchivo.PNG: "salida.png",
     ClaveArchivo.SVG: "salida.svg",
+    ClaveArchivo.JPG_VISTA: "vista.jpg",
 }
 
 MEDIO_DE: dict[ClaveArchivo, str] = {
@@ -138,7 +160,33 @@ MEDIO_DE: dict[ClaveArchivo, str] = {
     ClaveArchivo.JPG: "image/jpeg",
     ClaveArchivo.PNG: "image/png",
     ClaveArchivo.SVG: "image/svg+xml",
+    ClaveArchivo.JPG_VISTA: "image/jpeg",
 }
+
+CLAVES_INTERNAS: frozenset[ClaveArchivo] = frozenset({ClaveArchivo.GLB})
+"""Lo que el trabajo tiene pero el usuario no baja.
+
+El `.glb` existe para alimentar al visor 3D: no esta en el grupo de descargas
+de la pantalla y por lo tanto tampoco va en el ZIP de "descargar todo". Vive
+aca —y no como una lista escrita a mano en el router— para que la pantalla y
+el ZIP no puedan discrepar sobre que es descargable."""
+
+CLAVES_NO_ENCADENABLES: frozenset[ClaveArchivo] = frozenset(
+    {ClaveArchivo.GLB, ClaveArchivo.JPG_VISTA}
+)
+"""Lo que un trabajo deja pero NO puede ser la entrada del siguiente.
+
+Es una lista distinta de `CLAVES_INTERNAS` y la diferencia importa: aquella es
+"que puede bajar el usuario", esta es "que es arte del usuario". La foto de la
+vista se baja —es el punto de todo esto— pero **no es el dibujo**: es un render
+de la pieza terminada.
+
+Sin esta lista, agregar `JPG_VISTA` cambiaba en silencio el contrato de otra
+pantalla. `copiar_desde_trabajo` elige el primer archivo del origen que la
+pantalla destino sepa leer, y `FORMATOS_LINEAS` es `{JPEG}`: un cortante que
+antes daba `encadenado_incompatible` (409) al encadenarlo con Correcto pasaba a
+dar 200 **metiendo el render de WebGL como si fuera el arte**, y heredando el
+nombre original para disimularlo. Nadie lo pidio y nadie lo habria visto."""
 
 
 class FormatoSalida(StrEnum):
@@ -166,7 +214,12 @@ SUFIJO_DESCARGA: dict[ClaveArchivo, str] = {
     ClaveArchivo.JPG: ".jpg",
     ClaveArchivo.PNG: ".png",
     ClaveArchivo.SVG: ".svg",
+    ClaveArchivo.JPG_VISTA: "-vista.jpg",
 }
+
+SUFIJO_ZIP = ".zip"
+"""El de "descargar todo". No esta en `SUFIJO_DESCARGA` porque el ZIP no es un
+archivo del trabajo: se arma al vuelo y no tiene clave en `ClaveArchivo`."""
 
 
 @dataclass(frozen=True)
@@ -374,6 +427,25 @@ def base_es_segura(base: str | None) -> bool:
     no es idempotente: esa funcion descarta la extension, asi que aplicarla dos
     veces se come parte del nombre — `mi.archivo.png` daria `mi.archivo` y
     despues `mi`. Medido: 169 de 20000 entradas cambian en la segunda pasada.
+
+    ⛔ **Esto es una frontera de seguridad, no una regla de estetica.** Nacio
+    cosmetica —el `filename=` de `FileResponse` lo percent-encodea Starlette,
+    asi que un nombre raro se veia mal y nada mas—, pero `descargar_todo` arma
+    el `Content-Disposition` del ZIP **a mano** y esta whitelist es lo unico
+    que impide meter un CRLF en un header de respuesta. Concretamente:
+
+    - Que sea `fullmatch` y no `match` **es toda la defensa**. Con `match`,
+      `a"b`, `a;b`, `a b`, `a\\rb` y `a\\nb` pasan todos: la regex ancla el
+      arranque pero no el final.
+    - La clase es un rango ASCII literal y no `\\w`, asi que `re.UNICODE` no la
+      ensancha. Aflojarla para aceptar acentos abre la inyeccion.
+    - Hay un cinturon mas, y es implicito: `requirements.txt` fija `uvicorn`
+      **sin `[standard]`**, asi que el writer HTTP es `h11`, que valida los
+      valores de header contra el ABNF y rechaza CR/LF. Instalar
+      `uvicorn[standard]` cambia a `httptools`, que **no valida**, y deja esta
+      funcion como unica defensa.
+
+    Si hay que tocar la whitelist, mirar primero `routers/trabajos.py`.
     """
     return (
         base is not None
@@ -390,8 +462,37 @@ def nombre_de_descarga(id_: str, clave: ClaveArchivo, base: str | None = None) -
     saneo a nada, o uno que no pasa la validacion) cae al id, que es el
     comportamiento historico.
     """
+    return f"{_raiz_del_nombre(id_, base)}{SUFIJO_DESCARGA[clave]}"
+
+
+def nombre_de_zip(id_: str, base: str | None = None) -> str:
+    """Nombre del ZIP de "descargar todo". Mismo criterio que las descargas sueltas."""
+    return f"{_raiz_del_nombre(id_, base)}{SUFIJO_ZIP}"
+
+
+def _raiz_del_nombre(id_: str, base: str | None) -> str:
+    """Lo que va antes del sufijo, para las descargas sueltas y para el ZIP.
+
+    Vive en un solo lugar y no copiado en los dos porque **es el criterio**, no
+    un detalle de formato: el stem si pasa `base_es_segura`, y el fallback al id
+    si no. Que el ZIP se llamara distinto que sus propios miembros seria el tipo
+    de incoherencia que nadie mira hasta que la ve."""
     seguro = base if base_es_segura(base) else None
-    return f"{seguro or f'studiocutter-{id_[:8]}'}{SUFIJO_DESCARGA[clave]}"
+    return seguro or f"studiocutter-{id_[:8]}"
+
+
+def claves_descargables(archivos: dict[str, str]) -> list[ClaveArchivo]:
+    """Las claves del trabajo que el usuario puede bajar, en el orden del enum.
+
+    Filtra dos cosas: lo que no esta en `ClaveArchivo` —imposible hoy, porque
+    `_claves_conocidas` ya lo descarto en la frontera con el hijo, pero esto no
+    depende de eso— y `CLAVES_INTERNAS`.
+
+    El orden sale del enum y no del dict del trabajo: asi el ZIP lista siempre
+    igual y dos corridas del mismo trabajo dan el mismo archivo.
+    """
+    presentes = set(archivos)
+    return [c for c in ClaveArchivo if c.value in presentes and c not in CLAVES_INTERNAS]
 
 
 # ── Subidas ──────────────────────────────────────────────────────────────────
@@ -404,6 +505,7 @@ def guardar_subida(
     permitidos: frozenset[Formato],
     limite_bytes: int,
     nombre_cliente: str | None = None,
+    destino_nombre: str | None = None,
 ) -> Subida:
     """Copia el archivo subido a `entrada.<ext>` validando contenido y tamaño.
 
@@ -411,6 +513,12 @@ def guardar_subida(
     escrito se borra y no queda basura en disco. El middleware de `main.py` ya
     rechaza por `Content-Length` antes de llegar aca; esto cubre el caso de un
     cliente que miente en el header.
+
+    `destino_nombre` pisa el `entrada.<ext>` cuando lo que entra no es el arte
+    del usuario sino una salida que produjo nuestro propio front —hoy, la foto
+    del cortante, que va a `vista.jpg`—. **Sigue sin venir del cliente**: el
+    llamador lo saca de `NOMBRE_DE`, igual que las descargas. Con `None` el
+    comportamiento es el de siempre.
     """
     cabecera = origen.read(TROZO)
     formato = detectar_formato(cabecera)
@@ -425,11 +533,48 @@ def guardar_subida(
             detalle={"detectado": detectado},
         )
 
+    # El nombre pedido tiene que corresponderse con lo que los BYTES dijeron
+    # que es. Sin esto nada ata `destino_nombre` a `permitidos`: un llamador
+    # podia guardar un JPEG como `salida.png` y despues `MEDIO_DE` mentia en el
+    # `content-type` de la descarga. Es justo el tipo de desfasaje que mypy no
+    # ve, porque los dos lados son strings.
+    if destino_nombre is not None and not destino_nombre.endswith(EXTENSION[formato]):
+        raise ErrorApi(
+            "formato_no_soportado",
+            f"Ese archivo no se puede guardar como {destino_nombre}.",
+            estado=415,
+            detalle={"detectado": formato.value},
+        )
+    # Y que sea un NOMBRE, no una ruta. `Path("/dir") / "/etc/x.jpg"` descarta
+    # la izquierda y devuelve la absoluta, y `"../x.jpg"` sale del directorio:
+    # las dos cosas pasan el chequeo de sufijo de arriba sin despeinarse. Hoy el
+    # unico llamador pasa una constante de `NOMBRE_DE`, pero eso es una
+    # convencion del llamador y esto la convierte en algo que el consumidor
+    # impone — el mismo criterio que `base_es_segura` aplica al nombre de
+    # descarga, y por el mismo motivo.
+    if destino_nombre is not None and Path(destino_nombre).name != destino_nombre:
+        raise ErrorApi("interno", "No se pudo guardar el archivo.", estado=500)
+
     destino_dir.mkdir(parents=True, exist_ok=True)
-    destino = destino_dir / f"entrada{EXTENSION[formato]}"
+    destino = destino_dir / (destino_nombre or f"entrada{EXTENSION[formato]}")
+
+    # ⚠ Se escribe a un temporal y se renombra al final, en vez de abrir el
+    # destino en `"wb"`. Con `entrada.<ext>` daba igual —el destino era un
+    # archivo nuevo en un directorio nuevo—, pero desde que `destino_nombre`
+    # existe el destino puede ser un archivo VIVO (`vista.jpg`), y truncarlo
+    # antes de saber si la subida entra deja tres estados que antes no
+    # existian: una segunda subida demasiado grande destruia la foto valida
+    # anterior, un `OSError` a mitad de copia dejaba una truncada que se sirve
+    # como completa, y dos subidas simultaneas intercalaban sus bytes.
+    #
+    # Es el mismo patron —y por el mismo motivo— que `escribir_estado` unas
+    # lineas mas abajo: `os.replace` es atomico dentro del mismo filesystem, y
+    # el temporal vive en el mismo directorio para garantizarlo.
+    fd, temporal_txt = tempfile.mkstemp(dir=destino_dir, prefix=".subida-", suffix=".tmp")
+    temporal = Path(temporal_txt)
     escritos = 0
     try:
-        with destino.open("wb") as salida:
+        with os.fdopen(fd, "wb") as salida:
             trozo = cabecera
             while trozo:
                 escritos += len(trozo)
@@ -442,8 +587,11 @@ def guardar_subida(
                     )
                 salida.write(trozo)
                 trozo = origen.read(TROZO)
-    except ErrorApi:
-        destino.unlink(missing_ok=True)
+        os.replace(temporal, destino)
+    except BaseException:
+        # `BaseException` y no `ErrorApi`: un `OSError` por disco lleno tiene
+        # que limpiar igual, y antes se escapaba dejando basura.
+        temporal.unlink(missing_ok=True)
         raise
 
     return Subida(
@@ -555,6 +703,8 @@ def copiar_desde_trabajo(
     dir_origen = dir_de_trabajo(a, origen_id)
     for clave_txt in origen.archivos:
         clave = ClaveArchivo(clave_txt)
+        if clave in CLAVES_NO_ENCADENABLES:
+            continue
         ruta = dir_origen / NOMBRE_DE[clave]
         if not ruta.is_file():
             continue
