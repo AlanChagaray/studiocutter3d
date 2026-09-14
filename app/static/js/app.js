@@ -1091,7 +1091,13 @@ function iniciarCortante() {
 
     const aplicar = (color, recordar) => {
       muestras.forEach((o) => o.setAttribute('aria-pressed', String(o.dataset.color === color)));
-      document.dispatchEvent(new CustomEvent(evento, { detail: { color } }));
+      // `sinPiso` viaja junto al color y NO se deduce del hex: la muestra lo
+      // trae del router (`COLORES_FONDO`), y leerlo del DOM es lo que evita
+      // que el front tenga su propia idea de cual fondo no lleva piso. En las
+      // paletas de la pieza ninguna muestra lo declara y siempre sale `false`.
+      const elegida = muestras.find((o) => o.dataset.color === color);
+      const sinPiso = Boolean(elegida) && elegida.dataset.sinPiso === '1';
+      document.dispatchEvent(new CustomEvent(evento, { detail: { color, sinPiso } }));
       if (!recordar) return;
       try {
         localStorage.setItem(clave, color);

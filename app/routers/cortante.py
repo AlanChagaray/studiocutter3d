@@ -111,6 +111,16 @@ class ColorVista:
     nombre: str
     hex: str
 
+    # Si el fondo es una mesa de fotos o no hay nada abajo de la pieza.
+    #
+    # Solo lo mira la paleta del FONDO —en la de la pieza siempre es el
+    # default—. Un fondo CON piso recibe la sombra que el cortante proyecta;
+    # uno SIN piso deja nada mas la sombra propia de la pieza, la del relieve
+    # y las paredes del filo. Es un dato de la paleta y no del front por lo
+    # mismo que el hex: si el front eligiera cual muestra apaga el piso,
+    # habria dos listas.
+    piso: bool = True
+
 
 COLORES: tuple[ColorVista, ...] = (
     ColorVista("Blanco", "#f4f3f0"),
@@ -126,6 +136,29 @@ COLORES: tuple[ColorVista, ...] = (
 
 Ninguno es blanco puro (`#ffffff`) ni negro puro a proposito — el visor usa
 tone mapping ACES, y un blanco saturado se quema y deja la pieza sin relieve.
+"""
+
+
+COLORES_FONDO: tuple[ColorVista, ...] = (
+    *COLORES,
+    ColorVista("Sin fondo", "#ffffff", piso=False),
+)
+"""La paleta del FONDO de la foto: los mismos colores, mas `Sin fondo`.
+
+Es una lista aparte y no `COLORES` con un agregado porque `Sin fondo` **no es
+un color de pieza**: un cortante pintado de blanco puro se quema con el tone
+mapping ACES y sale sin relieve, que es justo lo que evita la nota de arriba.
+Como fondo no pasa: `scene.background` es un `clearColor` y no lo toca ni el
+tone mapping ni ninguna luz, asi que el `#ffffff` llega literal al JPG.
+
+Que sea la ultima y no la primera es deliberado: el default del fondo sigue
+siendo `Blanco`, y esta es la opcion que se elige a proposito.
+
+`piso=False` es todo lo que la distingue, y lo que hace es sacar el piso de la
+escena: sin piso no hay sombra proyectada sobre el fondo —queda blanco parejo
+de borde a borde— y la pieza conserva la suya propia, la del relieve. El
+encuadre tambien lo mira: sin sombra que meter en el cuadro, el cortante se
+lleva todo el lugar que antes le reservaba.
 """
 
 

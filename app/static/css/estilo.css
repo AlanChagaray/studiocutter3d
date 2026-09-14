@@ -958,6 +958,20 @@ body[data-pagina='cortante'] {
     0 0 0 4px var(--celeste);
 }
 
+/* La muestra de "Sin fondo" es blanco puro y la de "Blanco" es casi blanco: a
+   22 px de diametro son la misma pastilla. La barra diagonal es el signo de
+   "ninguno" de toda la vida, y va por atributo y no por un hex escrito aca
+   —la paleta tiene un solo dueño, `COLORES_FONDO` en el router—. */
+.paleta__color[data-sin-piso] {
+  background-image: linear-gradient(
+    to bottom right,
+    transparent calc(50% - 1px),
+    rgb(0 0 0 / 38%) calc(50% - 1px),
+    rgb(0 0 0 / 38%) calc(50% + 1px),
+    transparent calc(50% + 1px)
+  );
+}
+
 .paleta__nota {
   padding-left: 4px;
   color: var(--texto-3);

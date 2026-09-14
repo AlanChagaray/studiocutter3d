@@ -114,6 +114,7 @@
 <div class="{{ clase }}" role="group" aria-label="{{ etiqueta }}" id="{{ id }}">
   {%- for c in colores %}
   <button type="button" class="paleta__color" data-color="{{ c.hex }}"
+          {%- if not c.piso %} data-sin-piso="1"{% endif %}
           style="--muestra:{{ c.hex }}" title="{{ c.nombre }}" aria-label="{{ c.nombre }}"
           aria-pressed="{{ 'true' if loop.index0 == activo else 'false' }}"></button>
   {%- endfor %}

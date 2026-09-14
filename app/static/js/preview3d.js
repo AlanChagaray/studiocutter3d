@@ -173,6 +173,18 @@ const contenedor = document.getElementById('visor');
 const lienzo = document.getElementById('lienzo');
 
 /**
+ * La muestra marcada de una paleta, o `null` si esa paleta no esta en pantalla.
+ *
+ * Devuelve el BOTON y no su color porque del fondo se leen dos cosas del mismo
+ * elemento: el hex y si ese fondo lleva piso (`data-sin-piso`). Separarlas en
+ * dos consultas abriria la posibilidad de que una mire una muestra y la otra
+ * mire otra.
+ */
+function muestraElegida(selector) {
+  return document.querySelector(`${selector} .paleta__color[aria-pressed="true"]`);
+}
+
+/**
  * El color elegido sale de la propia paleta de la pantalla.
  *
  * No hay una segunda lista de colores aca: la unica esta en `COLORES` del
@@ -182,7 +194,7 @@ const lienzo = document.getElementById('lienzo');
  * gris neutro de abajo.
  */
 function colorElegido(selector) {
-  const muestra = document.querySelector(`${selector} .paleta__color[aria-pressed="true"]`);
+  const muestra = muestraElegida(selector);
   return muestra ? muestra.dataset.color : null;
 }
 
@@ -504,6 +516,13 @@ function iniciar(host) {
  * - **Sin grilla.** El piso es el mismo `agregarPiso` del visor pedido con
  *   `grilla: false`: recibe la sombra y nada mas. Una cuadricula sobre un
  *   fondo liso es exactamente lo que esta foto no tiene que tener.
+ * - **`Sin fondo` saca el piso, no la sombra de la pieza.** Es una muestra mas
+ *   de la paleta del fondo —`COLORES_FONDO` en el router, con `piso=False`— y
+ *   lo unico que hace es esconder el plano que recibe la sombra proyectada: el
+ *   blanco queda parejo de borde a borde y la pieza conserva la sombra PROPIA,
+ *   la del relieve y las paredes del filo, que es lo que evita que parezca un
+ *   recorte pegado. Como no hay sombra que entrar en el cuadro, el encuadre le
+ *   devuelve a la pieza el lugar que le reservaba.
  * - **El frustum de sombra se ajusta a la pieza.** Ver `encuadrarLuz`: es lo
  *   unico de la luz del visor que NO se copia tal cual, y el motivo esta ahi.
  */
@@ -557,11 +576,18 @@ function iniciarImagen(host) {
 
   let modelo = null;
   let color = colorElegido('#paleta-pieza') || colorElegido('#paleta');
+  let sinPiso = false;
   let sucio = true;
   let exportando = false;
   let listo = false;
 
-  aplicarFondo(colorElegido('#paleta-fondo'));
+  // La muestra del fondo trae las dos cosas: el color y si ese fondo lleva
+  // piso. Se leen del mismo boton para que no haya forma de que se separen.
+  const muestraFondo = muestraElegida('#paleta-fondo');
+  aplicarFondo(
+    muestraFondo ? muestraFondo.dataset.color : null,
+    Boolean(muestraFondo) && muestraFondo.dataset.sinPiso === '1'
+  );
 
   cuandoCargue(
     (raiz) => {
@@ -600,7 +626,12 @@ function iniciarImagen(host) {
   });
 
   document.addEventListener('cortante:fondo', (e) => {
-    aplicarFondo(e.detail.color);
+    // Entrar o salir de `Sin fondo` no es solo cambiar de color: el encuadre
+    // reserva lugar para la sombra proyectada, y sin piso esa sombra no
+    // existe. Por eso se vuelve a encuadrar, y solo cuando el piso cambia.
+    const cambiaElPiso = Boolean(e.detail.sinPiso) !== sinPiso;
+    aplicarFondo(e.detail.color, e.detail.sinPiso);
+    if (cambiaElPiso && modelo) encuadrar(modelo);
     renderizar();
   });
 
@@ -629,8 +660,14 @@ function iniciarImagen(host) {
   // poder contestar que no se puede aun cuando esta funcion nunca corrio.
   exportarFoto = subir;
 
-  function aplicarFondo(hex) {
+  function aplicarFondo(hex, fondoSinPiso) {
     if (!hex) return;
+    sinPiso = Boolean(fondoSinPiso);
+    // El piso es lo UNICO que recibe la sombra proyectada —es un
+    // `ShadowMaterial`, invisible salvo donde cae—, asi que esconderlo deja el
+    // fondo parejo de borde a borde sin tocar nada mas. La sombra propia del
+    // cortante no se entera: la dibuja `receiveShadow` sobre el modelo.
+    piso.sombra.visible = !sinPiso;
     escena.background.set(hex);
     // El `groundColor` del hemisferico es el rebote del fondo sobre la pieza:
     // sube con el color elegido, como pasa en una mesa de fotos real. Sin eso
@@ -655,7 +692,15 @@ function iniciarImagen(host) {
     // la sombra y alejar el cortante, gana la sombra recortada: el sujeto de
     // la foto es la pieza, y "no demasiado lejos" fue el pedido. Con el tope,
     // la pieza nunca baja del 67% del semicuadro.
-    const aEncuadrar = radio + Math.min(tamano.y * SOMBRA_POR_MM, radio * TOPE_SOMBRA);
+    //
+    // Con `Sin fondo` no hay sombra proyectada, asi que no se reserva nada y
+    // el cortante se lleva el semicuadro entero. En una pieza de 90 mm y 14 mm
+    // de alto eso es un 27% mas grande: la diferencia entre una foto de
+    // catalogo y una con un margen blanco que no dice nada.
+    const lugarSombra = sinPiso
+      ? 0
+      : Math.min(tamano.y * SOMBRA_POR_MM, radio * TOPE_SOMBRA);
+    const aEncuadrar = radio + lugarSombra;
 
     // La distancia se mide desde la CARA DE ARRIBA, no desde el piso: es la
     // que esta mas cerca del lente, asi que es la que decide si la pieza entra

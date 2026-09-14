@@ -19,7 +19,7 @@ from conftest import CLAVE, USUARIO
 from fastapi.testclient import TestClient
 
 from app.archivos import SUFIJO_DESCARGA, ClaveArchivo
-from app.routers.cortante import COLORES
+from app.routers.cortante import COLORES, COLORES_FONDO
 from app.routers.paginas import MODULOS
 
 PROTEGIDAS = ["/", "/conversor", "/lineas", "/cortante"]
@@ -242,17 +242,20 @@ def _paleta(html: str, ident: str) -> list[str]:
 # luz de la vista imagen apenas proyectaba sombra sobre el fondo. Con la luz
 # del visor la pieza tiene volumen y sombra propia, asi que se lee sobre
 # blanco — y blanco es lo que se pidio para el fondo de la foto.
+# La del fondo es la unica que NO dibuja `COLORES`: le toca `COLORES_FONDO`,
+# que son los mismos ocho mas `Sin fondo`.
 PALETAS = {
-    "paleta": "Blanco",
-    "paleta-pieza": "Blanco",
-    "paleta-fondo": "Blanco",
+    "paleta": (COLORES, "Blanco"),
+    "paleta-pieza": (COLORES, "Blanco"),
+    "paleta-fondo": (COLORES_FONDO, "Blanco"),
 }
 
 
-def test_las_tres_paletas_dibujan_los_ocho_colores(sesion: TestClient) -> None:
-    """Cada paleta es exactamente `COLORES`, en orden y completa."""
+def test_las_tres_paletas_dibujan_su_lista_completa(sesion: TestClient) -> None:
+    """Cada paleta es exactamente la lista que le toca, en orden y completa."""
     html = sesion.get("/cortante").text
     assert len(COLORES) == 8
+    assert len(COLORES_FONDO) == 9, "el fondo suma `Sin fondo` a los ocho colores"
 
     nombres = [c.nombre for c in COLORES]
     assert nombres[0] == "Blanco", "el default de la pieza es el primero de la lista"
@@ -267,11 +270,11 @@ def test_las_tres_paletas_dibujan_los_ocho_colores(sesion: TestClient) -> None:
         "Violeta",
     }
 
-    for ident, inicial in PALETAS.items():
+    for ident, (lista, inicial) in PALETAS.items():
         muestras = _paleta(html, ident)
-        assert len(muestras) == len(COLORES), f"#{ident} no dibuja los 8 colores"
+        assert len(muestras) == len(lista), f"#{ident} no dibuja las {len(lista)} muestras"
 
-        for etiqueta, color in zip(muestras, COLORES, strict=True):
+        for etiqueta, color in zip(muestras, lista, strict=True):
             assert _atributo(etiqueta, "data-color") == color.hex, ident
             assert _atributo(etiqueta, "aria-label") == color.nombre, ident
             assert re.fullmatch(r"#[0-9a-f]{6}", color.hex), color
@@ -282,7 +285,41 @@ def test_las_tres_paletas_dibujan_los_ocho_colores(sesion: TestClient) -> None:
 
     # El fondo de la foto arranca en blanco. Es un pedido explicito, no una
     # consecuencia: se afirma para que nadie lo "arregle" volviendo al gris.
-    assert PALETAS["paleta-fondo"] == COLORES[0].nombre
+    assert PALETAS["paleta-fondo"][1] == COLORES[0].nombre
+
+
+def test_sin_fondo_es_solo_del_fondo_y_apaga_el_piso(sesion: TestClient) -> None:
+    """`Sin fondo`: ultima muestra del fondo, blanco puro y con `data-sin-piso`.
+
+    Las tres puntas tienen que coincidir o la opcion existe a medias: el router
+    la declara con `piso=False`, el macro la marca con `data-sin-piso` y el JS
+    decide por ese atributo. Si una se mueve sola, la muestra se dibuja igual y
+    el fondo sigue con su sombra proyectada — sin un solo error a la vista.
+    """
+    sin_fondo = COLORES_FONDO[-1]
+    assert sin_fondo.nombre == "Sin fondo"
+    assert sin_fondo.hex == "#ffffff", "el pedido es blanco TOTAL, no el casi blanco de la pieza"
+    assert sin_fondo.piso is False
+    assert all(c.piso for c in COLORES), "ningun color de PIEZA apaga el piso"
+    assert sin_fondo not in COLORES, (
+        "`Sin fondo` no puede ser color de pieza: blanco puro se quema con ACES "
+        "y deja el cortante sin relieve"
+    )
+
+    html = sesion.get("/cortante").text
+    for ident, (lista, _) in PALETAS.items():
+        muestras = _paleta(html, ident)
+        marcadas = [e for e in muestras if _atributo(e, "data-sin-piso") == "1"]
+        assert len(marcadas) == len([c for c in lista if not c.piso]), (
+            f"#{ident}: las muestras con `data-sin-piso` no son las que declara el router"
+        )
+
+    # El front decide por el atributo y no por el hex. Con el color escrito en
+    # el JS habria una segunda lista, y cambiarlo en el router dejaria de
+    # apagar el piso — la muestra se veria igual y la foto saldria con sombra.
+    js = sesion.get("/static/js/app.js").text + sesion.get("/static/js/preview3d.js").text
+    assert sin_fondo.hex not in js, "el JS escribe el hex de `Sin fondo` en vez de leer el atributo"
+    assert "sinPiso" in js, "ningun script mira `data-sin-piso`"
 
 
 def test_el_default_de_las_paletas_lo_marca_solo_el_template(sesion: TestClient) -> None:

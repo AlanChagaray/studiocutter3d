@@ -137,8 +137,13 @@
              iguales —pieza blanca sobre fondo blanco no se distingue— hasta
              que la foto paso a usar la luz del visor: con esa luz la pieza
              proyecta sombra y tiene volumen propio, asi que se lee sobre el
-             blanco. Y el blanco es lo que se pidio para el fondo. #}
-          {{ m.paleta(colores, 'paleta-fondo', 'Color del fondo', clase='muestras') }}
+             blanco. Y el blanco es lo que se pidio para el fondo.
+
+             Esta paleta es `colores_fondo` y no `colores`: es la unica que
+             suma `Sin fondo` —blanco puro y sin piso, o sea sin la sombra
+             proyectada—. Como color de PIEZA ese blanco no existe: se quema
+             con el tone mapping y deja el cortante sin relieve. #}
+          {{ m.paleta(colores_fondo, 'paleta-fondo', 'Color del fondo', clase='muestras') }}
         </div>
       </div>
     </div>
