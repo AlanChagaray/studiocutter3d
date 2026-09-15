@@ -18,16 +18,101 @@ reglas propias:
 El costo conocido de `spawn` es que el hijo reimporta numpy, scipy y trimesh
 en cada trabajo. Se mide y se publica; a cambio, `terminate()` es un timeout
 de verdad y no una espera que se rinde.
+
+**Los imports del motor van adentro de cada tarea, y desde el ciclo 6 eso sirve
+de verdad.** Antes no: `from .errores import como_dict` (abajo) arrastraba
+`cutter3d.errors`, y el `__init__` del paquete importaba el motor entero, asi
+que el hijo pagaba ~107 MB antes de ejecutar una linea. Con el `__init__`
+perezoso de `cutter3d`, importar este modulo cuesta 22 MB y cada tarea carga
+solo lo suyo: F2 no toca trimesh ni manifold3d.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import logging
+import sys
 from pathlib import Path
 from typing import Any
 
 from .archivos import escribir_estado
 from .errores import como_dict
+
+log = logging.getLogger("studiocutter")
+
+LIMITE_RAM_HIJO_MB = 380
+"""Techo de memoria del proceso hijo, en MB. 0 lo desactiva.
+
+**Es la diferencia entre "fallo el trabajo" y "murio el servidor".** Sin techo,
+una asignacion desbocada —el `float64` de `medial_axis` sobre una imagen enorme,
+una malla con mas triangulos de los previstos— la corta el kernel, y lo que mata
+es el contenedor entero: en Render eso sale como
+`Ran out of memory (used over 512MB) while running your code` y se lleva puesta
+la sesion de cualquiera que estuviera usando la app.
+
+Con el techo puesto, la misma asignacion levanta `MemoryError` **adentro del
+hijo**, donde el `except Exception` de cada tarea ya la traduce a un
+`estado.json` con `ok: false`. El trabajo falla con un mensaje que se entiende
+(`app/errores.py:MENSAJE_SIN_MEMORIA`); el servidor no se entera.
+
+El valor sale de medir **en el contenedor**, que es donde esto corre. Con tres
+cortantes seguidos (estrella, kitty_bruja, murcielago) el proceso pico en:
+
+| Metrica | Pico | Que la acota |
+|---|---|---|
+| `VmPeak` — espacio de direcciones | **611 MB** | `RLIMIT_AS` |
+| `VmData` — heap anonimo | **277 MB** | `RLIMIT_DATA` |
+| `VmHWM` — RSS | **291 MB** | el cgroup, o sea Render |
+
+⚠ **Por eso el limite es `RLIMIT_DATA` y no `RLIMIT_AS`.** Un cortante normal
+reserva 611 MB de espacio de direcciones para usar 291 de memoria real: numpy,
+manifold3d y las libc pisan mucha mas VA de la que tocan. Acotar `RLIMIT_AS`
+contra el numero de RSS hace fallar hasta la estrella — pasó, y lo agarro recien
+el end-to-end contra el contenedor, porque en Windows la metrica ni existe.
+`VmData` queda a un 5% del RSS, que es lo unico que Render mide.
+
+380 MB deja un 37% de aire sobre los 277 que pide un cortante normal, y con los
+~71 MB del proceso web el total peor caso queda en ~450 de 512. Frena lo
+patologico, no lo pesado.
+"""
+
+
+def _acotar_memoria() -> None:
+    """Le pone el techo de RAM al proceso hijo. Silencioso si no se puede.
+
+    `resource` es POSIX: en Windows no existe, y el desarrollo de este proyecto
+    es en Windows. No es una perdida — el techo es una defensa de la instancia
+    de 512 MB, y en la maquina de desarrollo no hay nada que defender.
+
+    El corte se hace con `sys.platform` y no con un `try/ImportError` para que
+    mypy pueda estrechar el tipo: typeshed declara `resource` solo fuera de
+    win32, y con el `try` la funcion entera queda sin chequear. ⚠ La contra es
+    que en Windows mypy da por inalcanzable lo que sigue: para verificarlo hay
+    que correr `mypy --platform linux`.
+
+    Se usa `RLIMIT_DATA` y **no** `RLIMIT_AS`: ver la tabla de
+    `LIMITE_RAM_HIJO_MB`. Desde Linux 4.7 `RLIMIT_DATA` alcanza tambien a las
+    asignaciones anonimas por `mmap` —que es como numpy pide los arrays
+    grandes—, asi que sigue el heap real en vez del espacio de direcciones
+    reservado, que en este stack es mas del doble.
+    """
+    if LIMITE_RAM_HIJO_MB <= 0 or sys.platform == "win32":
+        return
+
+    import resource  # noqa: PLC0415 — POSIX only, ver el docstring
+
+    techo = LIMITE_RAM_HIJO_MB * 1024 * 1024
+    blando, duro = resource.getrlimit(resource.RLIMIT_DATA)
+    # Nunca SUBIR un techo que ya venga puesto: si el contenedor o el host ya
+    # acotaron el proceso, ese limite manda. Solo se baja.
+    for vigente in (blando, duro):
+        if vigente != resource.RLIM_INFINITY and vigente > 0:
+            techo = min(techo, vigente)
+    try:
+        resource.setrlimit(resource.RLIMIT_DATA, (techo, duro))
+    except (ValueError, OSError):  # pragma: no cover — depende del sandbox del host
+        log.warning("no se pudo acotar la memoria del proceso hijo")
+
 
 ETAPA_VECTORIZANDO = "vectorizando la imagen"
 ETAPA_GEOMETRIA = "construyendo la geometria"
@@ -68,6 +153,7 @@ def ejecutar_lineas(dir_trabajo_txt: str, entrada_txt: str, contornear_macizos: 
     vtracer pierde menos detalle. Ademas el SVG queda descargable y el usuario
     puede mirarlo antes de mandarlo a geometria.
     """
+    _acotar_memoria()
     dir_trabajo = Path(dir_trabajo_txt)
     try:
         from cutter3d import raster, vector  # noqa: PLC0415 — ver el docstring del modulo
@@ -88,6 +174,12 @@ def ejecutar_lineas(dir_trabajo_txt: str, entrada_txt: str, contornear_macizos: 
                 "zonas_contorneadas": resultado.zonas_contorneadas,
                 "area_contorneada_px": resultado.area_contorneada_px,
                 "contorneado_activo": resultado.contorneado_activo,
+                # La reduccion por presupuesto de memoria se declara igual que
+                # el contorneado: es una modificacion del arte y no se hace en
+                # silencio. `ancho_trazo_px` esta en la escala de `tamano_usado`.
+                "tamano_original": list(resultado.tamano_original),
+                "tamano_usado": list(resultado.tamano_usado),
+                "fue_reducida": resultado.fue_reducida,
             },
         )
     except Exception as exc:  # el hijo NUNCA puede morir en silencio
@@ -113,6 +205,7 @@ def ejecutar_cortante(
     lo mismo en el unico llamador no es una opcion, es ruido en la frontera
     entre procesos.
     """
+    _acotar_memoria()
     dir_trabajo = Path(dir_trabajo_txt)
     try:
         from cutter3d import (  # noqa: PLC0415 — ver el docstring del modulo

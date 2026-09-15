@@ -89,8 +89,19 @@ El hash se genera **en la máquina**, nunca en el servidor, y la contraseña en
 claro no se escribe en ningún lado:
 
 ```bash
-python -c "from argon2 import PasswordHasher; import getpass; print(PasswordHasher().hash(getpass.getpass()))"
+.venv/Scripts/python -c "from app.seguridad import hashear; import getpass; print(hashear(getpass.getpass()))"
 ```
+
+> Sale de `app.seguridad` y no de `PasswordHasher()` a secas **a proposito**.
+> Esta app no usa los parametros por default de argon2-cffi (64 MiB, `p=4`) sino
+> el perfil de baja memoria de la RFC 9106 (**19 MiB, `t=2`, `p=1`**), porque
+> 64 MiB por verify en una instancia de 512 MB es caro y con 0,1 CPU el `p=4`
+> solo agrega contencion. Llamando a `hashear` los parametros no se escriben en
+> dos lados y no se pueden desincronizar.
+>
+> Los hashes viejos **siguen andando**: argon2 guarda sus parametros adentro del
+> propio hash. Conviene regenerarlos igual — mientras quede uno con 64 MiB, el
+> login sigue pagando 64 MiB cada vez que se verifica contra el.
 
 Se pega en el `credenciales.json` local, y ese archivo se vuelve a cargar como
 secret file. El deploy se reinicia solo.
@@ -180,6 +191,72 @@ De ahí sale la recomendación de `plan: starter` (512 MB) con
 `STUDIOCUTTER_MAX_TRABAJOS=1`, y de pasar a `standard` (2 GB) para permitir dos
 o tres trabajos simultáneos.
 
+### 5.1 Lo que cambió en el ciclo 6 (bajar el consumo)
+
+El disparador fue un `Ran out of memory (used over 512MB)` de Render bajo
+demanda. Lo medido, antes y después (Working Set en Windows; los números de
+arriba son del contenedor y siguen valiendo como orden de magnitud):
+
+| Medición | Antes | Después |
+|---|---|---|
+| Proceso web residente | **128,7 MB** · 1577 módulos | **95,8 MB** · 962 módulos |
+| `import app.tareas` (lo que paga el hijo al arrancar) | **106,7 MB** · 1284 módulos | **22,5 MB** · 134 módulos |
+| F2 sobre una foto de teléfono de 12 MP | **830 MB** | **263 MB** |
+| Cortante `murcielago` (F3) | 281 MB | 281 MB (sin cambio) |
+| argon2 por hash / verify | 64 MiB, `p=4` | 19 MiB, `p=1` |
+| Quedarse sin memoria | **mata el contenedor** (exit 137, sin log) | falla el trabajo con `sin_memoria` |
+
+Las cuatro causas y sus arreglos:
+
+1. **El proceso web cargaba el motor entero y no lo usaba.** `app/errores.py`
+   importa `cutter3d.errors` —un módulo que solo importa `__future__`— y eso
+   ejecutaba el `__init__` del paquete, que traía trimesh, manifold3d, shapely,
+   scipy y skimage. Ahora `cutter3d/__init__.py` importa el motor **adentro de
+   `generar()`** y expone lo demás con un `__getattr__` de módulo. Con `spawn`
+   (que no tiene copy-on-write) el padre y el hijo suman, así que esto se cobra
+   dos veces.
+2. **Nada acotaba el tamaño con el que se trabaja una imagen.** El único límite
+   era `MAX_PIXELES` (89,4 MP), que es un guard anti-bomba de descompresión, no
+   un presupuesto de memoria. `medial_axis` cuesta **~63 MB por megapixel**, así
+   que una foto de teléfono normal pedía 830 MB. Ahora hay un segundo límite,
+   `MAX_PIXELES_TRABAJO` (3 MP), y lo que se reduce **se declara** en el reporte.
+3. **argon2 con los defaults** = 64 MiB por hash, uno al importar y otro por
+   cada login. Ver §2.4.
+4. **El hijo no tenía techo de RAM.** Ahora sí
+   (`app/tareas.py:LIMITE_RAM_HIJO_MB`, 380 MB, vía **`RLIMIT_DATA`**): la
+   asignación desbocada levanta `MemoryError` **adentro del hijo**, el trabajo
+   queda en error con un mensaje que se entiende, y el servidor no se entera.
+   Verificado en un contenedor Linux de 512 MB, contra el control sin techo que
+   muere con exit 137 y sin una línea de log.
+
+   ⚠ **`RLIMIT_DATA` y no `RLIMIT_AS`, y la diferencia es enorme.** Medido en el
+   contenedor con tres cortantes seguidos: `VmPeak` (espacio de direcciones)
+   **611 MB**, `VmData` (heap anónimo) **277 MB**, `VmHWM` (RSS) **291 MB**. Un
+   cortante normal *reserva* el doble de direcciones de las que *usa*, así que un
+   techo de `RLIMIT_AS` dimensionado contra el RSS hace fallar hasta la estrella.
+   `VmData` queda a un 5% del RSS, que es lo único que Render mide.
+
+### 5.2 End-to-end contra el contenedor
+
+Los tests corren in-process con `TestClient` y `dependency_overrides`: **nunca
+levantan un hijo de verdad ni escriben en `trabajo/`**. Lo que cierra el ciclo es
+correr el flujo entero por HTTP contra la imagen real, con `-m 512m`:
+
+```bash
+docker build -t studiocutter3d:local .
+docker run -d --name sc3d -m 512m --memory-swap 512m \
+  -e STUDIOCUTTER_CREDENCIALES_JSON="$(cat credenciales.json)" \
+  -e STUDIOCUTTER_SECRET="$(python -c 'import secrets;print(secrets.token_urlsafe(48))')" \
+  -v sc3d-datos:/datos -p 8945:8000 studiocutter3d:local
+# login -> F1 -> F2 -> F3 -> polling -> descargas -> ZIP -> imagen enorme
+docker stats --no-stream sc3d
+```
+
+Resultado del ciclo 6: **31 chequeos verdes, pico de 267 MiB de 512 (52%)**,
+reposo en **64 MiB**. Los dos cortantes (murciélago con puenteo y estrella sin
+puenteo) cierran watertight con el euler esperado, y la imagen de 63 MP falla el
+trabajo sin tocar al servidor.
+
 ---
 
 ## 6. Mantenimiento
@@ -219,6 +296,8 @@ docker compose up -d && curl -i http://127.0.0.1:8000/salud
 | `exec /usr/local/bin/arranque.sh: no such file or directory` | El `.sh` llegó con CRLF. El `Dockerfile` lo normaliza, pero si se cambió el arranque, revisar `.gitattributes` |
 | El CSS y el JS no cargan en HTTPS | Falta `STUDIOCUTTER_DETRAS_DE_PROXY=1`: la app arma URLs `http://` adentro de una página `https://` y el navegador las bloquea |
 | Hay que loguearse de nuevo después de cada deploy | Falta `STUDIOCUTTER_SECRET` |
-| El contenedor muere sin log durante un cortante | OOM. Bajar `STUDIOCUTTER_MAX_TRABAJOS` o subir el plan |
+| El contenedor muere sin log durante un cortante | OOM del kernel (exit 137). Desde el ciclo 6 el techo de RAM del hijo lo convierte en un error del trabajo: si vuelve a pasar, el que se pasó es el **proceso web**, no el hijo — bajar `STUDIOCUTTER_MAX_TRABAJOS` o subir el plan |
+| Un trabajo falla con *"necesitó más memoria de la que el servidor tiene"* | El techo de `LIMITE_RAM_HIJO_MB` funcionando. Es lo esperado con un dibujo muy pesado; el servidor sigue en pie |
+| El JPG convertido salió más chico de lo que subí | El presupuesto de píxeles (`MAX_PIXELES_TRABAJO`, 3 MP). El reporte del trabajo trae `tamano_salida` |
 | 429 sin haber hecho nada raro | Un script propio pollea sin pausa. El front real pollea cada 0,8 s y nunca lo toca |
 | `ERROR — no puedo escribir en /datos/trabajo` | El volumen se montó como bind mount de una carpeta del host, que llega como root. Usar un volumen con nombre |

@@ -42,6 +42,10 @@ web = [
     "python-multipart>=0.0.32",
     "itsdangerous>=2.2",  # lo necesita SessionMiddleware de Starlette
     "argon2-cffi>=25.1",
+    # Llega con starlette igual, pero `app/main.py` lo importa de forma directa
+    # para acotar el threadpool donde corren los handlers `def`: una dependencia
+    # que se usa por nombre se declara, aunque ya venga de arrastre.
+    "anyio>=4.15",
 ]
 
 [project.scripts]

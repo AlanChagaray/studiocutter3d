@@ -123,10 +123,27 @@ def _detalle_seguro(exc: Cutter3DError) -> tuple[str, dict[str, Any]]:
     return (MENSAJE_GENERICO, {})
 
 
+MENSAJE_SIN_MEMORIA = (
+    "El trabajo necesito mas memoria de la que el servidor tiene disponible. "
+    "Proba con una imagen mas chica o un tamaño de pieza menor."
+)
+"""Lo que ve el usuario cuando el techo de RAM del proceso hijo corta el trabajo.
+
+No es un error interno aunque termine en un `MemoryError`: es un limite conocido
+y declarado (`app/tareas.py:LIMITE_RAM_HIJO`), y el usuario puede hacer algo al
+respecto. Por eso tiene codigo propio y un mensaje que dice que probar, en vez de
+caer en el `interno` generico que manda a mirar el log del servidor."""
+
+
 def traducir(exc: Exception) -> ErrorApi:
     """Cualquier excepcion a un `ErrorApi`. Nunca deja escapar una ruta."""
     if isinstance(exc, ErrorApi):
         return exc
+    if isinstance(exc, MemoryError):
+        # No se loguea con `exception()`: no es un fallo del servidor sino su
+        # defensa funcionando. El log del hijo ya deja la etapa en la que paso.
+        log.warning("trabajo cortado por el techo de memoria del proceso hijo")
+        return ErrorApi("sin_memoria", MENSAJE_SIN_MEMORIA, estado=413)
     if isinstance(exc, Cutter3DError):
         traduccion = _TRADUCCIONES.get(type(exc), Traduccion("interno", 500))
         mensaje, detalle = _detalle_seguro(exc)

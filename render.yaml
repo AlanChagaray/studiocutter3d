@@ -27,6 +27,16 @@ services:
     # Entra —por eso STUDIOCUTTER_MAX_TRABAJOS va en 1—, pero sin lugar para un
     # segundo trabajo simultaneo. Para dos o tres a la vez hay que pasar a
     # `standard` (2 GB) y subir la variable en la misma proporcion.
+    #
+    # ⚠ `free` tambien son 512 MB, asi que la app entra igual, pero suspende la
+    # instancia por inactividad: el primer pedido despues de una pausa paga el
+    # arranque en frio entero. Si el servicio real esta en `free`, este archivo
+    # y el panel dicen cosas distintas — conviene que digan la misma.
+    #
+    # El ciclo 6 bajo el costo fijo: el proceso web pasa de 128,7 a 95,8 MB y el
+    # arranque del hijo de 106,7 a 22,5 MB (ver DESPLIEGUE.md §5.1). Ademas el
+    # hijo tiene techo propio de RAM, asi que quedarse sin memoria ya no mata al
+    # contenedor: falla el trabajo.
     plan: starter
 
     # Una sola instancia, y no es una limitacion del plan: el almacen de

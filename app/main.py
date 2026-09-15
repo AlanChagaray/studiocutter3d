@@ -26,6 +26,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from urllib.parse import quote
 
+from anyio import to_thread
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -48,8 +49,23 @@ cabeceras de cada parte). Sin este margen, un archivo justo en el limite se
 rechazaria por el peso del sobre y no por el del contenido."""
 
 
+HILOS_MAXIMOS = 8
+"""Tope del threadpool donde corren los handlers `def`.
+
+anyio trae 40 por default, y **todos** los handlers de esta app son `def`: cada
+pedido en vuelo ocupa un hilo. Ese numero es el multiplicador de todos los picos
+de memoria del proceso web — 40 logins concurrentes son 40 veces el costo de un
+`verify` de argon2, y 40 conversiones son 40 imagenes decodificadas a la vez.
+
+En una instancia de 512 MB y 0,1 CPU, 40 hilos no compran paralelismo (no hay
+CPU que repartir): solo multiplican el peor caso. `--limit-concurrency 100` de
+`docker/arranque.sh` sigue siendo la red de afuera; esta es la de adentro.
+"""
+
+
 @asynccontextmanager
 async def _ciclo_de_vida(_: FastAPI) -> AsyncIterator[None]:
+    to_thread.current_default_thread_limiter().total_tokens = HILOS_MAXIMOS
     tarea = asyncio.create_task(_limpiar_periodicamente())
     try:
         yield

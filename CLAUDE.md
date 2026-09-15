@@ -83,6 +83,15 @@ cutter3d/` no devuelve nada, y `app/` no reimplementa una línea de geometría.
 
 ### El motor (`cutter3d/`)
 
+**⚠ `cutter3d/__init__.py` importa el motor ADENTRO de `generar()`, a propósito.** No es desprolijidad
+ni un import que alguien se olvidó de subir: importar el paquete por cualquier motivo ejecuta su
+`__init__`, y `app/errores.py` hace `from cutter3d.errors import ...` sobre un módulo que solo importa
+`__future__`. Con los imports arriba, eso arrastraba **1200 módulos y ~89 MB** a cada proceso de la
+capa web, que no construye un solo polígono. Con `spawn` no hay copy-on-write, así que padre e hijo
+suman. Medido: proceso web 128,7 → **95,8 MB**, `import app.tareas` 106,7 → **22,5 MB**. Los
+re-exportados que viven en los módulos caros (`Salidas`, `ReporteFidelidad`, `render_texto`) salen por
+el `__getattr__` de módulo. **Subir esos imports al tope revierte el ciclo 6 entero.**
+
 `generar()` en `__init__.py` es la única entrada pública, y su orden es el mejor orden de lectura:
 
 ```
@@ -118,6 +127,10 @@ Lo que no se deduce leyendo un archivo solo:
 - **Los límites de los parámetros se validan en `params.py` y SOLO ahí.** La web no los revalida:
   traduce el error a un 422 con el nombre del campo. Dos verdades sobre el mismo límite se
   desincronizan.
+- **Hay DOS límites de píxeles y no son lo mismo.** `MAX_PIXELES` (89,4 MP) dice **qué se acepta
+  decodificar** — guard anti-bomba de descompresión, cubre la cámara de 61 MP. `MAX_PIXELES_TRABAJO`
+  (3 MP) dice **a qué tamaño se procesa**, y es un presupuesto de memoria. Igualarlos "para
+  simplificar" trae de vuelta el OOM. Lo que se reduce **se declara** (`ResultadoF2.tamano_original`).
 
 ### La capa web (`app/`)
 
@@ -136,6 +149,24 @@ Lo que no se deduce leyendo un archivo solo:
   propietario, así que un router nuevo no puede olvidarse de chequearla. Para las páginas, la
   autorización es la dependencia `UsuarioRequerido` — una ruta que se olvide de declararla queda
   abierta, y eso se ve leyendo la firma.
+- **El proceso hijo tiene techo de RAM** (`app/tareas.py:LIMITE_RAM_HIJO_MB`, 380 MB, **`RLIMIT_DATA`**,
+  POSIX only). Es lo que separa "falló el trabajo" de "murió el servidor": sin techo, la asignación
+  desbocada la corta el kernel y se lleva el contenedor (exit 137, **sin una línea de log**); con
+  techo levanta `MemoryError` adentro del hijo y sale como `sin_memoria`. Verificado en un contenedor
+  Linux de 512 MB.
+  ⚠ **Es `RLIMIT_DATA`, no `RLIMIT_AS`, y confundirlos rompe todo.** Medido en el contenedor con tres
+  cortantes: `VmPeak` (direcciones) **611 MB** · `VmData` (heap) **277 MB** · `VmHWM` (RSS) **291 MB**.
+  Un cortante normal reserva el doble de direcciones de las que usa, así que un techo de `RLIMIT_AS`
+  puesto contra el número de RSS **hace fallar hasta la estrella** — ya pasó, y no lo vio ningún test:
+  lo agarró el end-to-end contra el contenedor, porque en Windows la métrica ni existe.
+- **argon2 NO usa los defaults de la librería** (`app/seguridad.py`): va con el perfil de baja memoria
+  de la RFC 9106 (19 MiB, `t=2`, `p=1`) en vez de 64 MiB con `p=4`. Con 0,1 CPU el `p=4` solo agrega
+  contención. ⚠ **El hash señuelo se arma con los parámetros de los hashes guardados**
+  (`_senuelo_como`), no con los del módulo: si el señuelo es más barato que el hash real, la
+  diferencia de tiempo vuelve a enumerar usuarios, que es justo lo que el señuelo existe para tapar.
+  Para dar de alta un usuario se usa `seguridad.hashear`, no `PasswordHasher()` a secas.
+- **El threadpool está acotado a 8** (`app/main.py:HILOS_MAXIMOS`; anyio trae 40). Todos los handlers
+  son `def`, así que ese número multiplica cada pico de memoria del proceso web.
 - **`app/errores.py` arma los mensajes desde los ATRIBUTOS de la excepción, nunca con `str(exc)`**,
   que empieza con la ruta del filesystem del servidor. Lo que no tenga atributo seguro sale como
   `interno` y el detalle va al log.
@@ -196,6 +227,17 @@ probablemente vuelvan a morder:
 7. **Heredocs de bash: sirven, con dos trampas.** Fallan con `.py` de comillas anidadas densas y
    **manglan secuencias de escape** (`\x89PNG\r\n` salió como bytes reales). Para esos archivos, usá
    las tools de escritura.
+8. **`medial_axis` cuesta ~63 MB por megapixel, no 8.** La intuición dice que el costo es la
+   transformada de distancia en `float64` (8 bytes/px); medido es **ocho veces eso**, porque skimage
+   materializa además el orden de los píxeles de tinta y varios intermedios del mismo tamaño. Es el
+   único paso de F2 que pica: `opening`, `erosion` y `label` no movieron el pico. Consecuencia
+   práctica: una **foto de teléfono de 12 MP** —la entrada más común que existe— picaba **830 MB** en
+   una instancia de 512 MB. No hacía falta ningún caso patológico, y por eso el presupuesto de
+   píxeles no es una optimización sino la corrección de un bug.
+9. **El presupuesto se aplica con `Image.draft()` antes del `resize`.** Reducir con `resize` a secas
+   llega tarde: `resize` necesita el bitmap completo decodificado, así que abrir y reducir un JPEG de
+   48 MP picaba 441 MB **antes** de que F2 empezara. `draft()` le pide al decodificador JPEG la
+   imagen a 1/2, 1/4 u 1/8, y es un no-op en los demás formatos.
 
 ## Red de regresión
 

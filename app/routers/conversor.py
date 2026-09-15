@@ -57,6 +57,25 @@ def _convertir(subida: Subida, destino: FormatoSalida, salida: Path) -> None:
     vector.a_svg(subida.ruta, salida)
 
 
+def _reduccion(salida: Path, formato: FormatoSalida) -> dict[str, object]:
+    """Declara a que tamaño quedo el JPG, si el presupuesto de memoria lo redujo.
+
+    El conversor puede recibir una foto de 61 MP y devolver un JPG de 16: sin
+    esto, la reduccion seria silenciosa, que es justo lo que este proyecto no
+    hace con ninguna modificacion de la imagen. Se lee del archivo ya escrito
+    —`Image.open` es lazy, asi que es leer el header y nada mas— en vez de
+    cambiar la firma del motor.
+
+    Solo aplica al JPG: un SVG no tiene un tamaño en pixeles que declarar.
+    """
+    if formato is not FormatoSalida.JPG:
+        return {}
+    tamano = raster.tamano_de(salida)
+    if tamano is None:  # pragma: no cover — el archivo lo acabamos de escribir
+        return {}
+    return {"tamano_salida": list(tamano), "presupuesto_px": raster.MAX_PIXELES_TRABAJO}
+
+
 @router.post("")
 def convertir(
     usuario: UsuarioRequerido,
@@ -101,6 +120,7 @@ def convertir(
             "formato_original": subida.formato.value,
             "formato_destino": formato.value,
             "bytes_originales": subida.bytes_escritos,
+            **_reduccion(dir_trabajo / nombre, formato),
         },
     )
     return trabajo.como_json()
