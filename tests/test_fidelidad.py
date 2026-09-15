@@ -189,6 +189,57 @@ def test_el_murcielago_cierra_en_anillo(tmp_path: Path) -> None:
     assert any("puenteo" in aviso for aviso in r.advertencias), r.advertencias
 
 
+# ── ventanas del pie ───────────────────────────────────────────────────────
+
+
+@pytest.mark.lento
+def test_el_velocirapto_cierra_con_una_ventana_en_el_pie(tmp_path: Path) -> None:
+    """Line art real donde el PIE se cierra sobre un hueco y el filo no.
+
+    Es el caso que el `euler_esperado = 0` fijo daba por invalido: dos tramos
+    del contorno quedan mas lejos que la boca que puentea `distancia_colision_mm`
+    (4,4 mm con los defaults) pero mas cerca que `2*o3` (7 mm), asi que el filo
+    sigue abierto ahi —corta bien, no hay bolsillo ciego— y el pie, mas ancho,
+    se cierra sobre el hueco dejando una ventana de 2 mm2 en el ala de apoyo.
+
+    El solido resultante es genero 2: `euler -2`, con `watertight=True`. El
+    mensaje que veia el usuario era "el solido 'cortador' no cerro" sobre una
+    malla que habia cerrado perfectamente.
+
+    Es la distincion que fija este test contra `test_el_murcielago_cierra_en_anillo`:
+    alla el hueco extra esta en el FILO (bolsillo ciego, se puentea y el euler
+    vuelve a 0), aca esta solo en el PIE (se advierte y el euler es -2). Por eso
+    NO se pasa `exigir_solido=False`: que `generar` no aborte es el punto.
+    """
+    resultado = generar(FIXTURES / "velocirapto.svg", Modo.CORTANTE, tmp_path / "velo.3mf")
+    cortador = releer_3mf(resultado.ruta_3mf)[NOMBRE_CORTADOR]
+    assert cortador.is_watertight
+    assert cortador.euler_number == -2
+
+    r = resultado.reporte
+    assert all(t.ok for t in r.topologias)
+    assert any("ventana" in aviso for aviso in r.advertencias), r.advertencias
+
+
+@pytest.mark.lento
+def test_el_filo_del_velocirapto_no_tiene_bolsillos_ciegos(tmp_path: Path) -> None:
+    """La contraparte 2D del test de arriba, sin exportar nada.
+
+    Separa las dos mitades del diagnostico: que el pie tenga una ventana
+    (`ventanas_del_pie == 1`) y que el filo NO tenga bolsillos ciegos — o sea
+    que el cortante corta bien y lo unico calado es el ala de apoyo.
+    """
+    p, a = CutterParams(), AjustesMotor()
+    arte = cargar_svg(FIXTURES / "velocirapto.svg", p, a)
+    cortador = construir_cortador_2d(construir_silueta_sola(arte, p, a), p, a)
+
+    assert cortador.ventanas_del_pie == 1
+    assert 1.5 < cortador.area_ventanas_pie_mm2 < 2.5, cortador.area_ventanas_pie_mm2
+    # Un solo hueco en el filo, y es la galletita: ningun bolsillo ciego.
+    assert sum(len(g.interiors) for g in cortador.filo.geoms) == 1
+    assert sum(len(g.interiors) for g in cortador.pie.geoms) == 2
+
+
 # ── triangulacion de la tapa ───────────────────────────────────────────────
 
 

@@ -109,6 +109,23 @@ class Cortador2D:
     area_puenteada_mm2: float = 0.0
     """Area que el puenteo le sumo a la silueta del cortador, en mm2."""
 
+    ventanas_del_pie: int = 0
+    """Huecos del pie que NO son la galletita: ventanas que cerro el offset `o3`.
+
+    Aparecen cuando dos tramos del contorno quedan mas lejos que la boca que
+    puentea `distancia_colision_mm` (`2*o2 + distancia`, 4,4 mm con los
+    defaults) pero mas cerca que `2*o3` (7 mm): el filo sigue abierto ahi —o
+    sea, **corta bien**— y el pie, que es mas ancho, se cierra sobre el hueco y
+    queda calado.
+
+    No es un bolsillo ciego y no se puentea: el bolsillo ciego es del FILO y
+    atasca masa; esto es un calado en el ala de apoyo de 2 mm, que es un solido
+    valido e imprimible. Por eso solo se cuenta y se advierte.
+    """
+
+    area_ventanas_pie_mm2: float = 0.0
+    """Area total de esas ventanas, en mm2."""
+
 
 def escalar(geom: MultiPolygon, factor: float) -> MultiPolygon:
     """Escala respecto del origen. El arte ya viene centrado, asi que sigue centrado."""
@@ -241,6 +258,27 @@ def _cerrar(geom: MultiPolygon, radio: float) -> MultiPolygon:
     return como_multipoligono(inflado.buffer(-radio, quad_segs=QUAD_SEGS, join_style="round"))
 
 
+def _huecos_ajenos_a_la_galletita(geom: MultiPolygon, o1: MultiPolygon) -> list[Polygon]:
+    """Huecos de `geom` que NO son la galletita.
+
+    Un hueco es la galletita si interseca `o1`. El criterio descansa en que
+    entre un hueco ajeno y `o1` siempre hay una pared completa: dos geometrias
+    tangentes en un solo punto lo enganarian, pero eso no puede pasar con
+    offsets separados por `filo_ancho_mm`.
+
+    Sirve a los dos anillos y el sentido cambia con cual se le pase: sobre el
+    FILO son bolsillos ciegos (hay que puentearlos), sobre el PIE son ventanas
+    del ala de apoyo (solo se advierten). Ver `Cortador2D.ventanas_del_pie`.
+    """
+    ajenos: list[Polygon] = []
+    for parte in geom.geoms:
+        for anillo in parte.interiors:
+            hueco = Polygon(anillo)
+            if not hueco.intersects(o1):
+                ajenos.append(hueco)
+    return ajenos
+
+
 def _bolsillos_ciegos(filo: MultiPolygon, o1: MultiPolygon) -> list[Polygon]:
     """Huecos del filo que NO son la galletita: los bolsillos ciegos.
 
@@ -248,19 +286,8 @@ def _bolsillos_ciegos(filo: MultiPolygon, o1: MultiPolygon) -> list[Polygon]:
     cerradas": en este modulo `_cerrar` ya significa otra cosa —el cierre
     morfologico— y tener los dos sentidos a diez lineas de distancia se presta a
     leer mal cual es cual.
-
-    Un hueco es la galletita si interseca `o1`. El criterio descansa en que
-    entre un bolsillo y `o1` siempre hay una pared de filo completa: dos
-    geometrias tangentes en un solo punto lo enganarian, pero eso no puede pasar
-    con offsets separados por `filo_ancho_mm`.
     """
-    bolsillos: list[Polygon] = []
-    for parte in filo.geoms:
-        for anillo in parte.interiors:
-            hueco = Polygon(anillo)
-            if not hueco.intersects(o1):
-                bolsillos.append(hueco)
-    return bolsillos
+    return _huecos_ajenos_a_la_galletita(filo, o1)
 
 
 def _puentear_colisiones(silueta: MultiPolygon, p: CutterParams, a: AjustesMotor) -> _Puenteo:
@@ -318,24 +345,64 @@ def construir_cortador_2d(silueta: MultiPolygon, p: CutterParams, a: AjustesMoto
     o1 = _offset(base, p.offset_o1_mm, a)
     o2 = _offset(base, p.offset_o2_mm, a)
     o3 = _offset(base, p.offset_o3_mm, a)
+    pie = como_multipoligono(o3.difference(o1))
+    # Se miden DESPUES del puenteo y sobre el pie ya construido: lo que sobrevive
+    # aca es exactamente lo que se va a extruir, que es lo que define la
+    # topologia del solido (ver `euler_esperado_de`).
+    ventanas = _huecos_ajenos_a_la_galletita(pie, o1)
     return Cortador2D(
         filo=como_multipoligono(o2.difference(o1)),
-        pie=como_multipoligono(o3.difference(o1)),
+        pie=pie,
         o1=o1,
         o2=o2,
         o3=o3,
         colisiones_puenteadas=puenteo.colisiones,
         area_puenteada_mm2=puenteo.area_mm2,
+        ventanas_del_pie=len(ventanas),
+        area_ventanas_pie_mm2=float(sum(v.area for v in ventanas)),
     )
 
 
 def partes_de_silueta(silueta: MultiPolygon) -> int:
     """Cuantas piezas disjuntas tiene la silueta.
 
-    Con una sola pieza, el numero de Euler esperado es 2 para el marcador y 0
-    para el cortador, que es lo que dice el contrato. Con k piezas es 2k y 0.
+    Para el numero de Euler esperado usar `euler_esperado_de`, que contempla
+    ademas los huecos: contar solo las piezas alcanza para el marcador —su
+    huella no tiene huecos, los tapa `tapar_huecos`— pero no para el cortador.
     """
     return len(silueta.geoms)
+
+
+def euler_esperado_de(huella: MultiPolygon) -> int:
+    """Numero de Euler de la superficie del solido que se extruye de `huella`.
+
+    Un prisma sobre una region plana de `c` componentes y `h` huecos tiene por
+    borde una superficie cerrada de caracteristica `2*(c - h)`: cada componente
+    aporta 2 y cada hueco es un agujero pasante que resta 2. Una pieza maciza da
+    2 (el marcador) y un anillo simple da 0 (el cortador), que son los dos
+    numeros que fija el contrato para el caso canonico.
+
+    **Por que se calcula y no alcanza con esos dos literales.** El contrato los
+    enuncia para la forma tipica; la geometria real los generaliza en los DOS
+    ejes, no solo en el de las piezas:
+
+    - `c > 1`: una silueta en varias piezas da `2c` para el marcador.
+    - `h > 1` en el pie: cuando dos tramos del contorno quedan mas lejos que la
+      boca que puentea `distancia_colision_mm` pero mas cerca que `2*o3`, el
+      filo sigue abierto ahi —corta bien— y el pie se cierra sobre el hueco
+      dejando una ventana. El solido es valido, cerrado e imprimible; lo unico
+      que no es, es un anillo simple. Fijar el 0 a mano convertia ese caso en un
+      `MallaNoManifold` que decia "no cerro" sobre una malla con
+      `watertight=True`.
+
+    Para el cortador se le pasa el PIE: la huella del filo esta siempre
+    contenida en la del pie (`o2` dentro de `o3`), asi que el solido se retrae
+    sobre el pie y es su topologia la que manda. Vale igual en el caso
+    degenerado en que el filo no se extruye por no ser mas alto que el pie.
+    """
+    componentes = len(huella.geoms)
+    huecos = sum(len(parte.interiors) for parte in huella.geoms)
+    return 2 * (componentes - huecos)
 
 
 def resumen_contornos(geom: MultiPolygon) -> tuple[int, int]:

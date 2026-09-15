@@ -81,6 +81,25 @@ _TRADUCCIONES: dict[type[Cutter3DError], Traduccion] = {
 }
 
 
+def _mensaje_no_manifold(exc: MallaNoManifold) -> str:
+    """Dos fallos distintos bajo la misma excepcion, y el consejo no es el mismo.
+
+    `watertight=False` es una malla con un agujero: el trazo o el tamaño son el
+    camino. Con `watertight=True` la malla SI cerro y lo que no coincide es la
+    topologia esperada — decirle "no cerro" ahi manda al usuario a engrosar un
+    trazo que no tiene nada que ver, y en modo `cortante` ni siquiera existe.
+    """
+    if not exc.watertight:
+        return (
+            f"El solido '{exc.objeto}' no cerro: no se puede imprimir. "
+            "Proba con un trazo mas grueso o un tamaño mayor."
+        )
+    return (
+        f"El solido '{exc.objeto}' cerro bien, pero su topologia no es la esperada "
+        "y no se puede dar por valido. Revisa el reporte de fidelidad."
+    )
+
+
 def _detalle_seguro(exc: Cutter3DError) -> tuple[str, dict[str, Any]]:
     """Mensaje y detalle armados desde los ATRIBUTOS, nunca desde `str(exc)`."""
     if isinstance(exc, ParametroFueraDeRango):
@@ -98,11 +117,7 @@ def _detalle_seguro(exc: Cutter3DError) -> tuple[str, dict[str, Any]]:
             {"lado_obtenido_mm": exc.lado_obtenido_mm, "iteraciones": exc.iteraciones},
         )
     if isinstance(exc, MallaNoManifold):
-        return (
-            f"El solido '{exc.objeto}' no cerro: no se puede imprimir. "
-            "Proba con un trazo mas grueso o un tamaño mayor.",
-            {"objeto": exc.objeto},
-        )
+        return (_mensaje_no_manifold(exc), {"objeto": exc.objeto})
     if isinstance(exc, BooleanaFallida):
         return (f"No se pudo construir el solido '{exc.objeto}'.", {"objeto": exc.objeto})
     return (MENSAJE_GENERICO, {})

@@ -37,7 +37,7 @@ from shapely.geometry import MultiPolygon, Polygon
 from shapely.geometry.base import BaseGeometry
 
 from .errors import Cutter3DError, MallaNoManifold
-from .geometry import Cortador2D, Marcador2D, lado_mayor, partes_de_silueta, resumen_contornos
+from .geometry import Cortador2D, Marcador2D, euler_esperado_de, lado_mayor, resumen_contornos
 from .measure import MedidaHuecos, MedidaTrazo
 from .params import AjustesMotor, CutterParams
 from .solids import NOMBRE_CORTADOR, NOMBRE_MARCADOR
@@ -292,12 +292,19 @@ def _advertencias_del_cortador(cortador: Cortador2D) -> list[str]:
     en `geometry`: cada aviso nuevo le suma una rama a una funcion que ya esta
     en el limite de complejidad.
     """
-    if not cortador.colisiones_puenteadas:
-        return []
-    return [
-        f"el cortador puenteo {cortador.colisiones_puenteadas} colision(es) entre "
-        f"extremos ({cortador.area_puenteada_mm2:.1f} mm2). Esas muescas no se cortan."
-    ]
+    avisos: list[str] = []
+    if cortador.colisiones_puenteadas:
+        avisos.append(
+            f"el cortador puenteo {cortador.colisiones_puenteadas} colision(es) entre "
+            f"extremos ({cortador.area_puenteada_mm2:.1f} mm2). Esas muescas no se cortan."
+        )
+    if cortador.ventanas_del_pie:
+        avisos.append(
+            f"el pie se cerro sobre {cortador.ventanas_del_pie} ventana(s) "
+            f"({cortador.area_ventanas_pie_mm2:.1f} mm2): ahi el filo sigue cortando, pero el "
+            "ala de apoyo queda calada. El solido es valido; se reporta, no se compensa."
+        )
+    return avisos
 
 
 def verificar(
@@ -329,11 +336,17 @@ def verificar(
             f"trae {sorted(mallas)}"
         )
 
-    partes = partes_de_silueta(silueta)
+    # Cada expectativa sale de la huella 2D que se extruyo de verdad, no de un
+    # literal: asi la comprobacion mide lo suyo —que la malla realice fielmente
+    # la geometria calculada— y no una suposicion sobre la FORMA del dibujo.
     topologias: list[Topologia] = []
     if NOMBRE_MARCADOR in mallas:
-        topologias.append(_topologia(NOMBRE_MARCADOR, mallas[NOMBRE_MARCADOR], 2 * partes))
-    topologias.append(_topologia(NOMBRE_CORTADOR, mallas[NOMBRE_CORTADOR], 0))
+        topologias.append(
+            _topologia(NOMBRE_MARCADOR, mallas[NOMBRE_MARCADOR], euler_esperado_de(silueta))
+        )
+    topologias.append(
+        _topologia(NOMBRE_CORTADOR, mallas[NOMBRE_CORTADOR], euler_esperado_de(cortador.pie))
+    )
 
     malla_cortador = mallas[NOMBRE_CORTADOR]
     secciones = tuple(
