@@ -167,6 +167,20 @@ defensiva.
   `multiprocessing.Process` por trabajo**, con polling desde el navegador. No es un
   `ProcessPoolExecutor` y el motivo es concreto: el pool **no sabe imponer un timeout** —
   `future.result(timeout=N)` corta la espera, no al worker.
+- **F2 deja tres archivos y cada uno tiene un consumidor distinto.** `salida.png` (binario puro)
+  es lo que se vectoriza y lo que muestra la pantalla; `salida.svg` es lo que acepta el cortante;
+  y `editable.jpg` (`ClaveArchivo.JPG_EDITABLE`) es **lo que el usuario se baja**: lo abre en
+  Paint, retoca lo que la imagen traía mal, y lo vuelve a subir a Correcto, que acepta solo JPG.
+  No se reusa `ClaveArchivo.JPG` porque ese es el del Convertidor, y la regla del enum es que dos
+  productores no comparten clave. La copia se re-umbraliza exacta (hay test): no es "la salida en
+  JPG", que el contrato prohíbe, es una copia para editar.
+- **El trabajo recordado en `sessionStorage` vale solo para la entrada recordada**
+  (`trabajoQueSigueVigente` en `app.js`, usado por Cortante y por Correcto). Si la URL trae otro
+  `origen` —"seguir" desde un diseño nuevo—, ese trabajo es del diseño anterior y no se retoma. Sin
+  esa regla el cortante retomaba el trabajo viejo, `retomarTrabajo` firmaba el estado actual como
+  "ya generado" y el botón **Generar quedaba apagado hasta un F5**, que es lo único que borra el
+  `sessionStorage`. Y las dos pantallas persisten el estado al restaurar un origen, no solo al
+  tocar algo: si no, volver por el menú traía el diseño anterior.
 - **F4 post (`/post`) entra por el lado del sólido, no del dibujo.** Recibe mallas ya construidas
   —de este motor o de cualquier otro— y les saca **la misma foto cenital** que F3: la rinde el
   mismo `preview3d.js` sobre un `.glb` derivado. Existe para los cortantes viejos y para cuando la
@@ -292,8 +306,28 @@ entorno, ninguna obligatoria: `STUDIOCUTTER_SECRET`, `STUDIOCUTTER_COOKIE_SECURE
 - **Nada de fallbacks silenciosos.** Falla duro lo que produciría un archivo inválido (parámetro fuera
   de rango, SVG ilegible, escala que no converge, booleana que no cierra, malla no manifold) y no se
   escribe nada. **Advierte** en el reporte lo que produce un archivo válido pero difícil de imprimir.
-- **El contorneado de zonas macizas vive SOLO en F2** (`raster.py`), viene encendido por default y
-  siempre declara cuántas zonas tocó y qué área. **F3 nunca altera el arte.**
+- **Las dos modificaciones del arte viven SOLO en F2** (`raster.py`) y las dos declaran siempre
+  cuánto tocaron. **F3 nunca altera el arte.**
+  - El **contorneado de zonas macizas** viene encendido, y declara cuántas zonas y qué área.
+  - La **normalización de ancho de trazo** viene apagada: deja todos los trazos al mismo ancho
+    reconstruyéndolos desde su eje medial, y declara cuántos píxeles engrosó, cuántos afinó y
+    cuántos de zona maciza dejó intactos. Es lo único del proyecto que **afina** un trazo — la
+    dilatación de F3 solo engorda—, y por eso resuelve el caso que F3 no puede: un contorno más
+    grueso que el detalle interior. ⚠ Es también lo único de F2 que necesita saber la escala
+    física, y la deduce de que F3 va a escalar el dibujo a `lado_mayor_mm`: si después se genera el
+    cortante con otro tamaño, la calibración quedó para otra pieza. Por eso el resultado declara
+    los dos milímetros que supuso.
+    ⚠ **Es lo único de F2 que AMPLÍA la imagen, y sin eso la línea sale temblorosa.** Un JPG
+    de 339 px trae el trazo objetivo en 3,5 px, y reconstruir eso desde un eje de 1 px deja el
+    centro y el ancho clavados a la grilla con medio píxel de error (±17%): se ve como una línea
+    que ondula, y la impresora vibra siguiéndola. Con la normalización encendida la etapa amplía
+    los **grises** por un factor entero hasta que el objetivo mida
+    `ANCHO_MINIMO_NORMALIZACION_PX` (16 px), acotado por el mismo `MAX_PIXELES_TRABAJO` de la
+    reducción, y **entrega el PNG a esa escala** (`factor_ampliacion`, `tamano_usado`). Después
+    vienen los tres pasos de la reconstrucción —podar el eje, reconstruir, limar— que sacan las
+    espigas y el dentado del disco discreto. Medido en el trazo final del marcador, p5→p95 en mm:
+    buzz 0,51→2,06 sin normalizar, **0,92→1,14** normalizado; calabaza 0,30→1,24 → **0,89→1,10**;
+    murciélago 0,40→1,25 → **0,89→1,35**. El camino sin normalizar no cambia de escala.
 - **Nombres y comentarios en español**, incluidas las excepciones (por eso `N818` está apagado en
   ruff). **Nada de `innerHTML`** con datos del servidor o del usuario en el JS.
 
@@ -304,6 +338,11 @@ probablemente vuelvan a morder:
 
 1. **`skeletonize` de scikit-image 0.26 segfaultea** con la máscara del fixture del círculo. No es el
    tamaño (un disco sintético idéntico pasa). Se usa **`medial_axis`**.
+   ⚠ Y **`medial_axis` no es determinista si no se le pasa `rng`**: desempata al azar el orden de los
+   píxeles de tinta. Medido sobre `tests/buzz-lightyear.jpg`, cuatro corridas dieron ejes de 3286,
+   3289, 3288 y 3287 px, y `area_engrosada_px` salió 227, 224 y 224 en tres corridas del mismo
+   archivo. En un proyecto cuyo punto es *afirmar* cuánto se modificó el dibujo, una cifra que se
+   mueve sola no afirma nada. Va `rng=SEMILLA_EJE` en las **dos** llamadas de `raster.py`.
 2. **`pypotrace` no tiene wheel de Windows** → vectorización con **vtracer**, y
    `hierarchical="cutout"` es **obligatorio**: su default apila formas en vez de generar huecos.
 3. **vtracer no falla ante un formato que no lee: PANIQUEA en Rust**, y `PanicException` hereda de
@@ -330,6 +369,25 @@ probablemente vuelvan a morder:
    llega tarde: `resize` necesita el bitmap completo decodificado, así que abrir y reducir un JPEG de
    48 MP picaba 441 MB **antes** de que F2 empezara. `draft()` le pide al decodificador JPEG la
    imagen a 1/2, 1/4 u 1/8, y es un no-op en los demás formatos.
+   ⚠ **Y al AMPLIAR para normalizar, el nivel de corte NO es el de Otsu.** `corte` responde *qué*
+   píxel es tinta; al interpolar los grises la pregunta es *por dónde pasa el borde*, y la rampa
+   entre un píxel de tinta y uno de papel lo cruza en el **punto medio de sus niveles** — ahí está
+   el borde de la máscara nativa. Sobre un line art puro guardado como JPG, Otsu cae en **3** (el
+   histograma es 0 y 255 y casi nada en el medio) y cortar ahí corría el borde medio píxel hacia
+   adentro: las líneas de 2/4/6 px salían 1/3/5, y el detector de macizos, calibrado con esa
+   mediana achicada, clasificaba mal (14 zonas donde había 0). Sobre una foto real Otsu ya está
+   en el medio (139 contra 139 en buzz) y no se nota — por eso lo agarró el fixture sintético y
+   no el dibujo real. Va **bicúbico**, no Lanczos: sus lóbulos negativos dejan un halo alrededor
+   de cada línea (dispersión 0,36 contra 0,06 en la onda).
+10. **`distance_transform_edt` sin un solo cero NO falla: devuelve la distancia a un punto fantasma
+    pegado a la esquina superior izquierda** (medido: 1, 1,41, 2,24… desde (0,0)). Toda la
+    morfología por disco de F2 —la apertura del detector de macizos, la erosión del anillo, la
+    reconstrucción del trazo— va por transformada de distancia y no por footprint, porque el radio
+    crece con la grilla ampliada y con footprint el contorneado se llevaba **4,1 de los 5,1 s** de
+    buzz a ×5 (hoy 1,3 s en total). Pero en un line art puro la erosión no deja nada, y dilatar esa
+    máscara vacía con la transformada cruda pintaba un cuarto de disco "macizo" en la esquina → un
+    arquito de tinta inexistente → la caja de la tinta corrida → la escala equivocada. Costó seis
+    tests. Por eso `_distancia_a` es el **único** que la llama, y devuelve infinito sin ningún True.
 
 ## Red de regresión
 
@@ -338,6 +396,52 @@ no se versionan `.3mf` binarios, que cambiarían con cada versión de manifold3d
 real. Los `tests/test_web_*.py` cubren la capa web con `TestClient` y `dependency_overrides` — ningún
 test toca `trabajo/`, ninguno depende de que `credenciales.json` exista, y la contraseña de prueba se
 genera al vuelo (no hay una sola credencial literal en el repo).
+
+La normalización de trazo se cubre en `tests/test_raster.py` con un fixture de **tres líneas de 2,
+4 y 6 px** cuyos números no son arbitrarios: la mediana da 4 px, así que el detector de macizos abre
+con un disco de radio 3 y ninguna de las tres califica —el caso queda limpio de contorneado—, y con
+`lado_mayor_mm=52` el objetivo de 1 mm cae exactamente en 5 px, justo en el medio de las tres. Así
+una sola imagen prueba las dos direcciones. El que más vale es
+`test_f2_normalizar_engorda_y_tambien_afina`: afinar es lo único que F3 no sabe hacer, y un cambio
+que dejara `area_afinada_px` en cero pasaría igual mirando solo la mediana.
+`test_f2_normalizar_no_deja_el_dibujo_en_un_pixel` fija el redondeo del medio ancho —truncar dejaba
+todo el arte en 1 px— y `test_la_normalizacion_de_trazo_cruza_la_frontera_de_procesos` (marcado
+`lento`) es lo único que prueba que el flag y los dos milímetros llegan al hijo: en el medio viajan
+posicionales dentro de una tupla, así que agregar un parámetro en el router sin tocar
+`ejecutar_lineas` no rompe ningún tipo — corre, y normaliza con el número equivocado.
+
+⚠ **Con la normalización encendida el resultado viene en la grilla ampliada**, así que todo test
+que lea coordenadas o cuente píxeles tiene que escalar por `factor_ampliacion` (las franjas y la
+columna de `_ancho_de_linea`, la ventana de la espiga ×k y su cuenta ÷k², las etiquetas de piezas
+con `np.kron`). Ya pasó: dos tests de la onda leían una ventana nativa sobre una imagen ×3, caían en
+otra parte del dibujo y **pasaban mirando cualquier cosa**. El fixture de las tres líneas amplía
+×4 (16 / 5 → 4) y entrega a 1280×960; el logrado ahí es 21 px, 5,25 originales.
+
+El **ruido** de la reconstrucción tiene su propio fixture y no podía compartir el anterior: las tres
+líneas son rectas horizontales, y el dentado aparece justo donde ellas no tienen nada. Es una **onda
+de grosor variable** con una espiga pegada y un puntito suelto, a `lado_mayor_mm=38` (objetivo 6,9
+px nativos, ×3 → 20,7, radio 10). Cada pieza del arreglo tiene un test que falla si se la saca, y
+está verificado desarmándolas de a una: la **ampliación** la agarra
+`test_f2_normalizar_deja_el_ancho_parejo_a_lo_largo_del_trazo` (dispersión `(p95-p5)/p50` del
+ancho: 0,37 en la tinta, 0,14 reconstruyendo en la grilla nativa, **0,056** ampliando; tope 0,10) y
+`..._un_dibujo_chico_se_amplia_hasta_que_el_trazo_tenga_cuerpo`; `_limar` lo agarran
+`..._no_deja_el_trazo_mas_dentado_que_el_dibujo` (4 dientes contra 16) y
+`..._no_deja_tramos_mas_finos_que_los_que_recibio` (sin limar el p5 cae a 2,2 px nativos con un
+objetivo de 6,9 — más fino que la entrada, que es el defecto original sin corregir);
+`_podar_espigas` lo agarra `..._no_convierte_una_espiga_en_un_bulto` (16,8 px contra 31,6 en la
+ventana); su **rescate** de piezas lo agarra `..._no_se_come_las_piezas_mas_chicas_que_la_poda`, el
+único que falla si se poda sin rescatar; la semilla, `..._da_lo_mismo_en_dos_corridas`; y el nivel
+de corte del punto medio lo agarra el fixture de las tres líneas (con Otsu salen 1/3/5 y ya no son
+iguales). El presupuesto lo fija `test_f2_la_ampliacion_se_queda_corta_antes_que_pasar_el_presupuesto`.
+Y `test_el_contorneado_es_morfologia_por_disco_exacta_en_tiempo_lineal` fija que la morfología por
+transformada de distancia dé **pixel a pixel** lo mismo que `opening`/`erosion` con `disk(r)`,
+incluidos los dos casos degenerados (sin manchas, y una mancha que lo cubre todo) — que son justo
+los que la transformada cruda resuelve mal (trampa 10).
+
+⚠ Los tests de dientes y de tramos finos comparan contra la **propia entrada** y no contra una
+constante, a propósito: lo que hay que sostener es que la etapa no ensucia el dibujo, y eso no
+depende de cuánto ruido traiga. El proxy es `_dientes` (píxeles de tinta con 5+ vecinos de fondo)
+sobre el raster y no los nodos del SVG, para no atar la suite a la versión de vtracer.
 
 `tests/test_malla.py` hace lo propio con F4. Sus dos tests centrales:
 `test_el_glb_derivado_lleva_el_acabado_pla` —si se cae, la pieza se ve metálica y la foto de un

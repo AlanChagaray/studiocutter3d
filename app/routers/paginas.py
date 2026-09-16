@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from ..dependencias import UsuarioRequerido, plantillas
 from .cortante import CAMPOS, COLORES, COLORES_FONDO, LIMITE_MAX_MM
+from .lineas import CAMPOS as CAMPOS_LINEAS
 
 router = APIRouter(tags=["paginas"])
 
@@ -71,7 +72,20 @@ def pagina_conversor(request: Request, usuario: UsuarioRequerido) -> Response:
 
 @router.get("/lineas", response_class=HTMLResponse)
 def pagina_lineas(request: Request, usuario: UsuarioRequerido) -> Response:
-    return _pantalla(request, "lineas.html", usuario, pagina="lineas")
+    """Correcto (F2). Los `campos` son los dos de la normalizacion de trazo.
+
+    Salen de `routers/lineas.py` —el modulo que tambien los recibe y los valida—
+    y se dibujan con el mismo macro que los del cortante: un campo que se ve
+    distinto segun la pantalla seria un campo que se comporta distinto.
+    """
+    return _pantalla(
+        request,
+        "lineas.html",
+        usuario,
+        pagina="lineas",
+        campos=CAMPOS_LINEAS,
+        limite_max_mm=LIMITE_MAX_MM,
+    )
 
 
 @router.get("/cortante", response_class=HTMLResponse)

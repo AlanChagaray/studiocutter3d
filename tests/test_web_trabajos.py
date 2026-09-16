@@ -378,6 +378,41 @@ def test_los_diez_parametros_por_defecto_se_aceptan(sesion: TestClient) -> None:
     assert r.json()["error"]["codigo"] == "falta_archivo"
 
 
+# ── Parametros de la normalizacion de trazo (F2) ─────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("campo", "valor"),
+    [("ancho_trazo_mm", 0), ("ancho_trazo_mm", -1), ("lado_mayor_mm", 0), ("lado_mayor_mm", 1500)],
+)
+def test_las_medidas_de_la_normalizacion_se_validan_como_las_del_cortante(
+    sesion: TestClient, campo: str, valor: float
+) -> None:
+    """Mismos limites, mismo 422, mismo nombre de campo — y en el mismo momento.
+
+    Se valida ANTES de crear el trabajo: con la validacion del lado del motor
+    nada mas, un 0 salia como un trabajo que arranca y falla adentro del proceso
+    hijo, donde el usuario ve "error" y no cual de los dos numeros estaba mal.
+    """
+    r = sesion.post("/api/lineas", data={campo: valor, "normalizar_trazo": "true", "origen": "x"})
+    assert r.status_code == 422, r.text
+    cuerpo = r.json()["error"]
+    assert cuerpo["codigo"] == "parametro_invalido"
+    assert cuerpo["detalle"]["parametro"] == campo
+
+
+def test_las_medidas_se_validan_aunque_la_normalizacion_este_apagada(sesion: TestClient) -> None:
+    """Un numero invalido es invalido, lo mire o no esta corrida.
+
+    La pantalla manda los dos campos siempre, encendido o apagado el switch, y
+    aceptarlos en silencio cuando esta apagado dejaria pasar un valor que rompe
+    recien la proxima vez que alguien lo enciende.
+    """
+    r = sesion.post("/api/lineas", data={"lado_mayor_mm": 0, "normalizar_trazo": "false"})
+    assert r.status_code == 422
+    assert r.json()["error"]["codigo"] == "parametro_invalido"
+
+
 def test_en_modo_cortante_los_parametros_del_marcador_son_opcionales(
     sesion: TestClient,
 ) -> None:
@@ -461,24 +496,70 @@ def test_cortante_real_de_punta_a_punta(sesion: TestClient, ajustes: Ajustes) ->
 
 @pytest.mark.lento
 def test_la_cadena_lineas_a_cortante_pasa_por_svg(sesion: TestClient, jpg_minimo: bytes) -> None:
-    """F2 deja PNG **y** SVG, y ese SVG es lo que acepta el cortante.
+    """F2 deja PNG, SVG y la copia JPG; el SVG es lo que acepta el cortante.
 
     Es el unico camino que queda desde una imagen: el cortante solo toma SVG,
-    asi que si F2 no lo produjera, el boton de seguir estaria roto.
+    asi que si F2 no lo produjera, el boton de seguir estaria roto. El JPG es
+    lo que el usuario se baja para retocar a mano —y lo unico que Correcto
+    acepta de vuelta—, asi que tiene que ser un JPEG de verdad y bajar como tal.
     """
     r = sesion.post("/api/lineas", files={"archivo": ("d.jpg", jpg_minimo, "image/jpeg")})
     assert r.status_code == 200
     lineas = sondear_hasta_el_final(sesion, r.json()["id"], limite_s=180)
     assert lineas["estado"] == "listo", lineas
-    assert set(lineas["archivos"]) == {"png", "svg"}, lineas["archivos"]
+    assert set(lineas["archivos"]) == {"png", "svg", "jpg_editable"}, lineas["archivos"]
 
     svg = sesion.get(f"/api/trabajos/{lineas['id']}/archivo/svg")
     assert svg.status_code == 200
     assert b"<svg" in svg.content[:512].lower()
 
+    jpg = sesion.get(f"/api/trabajos/{lineas['id']}/archivo/jpg_editable")
+    assert jpg.status_code == 200
+    assert jpg.headers["content-type"].startswith("image/jpeg")
+    assert jpg.content[:3] == b"\xff\xd8\xff"  # SOI de JPEG
+    assert 'filename="d.jpg"' in jpg.headers["content-disposition"]
+
     encadenado = sesion.post("/api/cortante", data={"origen": lineas["id"]})
     assert encadenado.status_code == 200, encadenado.text
     cancelar_trabajo(sesion, encadenado.json()["id"])
+
+
+@pytest.mark.lento
+def test_la_normalizacion_de_trazo_cruza_la_frontera_de_procesos(
+    sesion: TestClient, jpg_minimo: bytes
+) -> None:
+    """El flag y los dos milimetros tienen que llegar al hijo y volver declarados.
+
+    Es lo unico que prueba el tramo `router -> lanzar -> spawn -> tarea`: en el
+    medio los argumentos viajan **posicionales** dentro de una tupla, asi que
+    agregar un parametro en el router sin tocar `ejecutar_lineas` no rompe
+    ningun tipo — corre, y silenciosamente normaliza con el numero equivocado o
+    no normaliza.
+    """
+    r = sesion.post(
+        "/api/lineas",
+        files={"archivo": ("d.jpg", jpg_minimo, "image/jpeg")},
+        data={"normalizar_trazo": "true", "ancho_trazo_mm": "1.0", "lado_mayor_mm": "40"},
+    )
+    assert r.status_code == 200
+
+    final = sondear_hasta_el_final(sesion, r.json()["id"], limite_s=180)
+    assert final["estado"] == "listo", final
+    reporte = final["reporte"]
+    assert reporte["normalizacion_activa"] is True
+    assert reporte["ancho_objetivo_mm"] == 1.0
+    assert reporte["lado_mayor_supuesto_mm"] == 40.0
+    # 80 px de tinta sobre una pieza de 40 mm son 2 px/mm. Con eso el trazo no
+    # tiene cuerpo, asi que el hijo amplia la imagen y todas sus medidas vienen
+    # en la grilla ampliada: el factor tiene que cruzar la frontera junto con
+    # ellas, o el cliente no puede volverlas a la escala original.
+    k = reporte["factor_ampliacion"]
+    assert reporte["fue_ampliada"] is True and k > 1
+    assert reporte["tamano_usado"] == [120 * k, 80 * k]
+    assert reporte["ancho_objetivo_px"] / k == pytest.approx(2.0, abs=0.2)
+    # El ancho logrado es impar por construccion: es el numero que devuelve la
+    # reconstruccion, no el que se pidio.
+    assert reporte["ancho_logrado_px"] % 2 == 1
 
 
 # ── Descargar todo (ZIP) y la foto de la vista ───────────────────────────────

@@ -85,6 +85,7 @@ COMPRESION_DE: dict[ClaveArchivo, int] = {
     ClaveArchivo.TRES_MF_MARCADOR: zipfile.ZIP_STORED,
     ClaveArchivo.TRES_MF_CORTADOR: zipfile.ZIP_STORED,
     ClaveArchivo.JPG_VISTA: zipfile.ZIP_STORED,
+    ClaveArchivo.JPG_EDITABLE: zipfile.ZIP_STORED,
 }
 """Lo que NO se vuelve a comprimir al armar el ZIP. El resto va con deflate.
 

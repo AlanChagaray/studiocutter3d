@@ -78,6 +78,18 @@ def construir_parser() -> argparse.ArgumentParser:
         help="deja las zonas macizas intactas (por default se contornean)",
     )
     lineas.add_argument("--umbral", type=int, default=None, help="0-255; por default, Otsu")
+    # Las dos dimensiones que necesita la normalizacion son las mismas de
+    # `cortante`, con los mismos defaults: el objetivo que se fije aca tiene que
+    # ser el que despues se le pida al cortante o la calibracion no vale.
+    d = CutterParams()
+    normal = lineas.add_argument_group("normalizacion de ancho de trazo (apagada por default)")
+    normal.add_argument(
+        "--normalizar-trazo",
+        action="store_true",
+        help="deja todos los trazos al mismo ancho: engorda los finos y afina los gruesos",
+    )
+    normal.add_argument("--ancho-trazo", type=float, default=d.ancho_trazo_mm)
+    normal.add_argument("--lado-mayor", type=float, default=d.lado_mayor_mm)
 
     vec = subs.add_parser("vectorizar", help="imagen a svg de paths rellenos")
     vec.add_argument("entrada", type=Path)
@@ -130,8 +142,19 @@ def _correr_lineas(args: argparse.Namespace) -> int:
         args.entrada,
         contornear_macizos=not args.no_contornear_macizos,
         umbral=args.umbral,
+        normalizar_trazo=args.normalizar_trazo,
+        ancho_trazo_mm=args.ancho_trazo,
+        lado_mayor_mm=args.lado_mayor,
     )
     print(f"png: {guardar_binaria(resultado, args.out)}")
+    ancho, alto = resultado.tamano_usado
+    if resultado.fue_ampliada:
+        escala = f" (ampliada {resultado.factor_ampliacion}x para normalizar el trazo)"
+    elif resultado.fue_reducida:
+        escala = " (reducida al presupuesto de pixeles)"
+    else:
+        escala = ""
+    print(f"resolucion usada  : {ancho}x{alto} px{escala}")
     print(f"umbral usado      : {resultado.umbral_usado}")
     print(f"ancho de trazo    : {resultado.ancho_trazo_px:.1f} px")
     if resultado.contorneado_activo:
@@ -141,6 +164,24 @@ def _correr_lineas(args: argparse.Namespace) -> int:
         )
     else:
         print("zonas contorneadas: 0 (contorneado desactivado)")
+    if resultado.normalizacion_activa:
+        print(
+            f"trazo normalizado : {resultado.ancho_logrado_px} px "
+            f"(objetivo {resultado.ancho_objetivo_px:.2f} px = "
+            f"{resultado.ancho_objetivo_mm:.2f} mm sobre una pieza de "
+            f"{resultado.lado_mayor_supuesto_mm:.0f} mm)"
+        )
+        print(
+            f"                    +{resultado.area_engrosada_px} px engrosados, "
+            f"-{resultado.area_afinada_px} px afinados"
+            + (
+                f", {resultado.area_protegida_px} px de macizo intactos"
+                if resultado.area_protegida_px
+                else ""
+            )
+        )
+    else:
+        print("trazo normalizado : no (normalizacion desactivada)")
     return 0
 
 

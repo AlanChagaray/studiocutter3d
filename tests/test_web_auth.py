@@ -873,6 +873,83 @@ def test_no_hay_ninguna_url_externa_en_lo_que_se_sirve(sesion: TestClient) -> No
             assert prohibido not in cuerpo, f"{ruta} apunta afuera ({prohibido})"
 
 
+# ── F2: la pantalla Correcto ────────────────────────────────────────────────
+
+#: Los ganchos de la normalizacion de trazo. Los dos `p-*` los dibuja el macro
+#: `campo_parametro` a partir del nombre del parametro, asi que este test ata el
+#: nombre del campo del formulario al que el router recibe: renombrar uno solo
+#: deja el switch encendido mandando el default de siempre.
+IDS_NORMALIZAR = (
+    "boton-normalizar",
+    "switch-normalizar",
+    "campos-normalizar",
+    "p-ancho_trazo_mm",
+    "p-lado_mayor_mm",
+    # Donde se declara la escala de trabajo: la normalizacion amplia la imagen
+    # y este es el unico lugar de la pantalla que lo dice.
+    "d-resolucion",
+)
+
+
+def test_los_ganchos_de_la_normalizacion_existen_en_las_dos_puntas(sesion: TestClient) -> None:
+    html = sesion.get("/lineas").text
+    js = _sin_comentarios(sesion.get("/static/js/app.js").text)
+    for ident in IDS_NORMALIZAR:
+        assert f'id="{ident}"' in html, f"/lineas no dibuja #{ident}"
+    for gancho in ("#boton-normalizar", "#switch-normalizar", "#campos-normalizar"):
+        assert f"'{gancho}'" in js, f"ningun script busca {gancho}"
+    # Los campos se resuelven por plantilla (`#p-${nombre}`), asi que lo que hay
+    # que exigir es la lista de nombres y no el id armado.
+    assert "'ancho_trazo_mm', 'lado_mayor_mm'" in js
+
+
+def test_la_normalizacion_nace_apagada(sesion: TestClient) -> None:
+    """El default es no tocar el dibujo, y el panel de medidas nace escondido.
+
+    Es el contrato de la opcion: quien no la pide se lleva la misma salida de
+    siempre. Un `aria-checked="true"` de arranque la encenderia para todos sin
+    que nadie la haya elegido.
+    """
+    html = sesion.get("/lineas").text
+    assert '<span class="switch" id="switch-normalizar" role="switch" aria-checked="false">' in html
+    assert '<div class="parametros oculto" id="campos-normalizar">' in html
+
+
+def test_un_origen_nuevo_en_la_url_no_retoma_el_trabajo_de_otro_diseno(
+    sesion: TestClient,
+) -> None:
+    """El trabajo recordado en `sessionStorage` vale solo para la entrada recordada.
+
+    El bug: generar el cortante de A, volver a Correcto, hacer B y "seguir a
+    crear cortante". La pantalla tomaba el origen B de la URL pero retomaba el
+    trabajo de A, cuyo `retomarTrabajo` firma el estado ACTUAL como generado:
+    el cortante viejo aparecia pintado y "Generar" quedaba apagado hasta un F5.
+    Correcto tenia el mismo patron y pintaba la correccion anterior al lado del
+    original nuevo.
+
+    Sin navegador solo se puede exigir el contrato del codigo: una unica regla
+    de modulo, que las DOS pantallas la usen, y que la linea vieja —tomar el
+    trabajo recordado a ciegas— no vuelva.
+    """
+    js = _sin_comentarios(sesion.get("/static/js/app.js").text)
+    assert "function trabajoQueSigueVigente(recordado, origenDeUrl)" in js
+    assert "if (origenDeUrl && origenDeUrl !== recordado.origen) return null;" in js
+
+    # Solo las dos pantallas que se encadenan por `?origen=`. Post no lo hace
+    # —recibe archivos, no un trabajo anterior— y retomar a ciegas ahi es
+    # correcto, asi que la prohibicion se mira por pantalla y no en todo el JS.
+    # El cuerpo de cada `iniciar*` termina donde arranca la siguiente funcion
+    # de nivel de modulo: las internas van indentadas y no cortan.
+    for pantalla in ("Lineas", "Cortante"):
+        cuerpo = js.split(f"function iniciar{pantalla}()")[1].split("\nfunction ")[0]
+        assert "let trabajoId = trabajoQueSigueVigente(recordado, origenDeUrl);" in cuerpo, (
+            f"iniciar{pantalla} no aplica la regla"
+        )
+        assert "recordado.trabajo || null" not in cuerpo, (
+            f"iniciar{pantalla} volvio a retomar el trabajo recordado a ciegas"
+        )
+
+
 # ── F4: la pantalla post ────────────────────────────────────────────────────
 
 

@@ -91,15 +91,40 @@ reporta, no se compensa; el detalle está en el contrato.
 # Corrección de líneas: blanco y negro puro, sin grises
 .venv/Scripts/python -m cutter3d lineas dibujo.jpg -o lineas.png
 
+# ...y, opcional, con todos los trazos emparejados a 1 mm de la pieza final
+.venv/Scripts/python -m cutter3d lineas dibujo.jpg -o lineas.png \
+    --normalizar-trazo --ancho-trazo 1.0 --lado-mayor 90
+
 # Vectorización para alimentar el módulo de cortante
 .venv/Scripts/python -m cutter3d vectorizar lineas.png -o arte.svg
 ```
 
-> **El contorneado de zonas macizas viene ENCENDIDO.** Es la única etapa del flujo que
-> modifica el arte: las manchas rellenas (ojos, por ejemplo) pasan a ser solo su contorno.
-> Por eso **siempre declara cuántas zonas tocó y qué área**. Se apaga con
-> `--no-contornear-macizos`. El módulo de cortante nunca hace esto: reproduce fiel lo que
-> reciba.
+> **El contorneado de zonas macizas viene ENCENDIDO.** Las manchas rellenas (ojos, por
+> ejemplo) pasan a ser solo su contorno, y por eso **siempre declara cuántas zonas tocó y
+> qué área**. Se apaga con `--no-contornear-macizos`.
+>
+> **La normalización de ancho de trazo viene APAGADA** (`--normalizar-trazo`). Deja todos
+> los trazos al mismo ancho: engorda los finos y, a diferencia de todo lo demás en este
+> proyecto, **afina los gruesos**. Sirve para el line art donde el contorno viene mucho más
+> grueso que el detalle interior, o donde el detalle viene tan fino que el marcador impreso
+> se dobla. El objetivo se da en milímetros de la **pieza final**, así que necesita saber
+> con qué `--lado-mayor` se va a generar el cortante: es lo único que traduce milímetros a
+> píxeles, y el resultado declara los dos números que supuso.
+>
+> Redibuja el trazo desde su eje medial, y para que la línea salga lisa **trabaja y entrega en
+> una grilla más fina**: un JPG chico se amplía por un factor entero hasta que el trazo objetivo
+> mida al menos 16 px (acotado por el mismo presupuesto de 3 MP que rige la reducción), y el
+> PNG y el SVG salen a esa resolución, declarada en el resultado. Sin eso, un trazo de 3 px
+> reconstruido desde un eje de 1 px ondula medio píxel y la impresora vibra siguiéndolo. Medido
+> en el trazo final del marcador (p5→p95): buzz pasa de 0,51→2,06 mm a **0,92→1,14 mm**;
+> calabaza de 0,30→1,24 a **0,89→1,10**; murciélago de 0,40→1,25 a **0,89→1,35**.
+>
+> Estas son las dos únicas etapas del flujo que modifican el arte. El módulo de cortante
+> nunca hace ninguna de las dos: reproduce fiel lo que reciba.
+>
+> En la web, Correcto baja la corrección como **JPG** (además del SVG): es el formato que se
+> abre en Paint para retocar a mano lo que la imagen traía mal, y el único que Correcto acepta
+> de vuelta. El PNG binario sigue siendo lo que se vectoriza; el JPG es una copia para editar.
 
 ### Desde Python
 

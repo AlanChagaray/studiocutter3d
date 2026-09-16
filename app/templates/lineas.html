@@ -2,7 +2,7 @@
 {% import "macros.html" as m %}
 {% block titulo %}Correcto{% endblock %}
 {% block titulo_pagina %}Correcto{% endblock %}
-{% block bajada %}Blanco y negro puro, sin grises ni sombreados. Entra un JPG, sale el PNG corregido y su SVG.{% endblock %}
+{% block bajada %}Blanco y negro puro, sin grises ni sombreados. Entra un JPG; sale el SVG para el cortante y un JPG corregido para retocar a mano y volver a subir.{% endblock %}
 
 {% block encabezado_extra %}
 <div class="chip-archivo oculto" id="chip-archivo">
@@ -18,7 +18,7 @@
   <span>
     Esta etapa <strong>no dibuja nada nuevo</strong>: no agrega, no quita ni rellena lineas.
     Solo lleva la imagen a dos valores y, si lo pedis, reemplaza las manchas macizas
-    por su contorno. Cualquier cambio queda declarado abajo.
+    por su contorno y empareja el grosor de los trazos. Cualquier cambio queda declarado abajo.
   </span>
 </div>
 
@@ -64,6 +64,27 @@
         <span class="switch" id="switch-macizos" role="switch" aria-checked="true"></span>
       </button>
 
+      <button type="button" class="tema" id="boton-normalizar" style="cursor:pointer">
+        <span style="text-align:left;line-height:1.35">
+          Emparejar el ancho de trazo<br>
+          <span class="lista__meta">todas las lineas al mismo grosor: engorda las finas y afina las gruesas</span>
+        </span>
+        <span class="switch" id="switch-normalizar" role="switch" aria-checked="false"></span>
+      </button>
+
+      {#
+        Los dos campos solo aparecen con la opcion encendida: sin normalizar no
+        cambian nada, y un campo que no hace nada es una promesa falsa. Es el
+        mismo criterio que `solo_marcador` en la pantalla del cortante.
+      #}
+      <div class="parametros oculto" id="campos-normalizar">
+        {% for c in campos %}{{ m.campo_parametro(c, limite_max_mm) }}{% endfor %}
+        <p class="lista__meta ancho-total" style="margin:0">
+          El <strong>lado mayor</strong> tiene que ser el mismo que despues le pidas al cortante:
+          es lo unico que traduce el ancho de milimetros a pixeles de esta imagen.
+        </p>
+      </div>
+
       <button type="button" class="boton" id="procesar" disabled>
         {{ m.icono('lineas', 17) }} Corregir lineas
       </button>
@@ -78,15 +99,26 @@
         <div class="dato"><span>Ancho de trazo medido</span><span class="dato__valor" id="d-ancho">—</span></div>
         <div class="dato"><span>Zonas contorneadas</span><span class="dato__valor" id="d-zonas">—</span></div>
         <div class="dato"><span>Area afectada</span><span class="dato__valor" id="d-area">—</span></div>
+        <div class="dato"><span>Resolucion de trabajo</span><span class="dato__valor" id="d-resolucion">—</span></div>
+        <div class="dato oculto" data-rol="fila-normalizada">
+          <span>Trazo emparejado a</span><span class="dato__valor" id="d-objetivo">—</span>
+        </div>
+        <div class="dato oculto" data-rol="fila-normalizada">
+          <span>Engrosado / afinado</span><span class="dato__valor" id="d-delta">—</span>
+        </div>
       </div>
       <div class="aviso aviso--alerta oculto" id="aviso-macizos">
         {{ m.icono('alerta', 16) }}
         <span id="texto-macizos"></span>
       </div>
+      <div class="aviso aviso--alerta oculto" id="aviso-normalizar">
+        {{ m.icono('alerta', 16) }}
+        <span id="texto-normalizar"></span>
+      </div>
     </div>
 
     <div class="fila oculto" id="pie">
-      <a class="boton boton--secundario" id="bajar" download>{{ m.icono('bajar', 17) }} PNG</a>
+      <a class="boton boton--secundario" id="bajar" download>{{ m.icono('bajar', 17) }} JPG</a>
       <a class="boton boton--secundario" id="bajar-svg" download>{{ m.icono('bajar', 17) }} SVG</a>
       <a class="boton" id="seguir" href="/cortante">Seguir a crear cortante {{ m.icono('seguir', 17) }}</a>
     </div>

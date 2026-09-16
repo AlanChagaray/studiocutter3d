@@ -151,7 +151,13 @@ def _terminar_mal(dir_trabajo: Path, exc: Exception, indice: int | None = None) 
 # ── F2: correccion de lineas ─────────────────────────────────────────────────
 
 
-def ejecutar_lineas(dir_trabajo_txt: str, entrada_txt: str, contornear_macizos: bool) -> None:
+def ejecutar_lineas(
+    dir_trabajo_txt: str,
+    entrada_txt: str,
+    contornear_macizos: bool,
+    normalizar_trazo: bool,
+    dimensiones: dict[str, float],
+) -> None:
     """Deja `salida.png` en blanco y negro puro, su `salida.svg`, y el detalle.
 
     **La vectorizacion se hace aca y no en el cortante.** El cortante solo
@@ -159,6 +165,11 @@ def ejecutar_lineas(dir_trabajo_txt: str, entrada_txt: str, contornear_macizos: 
     acaba de quedar en dos valores puros, que es justo la entrada con la que
     vtracer pierde menos detalle. Ademas el SVG queda descargable y el usuario
     puede mirarlo antes de mandarlo a geometria.
+
+    `dimensiones` son los milimetros que necesita la normalizacion —ancho de
+    trazo objetivo y lado mayor de la pieza— y viaja como `dict` de floats por
+    lo mismo que el de `ejecutar_cortante`: de este lado de la frontera solo
+    entran primitivos, y un dict mantiene la firma legible.
     """
     _acotar_memoria()
     dir_trabajo = Path(dir_trabajo_txt)
@@ -166,27 +177,56 @@ def ejecutar_lineas(dir_trabajo_txt: str, entrada_txt: str, contornear_macizos: 
         from cutter3d import raster, vector  # noqa: PLC0415 — ver el docstring del modulo
 
         _avisar(dir_trabajo, ETAPA_LINEAS)
-        resultado = raster.preparar_lineas(Path(entrada_txt), contornear_macizos)
+        resultado = raster.preparar_lineas(
+            Path(entrada_txt),
+            contornear_macizos,
+            normalizar_trazo=normalizar_trazo,
+            # Campo por campo y no `**dimensiones`: asi el tipado ve que el dict
+            # no puede colarse en `umbral`, y un dict con una clave de mas falla
+            # aca en vez de terminar en un `TypeError` adentro del motor.
+            ancho_trazo_mm=dimensiones["ancho_trazo_mm"],
+            lado_mayor_mm=dimensiones["lado_mayor_mm"],
+        )
         png = raster.guardar_binaria(resultado, dir_trabajo / "salida.png")
+        # La copia para retocar a mano. El PNG sigue siendo lo que se vectoriza
+        # y lo que muestra la pantalla; el JPG es lo que el usuario se baja,
+        # porque es lo que edita y lo unico que Correcto acepta de vuelta.
+        raster.guardar_editable(resultado, dir_trabajo / "editable.jpg")
 
         _avisar(dir_trabajo, ETAPA_VECTORIZANDO)
         vector.a_svg(png, dir_trabajo / "salida.svg")
 
         _terminar_bien(
             dir_trabajo,
-            {"png": "salida.png", "svg": "salida.svg"},
+            {"png": "salida.png", "svg": "salida.svg", "jpg_editable": "editable.jpg"},
             {
                 "umbral_usado": resultado.umbral_usado,
                 "ancho_trazo_px": round(resultado.ancho_trazo_px, 2),
                 "zonas_contorneadas": resultado.zonas_contorneadas,
                 "area_contorneada_px": resultado.area_contorneada_px,
                 "contorneado_activo": resultado.contorneado_activo,
+                # La normalizacion es la otra modificacion del arte, y se
+                # declara con el mismo criterio: cuanto engordo, cuanto afino, y
+                # sobre que suposicion de tamaño final se calibro el objetivo.
+                "normalizacion_activa": resultado.normalizacion_activa,
+                "ancho_objetivo_px": round(resultado.ancho_objetivo_px, 2),
+                "ancho_logrado_px": resultado.ancho_logrado_px,
+                "ancho_objetivo_mm": resultado.ancho_objetivo_mm,
+                "lado_mayor_supuesto_mm": resultado.lado_mayor_supuesto_mm,
+                "area_engrosada_px": resultado.area_engrosada_px,
+                "area_afinada_px": resultado.area_afinada_px,
+                "area_protegida_px": resultado.area_protegida_px,
                 # La reduccion por presupuesto de memoria se declara igual que
                 # el contorneado: es una modificacion del arte y no se hace en
                 # silencio. `ancho_trazo_px` esta en la escala de `tamano_usado`.
                 "tamano_original": list(resultado.tamano_original),
                 "tamano_usado": list(resultado.tamano_usado),
                 "fue_reducida": resultado.fue_reducida,
+                # La ampliacion es la otra direccion del mismo presupuesto: la
+                # normalizacion trabaja y entrega en una grilla mas fina para
+                # que el trazo salga liso, y el PNG/SVG cambian de tamaño.
+                "factor_ampliacion": resultado.factor_ampliacion,
+                "fue_ampliada": resultado.fue_ampliada,
             },
         )
     except Exception as exc:  # el hijo NUNCA puede morir en silencio

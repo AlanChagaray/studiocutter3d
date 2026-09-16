@@ -25,6 +25,7 @@ from PIL import Image
 from app.errores import traducir
 from app.tareas import LIMITE_RAM_HIJO_MB, _acotar_memoria
 from cutter3d.raster import (
+    ANCHO_MINIMO_NORMALIZACION_PX,
     MAX_PIXELES,
     MAX_PIXELES_TRABAJO,
     convertir_a_jpg,
@@ -115,6 +116,37 @@ def test_f2_sigue_siendo_binario_puro_despues_de_reducir(tmp_path: Path) -> None
     assert set(np.unique(resultado.imagen).tolist()) <= {0, 255}
 
 
+def test_f2_normalizar_trabaja_en_la_escala_reducida(tmp_path: Path) -> None:
+    """La normalizacion va DESPUES del presupuesto, y su objetivo tambien.
+
+    El objetivo en pixeles sale de la caja de la tinta, asi que si se calculara
+    sobre el tamaño original y se aplicara sobre el reducido saldria escalado
+    por el mismo factor de la reduccion — cuatro veces mas grueso en este caso.
+    La comprobacion es que el objetivo entre en la imagen que se devuelve y siga
+    la proporcion de `tamano_usado`, no la de `tamano_original`.
+    """
+    lado = int((MAX_PIXELES_TRABAJO * 4) ** 0.5)  # 4x el presupuesto
+    jpg = _lineart(lado, lado, tmp_path / "grande.jpg")
+
+    resultado = preparar_lineas(jpg, normalizar_trazo=True, lado_mayor_mm=90.0)
+
+    assert resultado.fue_reducida
+    # Reducida al presupuesto no deja lugar para ampliar: son las dos puntas
+    # del mismo numero y no pueden darse juntas.
+    assert resultado.factor_ampliacion == 1 and not resultado.fue_ampliada
+    ancho_usado, _ = resultado.tamano_usado
+    # La tinta del fixture llega de borde a borde, asi que su caja es la imagen.
+    assert resultado.ancho_objetivo_px == pytest.approx(ancho_usado / 90.0, rel=0.05)
+    assert resultado.ancho_logrado_px < ancho_usado
+
+
+def test_f2_normalizar_sigue_dando_binario_puro_despues_de_reducir(tmp_path: Path) -> None:
+    lado = int((MAX_PIXELES_TRABAJO * 4) ** 0.5)
+    jpg = _lineart(lado, lado, tmp_path / "grande.jpg")
+    resultado = preparar_lineas(jpg, normalizar_trazo=True)
+    assert set(np.unique(resultado.imagen).tolist()) <= {0, 255}
+
+
 # ── F1: el conversor tambien esta acotado ───────────────────────────────────
 
 
@@ -191,3 +223,26 @@ def test_sin_memoria_no_sale_como_error_interno() -> None:
     assert api.codigo == "sin_memoria"
     assert api.estado == 413
     assert "memoria" in api.mensaje.lower()
+
+
+def test_f2_la_ampliacion_se_queda_corta_antes_que_pasar_el_presupuesto(tmp_path: Path) -> None:
+    """La ampliacion y la reduccion son las dos puntas del MISMO numero.
+
+    Un dibujo chico se amplia hasta que el trazo tenga cuerpo, pero nunca mas
+    alla de `MAX_PIXELES_TRABAJO`: si el factor que hace falta no entra, se usa
+    el que entra aunque el objetivo quede corto. Es lo que sostiene que el techo
+    de memoria medido para la foto grande siga siendo EL techo, sin una segunda
+    cuenta para el camino ampliado.
+    """
+    chica = preparar_lineas(_lineart(300, 200, tmp_path / "chica.jpg"), normalizar_trazo=True)
+    ancho, alto = chica.tamano_usado
+    assert chica.fue_ampliada
+    assert ancho * alto <= MAX_PIXELES_TRABAJO
+    assert chica.ancho_objetivo_px >= ANCHO_MINIMO_NORMALIZACION_PX
+
+    # 1000x1000 con el trazo en 11 px pediria x2, y x2 son 4 MP: no entra. Se
+    # queda en x1 con el objetivo corto antes que pasarse del presupuesto.
+    mediana = preparar_lineas(_lineart(1000, 1000, tmp_path / "mediana.jpg"), normalizar_trazo=True)
+    assert mediana.factor_ampliacion == 1
+    assert mediana.ancho_objetivo_px < ANCHO_MINIMO_NORMALIZACION_PX
+    assert mediana.tamano_usado == (1000, 1000)

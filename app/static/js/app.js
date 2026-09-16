@@ -99,6 +99,26 @@ function guardarEstado(pantalla, datos) {
   }
 }
 
+/**
+ * Que trabajo recordado se puede retomar al entrar a una pantalla.
+ *
+ * El trabajo guardado en `sessionStorage` se genero con la ENTRADA guardada.
+ * Si la URL trae otra entrada —"seguir" desde un diseño nuevo en Convertir o
+ * en Correcto— ese trabajo es del diseño anterior, y retomarlo hacia dos cosas
+ * malas: pintaba el resultado viejo como si fuera de este archivo, y en el
+ * cortante `retomarTrabajo` firmaba el estado ACTUAL como "ya generado", con
+ * lo que el boton de generar quedaba apagado hasta que el usuario recargaba
+ * (F5 es lo unico que borra el `sessionStorage`). Sin `origen` en la URL se
+ * volvio a la pantalla por el menu, y ahi retomar es justo lo que se quiere.
+ *
+ * Es una funcion de modulo y no una linea dentro de cada `iniciar*` para que
+ * las dos pantallas apliquen la misma regla y un test pueda exigirla.
+ */
+function trabajoQueSigueVigente(recordado, origenDeUrl) {
+  if (origenDeUrl && origenDeUrl !== recordado.origen) return null;
+  return recordado.trabajo || null;
+}
+
 /* ── Utilidades ──────────────────────────────────────────────────────────── */
 
 const $ = (sel, raiz = document) => raiz.querySelector(sel);
@@ -488,26 +508,54 @@ function iniciarLineas() {
   const estado = $('#estado');
   const procesar = $('#procesar');
   const swMacizos = $('#switch-macizos');
+  const swNormalizar = $('#switch-normalizar');
+  const camposNormalizar = $('#campos-normalizar');
+  /* Los ids salen del macro `campo_parametro`, igual que en la pantalla del
+     cortante: un campo por nombre de parametro, sin lista aparte. */
+  const CAMPOS_NORMALIZAR = ['ancho_trazo_mm', 'lado_mayor_mm'];
 
   const recordado = leerEstado('lineas');
   let archivo = null;
-  let origen = new URLSearchParams(location.search).get('origen') || recordado.origen || null;
-  let trabajoId = recordado.trabajo || null;
+  const origenDeUrl = new URLSearchParams(location.search).get('origen');
+  let origen = origenDeUrl || recordado.origen || null;
+  let trabajoId = trabajoQueSigueVigente(recordado, origenDeUrl);
+
+  const encendida = (sw) => sw.getAttribute('aria-checked') === 'true';
 
   const recordar = () =>
     guardarEstado('lineas', {
       origen,
       trabajo: trabajoId,
       macizos: swMacizos.getAttribute('aria-checked'),
+      normalizar: swNormalizar.getAttribute('aria-checked'),
+      medidas: Object.fromEntries(CAMPOS_NORMALIZAR.map((n) => [n, $(`#p-${n}`).value])),
     });
 
   if (recordado.macizos) swMacizos.setAttribute('aria-checked', recordado.macizos);
+  if (recordado.normalizar) swNormalizar.setAttribute('aria-checked', recordado.normalizar);
+  if (recordado.medidas) {
+    for (const nombre of CAMPOS_NORMALIZAR) {
+      const guardado = recordado.medidas[nombre];
+      if (guardado) $(`#p-${nombre}`).value = guardado;
+    }
+  }
+  mostrar(camposNormalizar, encendida(swNormalizar));
 
   $('#boton-macizos').addEventListener('click', () => {
-    const activo = swMacizos.getAttribute('aria-checked') === 'true';
-    swMacizos.setAttribute('aria-checked', String(!activo));
+    swMacizos.setAttribute('aria-checked', String(!encendida(swMacizos)));
     recordar();
   });
+
+  $('#boton-normalizar').addEventListener('click', () => {
+    const activo = !encendida(swNormalizar);
+    swNormalizar.setAttribute('aria-checked', String(activo));
+    mostrar(camposNormalizar, activo);
+    recordar();
+  });
+
+  for (const nombre of CAMPOS_NORMALIZAR) {
+    $(`#p-${nombre}`).addEventListener('change', recordar);
+  }
 
   function ponerChip(nombre) {
     texto($('#nombre-archivo'), nombre);
@@ -553,6 +601,7 @@ function iniciarLineas() {
     ponerChip(nombre);
     mostrar($('#panel-comparador'), true);
     procesar.disabled = false;
+    recordar(); // mismo motivo que en el cortante: lo recordado es ESTE origen
   }
 
   /** Vuelve a enganchar un trabajo que quedo corriendo al cambiar de seccion. */
@@ -580,6 +629,10 @@ function iniciarLineas() {
     if (archivo) datos.append('archivo', archivo, archivo.name);
     else if (origen) datos.append('origen', origen);
     datos.append('contornear_macizos', swMacizos.getAttribute('aria-checked'));
+    datos.append('normalizar_trazo', swNormalizar.getAttribute('aria-checked'));
+    /* Las dos medidas viajan siempre, encendida o no la opcion: el servidor las
+       valida igual y asi el pedido no depende del estado de un switch. */
+    for (const nombre of CAMPOS_NORMALIZAR) datos.append(nombre, $(`#p-${nombre}`).value);
 
     try {
       avisar(estado, 'info', 'Procesando la imagen…');
@@ -599,25 +652,75 @@ function iniciarLineas() {
 
   function pintarResultado(trabajo) {
     mostrar(estado, false);
+    /* Los dos avisos se apagan de entrada: esta funcion corre de nuevo en cada
+       corrida y uno que solo sabe encenderse deja el cartel de la anterior. */
+    mostrar($('#aviso-macizos'), false);
+    mostrar($('#aviso-normalizar'), false);
     $('#img-corregida').src = `${urlArchivo(trabajo.id, 'png')}?v=${Date.now()}`;
     const r = trabajo.reporte || {};
     texto($('#d-umbral'), String(r.umbral_usado ?? '—'));
     texto($('#d-ancho'), `${r.ancho_trazo_px ?? '—'} px`);
     texto($('#d-zonas'), String(r.zonas_contorneadas ?? 0));
     texto($('#d-area'), `${(r.area_contorneada_px ?? 0).toLocaleString('es-AR')} px`);
+    /* La escala de trabajo se declara siempre, cambie o no: es la escala en la
+       que estan todos los pixeles de este panel y la del JPG que se baja. */
+    const [anchoPx, altoPx] = r.tamano_usado || [];
+    let escala = '';
+    if (r.fue_ampliada) escala = ` (ampliada ${r.factor_ampliacion}×)`;
+    else if (r.fue_reducida) escala = ' (reducida por tamaño)';
+    texto($('#d-resolucion'), anchoPx ? `${anchoPx}×${altoPx} px${escala}` : '—');
     mostrar($('#panel-declaracion'), true);
+
+    const normalizado = !!r.normalizacion_activa;
+    const logradoPx = r.ancho_logrado_px ?? 0;
+    texto($('#d-objetivo'), normalizado ? `${logradoPx} px = ${r.ancho_objetivo_mm} mm` : '—');
+    texto(
+      $('#d-delta'),
+      normalizado
+        ? `+${(r.area_engrosada_px ?? 0).toLocaleString('es-AR')} / ` +
+            `−${(r.area_afinada_px ?? 0).toLocaleString('es-AR')} px`
+        : '—'
+    );
+    for (const fila of document.querySelectorAll('[data-rol="fila-normalizada"]')) {
+      mostrar(fila, normalizado);
+    }
 
     if (r.zonas_contorneadas > 0) {
       texto(
         $('#texto-macizos'),
         `Se reemplazaron ${r.zonas_contorneadas} zona(s) maciza(s) por su contorno, ` +
-          `afectando ${(r.area_contorneada_px ?? 0).toLocaleString('es-AR')} px. ` +
-          'Es la unica modificacion del arte que se aplico.'
+          `afectando ${(r.area_contorneada_px ?? 0).toLocaleString('es-AR')} px.`
       );
       mostrar($('#aviso-macizos'), true);
     }
 
-    $('#bajar').href = urlArchivo(trabajo.id, 'png');
+    /* La suposicion del lado mayor se repite aca y no solo en el formulario: es
+       lo unico que ata este resultado al cortante que venga despues, y el
+       usuario lo lee cuando ya se olvido de que lo eligio. */
+    if (normalizado) {
+      const protegida = r.area_protegida_px ?? 0;
+      texto(
+        $('#texto-normalizar'),
+        `Los trazos quedaron todos en ${logradoPx} px, que son ${r.ancho_objetivo_mm} mm ` +
+          `si el cortante se genera con un lado mayor de ${r.lado_mayor_supuesto_mm} mm. ` +
+          `Se engrosaron ${(r.area_engrosada_px ?? 0).toLocaleString('es-AR')} px y se afinaron ` +
+          `${(r.area_afinada_px ?? 0).toLocaleString('es-AR')} px.` +
+          (protegida > 0
+            ? ` Con el contorneado apagado, ${protegida.toLocaleString('es-AR')} px de zona ` +
+              'maciza quedaron como estaban: emparejarlos los convertiria en lineas.'
+            : '') +
+          (r.fue_ampliada
+            ? ` Para que el trazo saliera liso la imagen se trabajo ampliada ` +
+              `${r.factor_ampliacion}×: el JPG y el SVG salen a ${anchoPx}×${altoPx} px.`
+            : '')
+      );
+      mostrar($('#aviso-normalizar'), true);
+    }
+
+    /* Se baja el JPG y no el PNG con el que trabajo la etapa: es lo que el
+       usuario abre en Paint para retocar, y lo unico que Correcto acepta de
+       vuelta. El PNG sigue siendo lo que se vectoriza y lo que se ve arriba. */
+    $('#bajar').href = urlArchivo(trabajo.id, 'jpg_editable');
     $('#bajar-svg').href = urlArchivo(trabajo.id, 'svg');
     $('#seguir').href = `/cortante?origen=${encodeURIComponent(trabajo.id)}`;
     mostrar($('#pie'), true);
@@ -1027,8 +1130,9 @@ function iniciarCortante() {
   let modo = recordado.modo || 'cortante+marcador';
   let generando = false;
   let firmaGenerada = null;
-  let origen = new URLSearchParams(location.search).get('origen') || recordado.origen || null;
-  let trabajoId = recordado.trabajo || null;
+  const origenDeUrl = new URLSearchParams(location.search).get('origen');
+  let origen = origenDeUrl || recordado.origen || null;
+  let trabajoId = trabajoQueSigueVigente(recordado, origenDeUrl);
   // La vista elegida la administra `iniciarVistaPrevia3D`; aca se guarda solo
   // para `recordar()`, que persiste el estado de ESTA pantalla.
   let vista = recordado.vista === 'imagen' ? 'imagen' : '3d';
@@ -1167,6 +1271,10 @@ function iniciarCortante() {
     texto($('#nombre-archivo'), nombre);
     mostrar($('#chip-archivo'), true);
     repasarGenerar();
+    // Persistir ACA y no solo al tocar algo: si el usuario se va por el menu
+    // y vuelve, lo recordado tiene que ser este origen y no el del diseño
+    // anterior, o `trabajoQueSigueVigente` lo daria por vigente.
+    recordar();
   }
 
   /** Vuelve a enganchar un trabajo que quedo corriendo al cambiar de seccion. */

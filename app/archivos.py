@@ -190,6 +190,16 @@ class ClaveArchivo(StrEnum):
     archivos distintos, producidos por dos cosas distintas, y darles la misma
     clave haria que un trabajo encadenado pisara uno con el otro."""
 
+    JPG_EDITABLE = "jpg_editable"
+    """La correccion de lineas en JPG, para retocarla a mano y volverla a subir.
+
+    F2 trabaja y vectoriza sobre `PNG` —binario puro, que es lo que el contrato
+    exige—, pero lo que el usuario se lleva para abrir en Paint es esta copia:
+    JPG es el formato que sus programas editan y, no por casualidad, el unico
+    que Correcto acepta de vuelta. Es la misma regla que `JPG_VISTA`: no se
+    reusa `JPG` porque ese es el del Convertidor, y las afirmaciones de este
+    enum tienen que seguir siendo ciertas archivo por archivo."""
+
     SET = "set"
     """La lamina del set: las fotos de todos los diseños en una sola imagen.
 
@@ -210,6 +220,7 @@ NOMBRE_DE: dict[ClaveArchivo, str] = {
     ClaveArchivo.SVG: "salida.svg",
     ClaveArchivo.JPG_VISTA: "vista.jpg",
     ClaveArchivo.SET: "set.jpg",
+    ClaveArchivo.JPG_EDITABLE: "editable.jpg",
 }
 
 MEDIO_DE: dict[ClaveArchivo, str] = {
@@ -224,6 +235,7 @@ MEDIO_DE: dict[ClaveArchivo, str] = {
     ClaveArchivo.SVG: "image/svg+xml",
     ClaveArchivo.JPG_VISTA: "image/jpeg",
     ClaveArchivo.SET: "image/jpeg",
+    ClaveArchivo.JPG_EDITABLE: "image/jpeg",
 }
 
 CLAVES_INTERNAS: frozenset[ClaveArchivo] = frozenset({ClaveArchivo.GLB})
@@ -279,6 +291,9 @@ SUFIJO_DESCARGA: dict[ClaveArchivo, str] = {
     ClaveArchivo.SVG: ".svg",
     ClaveArchivo.JPG_VISTA: "-vista.jpg",
     ClaveArchivo.SET: "-set.jpg",
+    # `.jpg` a secas, sin sufijo: un trabajo de lineas no tiene otro JPG con el
+    # que chocar, y "buddy.jpg" es lo que el usuario espera volver a subir.
+    ClaveArchivo.JPG_EDITABLE: ".jpg",
 }
 
 MAX_DISENOS = 25
