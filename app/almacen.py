@@ -41,6 +41,15 @@ class TipoTrabajo(StrEnum):
     CONVERSOR = "conversor"
     LINEAS = "lineas"
     CORTANTE = "cortante"
+    POST = "post"
+
+
+TIPOS_CON_VISTA = frozenset({TipoTrabajo.CORTANTE, TipoTrabajo.POST})
+"""Los que dejan un `.glb` y por lo tanto pueden tener foto cenital.
+
+Vive aca y no en el router que lo usa (`PUT /trabajos/{id}/imagen`) para que sea
+una propiedad del tipo de trabajo y no una condicion escrita en un `if`: el dia
+que aparezca un cuarto tipo con visor, quien lo agregue lo ve en el enum."""
 
 
 @dataclass
@@ -67,6 +76,19 @@ class Trabajo:
     reporte: dict[str, Any] | None = None
     error: dict[str, Any] | None = None
 
+    disenos: int = 0
+    """Cuantos diseños tiene el trabajo. Solo F4 lo usa; el resto se queda en 0.
+
+    Es un CONTADOR y no una lista, y esa es toda la idea: los archivos por diseño
+    no entran en `archivos` —que mapea una clave de enum cerrado a un nombre
+    fijo, y no escala a 25 copias de lo mismo— sino que se piden por clave **mas
+    indice** (`ClaveDiseno` + `nombre_de_diseno`). Con el contador, el front sabe
+    cuantas URLs armar y el servidor cuantas validar; el detalle de cada diseño
+    viaja en `reporte`, que ya es libre.
+
+    `archivos` en un post multiple queda con lo que es del TRABAJO y no de un
+    diseño: hoy, solo `set`."""
+
     def como_json(self) -> dict[str, Any]:
         """La forma que consume el polling del front. Sin rutas del filesystem."""
         return {
@@ -78,6 +100,7 @@ class Trabajo:
             "creado_en": self.creado_en.isoformat(),
             "actualizado_en": self.actualizado_en.isoformat(),
             "archivos": sorted(self.archivos),
+            "disenos": self.disenos,
             "reporte": self.reporte,
             "error": self.error,
         }

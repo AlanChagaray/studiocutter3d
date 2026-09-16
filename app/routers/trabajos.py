@@ -46,22 +46,30 @@ from typing import Annotated
 from fastapi import APIRouter, File, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
-from ..almacen import EstadoTrabajo, TipoTrabajo, Trabajo
+from cutter3d import lamina
+from cutter3d.errors import Cutter3DError
+
+from ..almacen import TIPOS_CON_VISTA, EstadoTrabajo, TipoTrabajo, Trabajo
 from ..archivos import (
     FORMATOS_VISTA,
     LIMITE_VISTA_BYTES,
     MEDIO_DE,
+    MEDIO_DISENO,
     NOMBRE_DE,
     ClaveArchivo,
+    ClaveDiseno,
     claves_descargables,
     dir_de_trabajo,
     guardar_subida,
     nombre_de_descarga,
+    nombre_de_descarga_de_diseno,
+    nombre_de_diseno,
     nombre_de_zip,
     ruta_de,
+    ruta_de_diseno,
 )
 from ..dependencias import AjustesDep, AlmacenDep, UsuarioRequerido
-from ..errores import ErrorApi
+from ..errores import ErrorApi, traducir
 from ..trabajos import cancelar
 
 router = APIRouter(prefix="/api/trabajos", tags=["trabajos"])
@@ -236,12 +244,17 @@ def descargar_todo(
     """
     trabajo = _exigir_trabajo(almacen, id_, usuario)
     claves = claves_descargables(trabajo.archivos)
+    # En un post con varios diseños la mayor parte de lo que se baja NO esta en
+    # `archivos`: las fotos por diseño se piden por clave mas indice. El ZIP las
+    # junta igual —bajar 25 fotos de a una es justo lo que este boton evita— y
+    # ademas el `set`, que si es una clave de trabajo comun y ya viene en `claves`.
+    por_diseno = _fotos_de_disenos(a, trabajo)
     destino = dir_de_trabajo(a, id_)
     # El directorio se chequea ANTES de crear el temporal: `limpiar_vencidos`
     # borra el directorio y recien despues saca el trabajo del almacen, asi que
     # hay una ventana con trabajo vivo y carpeta muerta. Crear el temporal ahi
     # adentro tiraba `FileNotFoundError` y salia un 500 donde corresponde 404.
-    if not claves or not destino.is_dir():
+    if not (claves or por_diseno) or not destino.is_dir():
         raise _sin_descargables()
 
     _limpiar_temporales(destino)
@@ -253,21 +266,7 @@ def descargar_todo(
         temporal = Path(tmp.name)
     try:
         with zipfile.ZipFile(temporal, "w", zipfile.ZIP_DEFLATED) as zip_:
-            for clave in claves:
-                ruta = ruta_de(a, id_, clave)
-                if ruta is None:
-                    continue
-                try:
-                    zip_.write(
-                        ruta,
-                        nombre_de_descarga(id_, clave, trabajo.nombre_base),
-                        compress_type=COMPRESION_DE.get(clave, zipfile.ZIP_DEFLATED),
-                    )
-                except OSError:
-                    # Una clave declarada cuyo archivo ya no esta en disco no es
-                    # un 500: el trabajo pudo vencer entre el listado y esto. Se
-                    # omite, y si al final no entro ninguno se responde 404.
-                    log.warning("el archivo %s del trabajo %s no se pudo leer", clave.value, id_)
+            _llenar_zip(zip_, a, trabajo, claves, por_diseno)
             vacio = not zip_.namelist()
         if vacio:
             raise _sin_descargables()
@@ -350,10 +349,10 @@ def subir_imagen(
        `uuid4`—, no porque se lo haya parseado. La validacion de forma llega en
        el paso 4, dentro de `dir_de_trabajo`. Son dos defensas distintas y
        conviene no confundirlas.
-    2. **Solo trabajos de tipo cortante.** El Convertidor y Correcto no tienen
-       vista 3D: una foto ahi no significa nada. Responde 404 y no 403 a
-       proposito — el mismo cuerpo que un trabajo inexistente, para no filtrar
-       que el id existe.
+    2. **Solo trabajos que dejan un `.glb`** (`TIPOS_CON_VISTA`: el cortante y
+       el post). El Convertidor y Correcto no tienen vista 3D: una foto ahi no
+       significa nada. Responde 404 y no 403 a proposito — el mismo cuerpo que un
+       trabajo inexistente, para no filtrar que el id existe.
     3. **Solo trabajos terminados.** Una foto de una geometria que todavia no
        existe seria una foto de otra cosa. Ademas es lo que hace segura la
        actualizacion de `archivos` de abajo: `LISTO` es terminal, o sea que el
@@ -368,12 +367,12 @@ def subir_imagen(
     respuesta, en vez de suponer que la clave aparecio.
     """
     trabajo = _exigir_trabajo(almacen, id_, usuario)
-    if trabajo.tipo is not TipoTrabajo.CORTANTE:
+    if trabajo.tipo not in TIPOS_CON_VISTA:
         raise ErrorApi("trabajo_inexistente", "No existe ese trabajo.", estado=404)
     if trabajo.estado is not EstadoTrabajo.LISTO:
         raise ErrorApi(
             "trabajo_no_terminado",
-            "El cortante todavia no esta listo.",
+            "El trabajo todavia no esta listo.",
             estado=409,
             detalle={"estado": trabajo.estado.value},
         )
@@ -430,3 +429,240 @@ def cancelar_trabajo(id_: str, usuario: UsuarioRequerido, almacen: AlmacenDep) -
     """Mata el proceso hijo de un trabajo en curso."""
     _exigir_trabajo(almacen, id_, usuario)
     return JSONResponse({"cancelado": cancelar(almacen, id_)})
+
+
+# ── Archivos por diseño (F4 con varios diseños) ─────────────────────────────
+
+
+def _exigir_post(almacen: AlmacenDep, id_: str, usuario: str) -> Trabajo:
+    """El trabajo, y que sea un post. 404 —no 403— si no lo es.
+
+    El mismo cuerpo que un trabajo inexistente, por lo mismo que en `subir_imagen`:
+    responder distinto filtraria que el id existe.
+    """
+    trabajo = _exigir_trabajo(almacen, id_, usuario)
+    if trabajo.tipo is not TipoTrabajo.POST or trabajo.disenos < 1:
+        raise ErrorApi("trabajo_inexistente", "No existe ese trabajo.", estado=404)
+    return trabajo
+
+
+def _exigir_diseno(trabajo: Trabajo, indice: int) -> int:
+    """Que el indice exista EN ESTE trabajo, no solo que sea un entero valido.
+
+    `validar_indice` acota al rango del producto (1..25); esto lo acota a los
+    diseños que este trabajo tiene de verdad. Sin lo segundo, pedir el diseño 20
+    de un trabajo de 3 daria 404 igual pero recien al no encontrar el archivo, y
+    eso es depender de un accidente del disco en vez de una regla.
+    """
+    if not 1 <= indice <= trabajo.disenos:
+        raise ErrorApi(
+            "diseno_inexistente",
+            "No existe ese diseño en el trabajo.",
+            estado=404,
+            detalle={"indice": indice, "disenos": trabajo.disenos},
+        )
+    return indice
+
+
+def _nombre_de_diseno_para_bajar(trabajo: Trabajo, clave: ClaveDiseno, indice: int) -> str:
+    """El `filename=` de la descarga, con el nombre propio del diseño si lo hay."""
+    nombres = (trabajo.reporte or {}).get("nombres")
+    base = None
+    if isinstance(nombres, list) and 1 <= indice <= len(nombres):
+        crudo = nombres[indice - 1]
+        base = crudo if isinstance(crudo, str) else None
+    return nombre_de_descarga_de_diseno(
+        trabajo.id, clave, indice, base, con_indice=trabajo.disenos > 1
+    )
+
+
+@router.get("/{id_}/diseno/{indice}/archivo/{clave}")
+def descargar_de_diseno(
+    usuario: UsuarioRequerido,
+    almacen: AlmacenDep,
+    a: AjustesDep,
+    *,
+    id_: str,
+    indice: int,
+    clave: ClaveDiseno,
+) -> FileResponse:
+    """El `.glb` o la foto de UN diseño.
+
+    `clave` la valida FastAPI contra el enum antes de entrar, e `indice` lo
+    validan `_exigir_diseno` y despues `nombre_de_diseno`. El cliente manda una
+    palabra de una lista cerrada y un entero acotado: sigue sin nombrar nada.
+    """
+    trabajo = _exigir_post(almacen, id_, usuario)
+    _exigir_diseno(trabajo, indice)
+    ruta = ruta_de_diseno(a, id_, clave, indice)
+    if ruta is None:
+        raise ErrorApi("archivo_inexistente", "Ese archivo no existe.", estado=404)
+    return FileResponse(
+        ruta,
+        media_type=MEDIO_DISENO[clave],
+        filename=_nombre_de_diseno_para_bajar(trabajo, clave, indice),
+    )
+
+
+@router.put("/{id_}/diseno/{indice}/imagen")
+def subir_imagen_de_diseno(
+    usuario: UsuarioRequerido,
+    almacen: AlmacenDep,
+    a: AjustesDep,
+    *,
+    id_: str,
+    indice: int,
+    archivo: Annotated[UploadFile, File()],
+) -> dict[str, object]:
+    """La foto cenital de UN diseño, rendida por el navegador.
+
+    Es el gemelo por indice de `subir_imagen`, con las mismas cuatro defensas en
+    el mismo orden. Lo que **no** hace es tocar `archivos` del trabajo: los
+    archivos por diseño no viven ahi (ver `Trabajo.disenos`), asi que no hay nada
+    que actualizar y el TTL no se toca por construccion en vez de a mano.
+    """
+    trabajo = _exigir_post(almacen, id_, usuario)
+    _exigir_diseno(trabajo, indice)
+    if trabajo.estado is not EstadoTrabajo.LISTO:
+        raise ErrorApi(
+            "trabajo_no_terminado",
+            "El trabajo todavia no esta listo.",
+            estado=409,
+            detalle={"estado": trabajo.estado.value},
+        )
+    destino = dir_de_trabajo(a, id_)
+    if not destino.is_dir():
+        raise ErrorApi("trabajo_inexistente", "No existe ese trabajo.", estado=404)
+
+    guardar_subida(
+        archivo.file,
+        destino,
+        permitidos=FORMATOS_VISTA,
+        limite_bytes=LIMITE_VISTA_BYTES,
+        destino_nombre=nombre_de_diseno(ClaveDiseno.JPG_VISTA, indice),
+    )
+    return {"indice": indice, "ok": True}
+
+
+@router.post("/{id_}/set")
+def componer_set(
+    id_: str, usuario: UsuarioRequerido, almacen: AlmacenDep, a: AjustesDep
+) -> dict[str, object]:
+    """Pega las fotos de todos los diseños en una sola imagen.
+
+    Se pide **despues** de que el navegador subio cada foto, y se compone del
+    lado del servidor a proposito: asi la grilla, la separacion y el fondo de los
+    huecos son cosas que la suite puede medir. Ver `cutter3d/lamina.py`.
+
+    Corre **en el proceso web** y no en un hijo, como F1: el costo real es la
+    lamina mas una celda viva a la vez —del orden de 13 MB— porque `Image.draft`
+    baja cada foto al tamaño de su celda al abrirla. Mandarlo a un proceso nuevo
+    costaria mas el `spawn` que la composicion.
+
+    Solo entran los diseños que **tienen** foto: si uno fallo al convertirse, el
+    set sale con los que si salieron y se declara cuantos entraron. Negarse a
+    armar el set por un diseño de veinticinco seria cambiar un problema chico por
+    uno grande.
+    """
+    trabajo = _exigir_post(almacen, id_, usuario)
+    if trabajo.estado is not EstadoTrabajo.LISTO:
+        raise ErrorApi(
+            "trabajo_no_terminado",
+            "El trabajo todavia no esta listo.",
+            estado=409,
+            detalle={"estado": trabajo.estado.value},
+        )
+
+    fotos = [
+        ruta
+        for indice in range(1, trabajo.disenos + 1)
+        if (ruta := ruta_de_diseno(a, id_, ClaveDiseno.JPG_VISTA, indice)) is not None
+    ]
+    if not fotos:
+        raise ErrorApi(
+            "sin_fotos",
+            "Todavia no hay ninguna foto para armar el set.",
+            estado=409,
+            detalle={"disenos": trabajo.disenos},
+        )
+
+    clave = ClaveArchivo.SET
+    try:
+        reporte = lamina.componer(fotos, dir_de_trabajo(a, id_) / NOMBRE_DE[clave])
+    except Cutter3DError as exc:
+        raise traducir(exc) from exc
+
+    # ⚠ El TTL no se refresca, por lo mismo que en `subir_imagen`: armar el set
+    # describe el trabajo, no es usarlo. Ver la nota larga de ahi.
+    visto_en = trabajo.actualizado_en
+    actualizado = almacen.actualizar(
+        id_, archivos={**trabajo.archivos, clave.value: NOMBRE_DE[clave]}
+    )
+    if actualizado is None:
+        raise ErrorApi("trabajo_inexistente", "No existe ese trabajo.", estado=404)
+    actualizado.actualizado_en = visto_en
+
+    return {
+        "celdas": reporte.celdas,
+        # El reparto entero y no solo "columnas x filas": con filas desparejas
+        # ese par no describe el armado — un set de 7 y uno de 9 dan los dos 3x3.
+        "distribucion": list(reporte.distribucion),
+        "tamano_px": list(reporte.tamano_px),
+        "trabajo": actualizado.como_json(),
+    }
+
+
+def _fotos_de_disenos(a: AjustesDep, trabajo: Trabajo) -> list[tuple[int, Path]]:
+    """Las fotos por diseño que estan en disco, con su indice. Vacia si no es post.
+
+    Se listan mirando el disco y no `trabajo.disenos` a secas porque un diseño
+    puede haber fallado, o su foto todavia no haberse subido: el ZIP lleva lo que
+    hay, y lo que no hay se nota al abrirlo.
+    """
+    if trabajo.tipo is not TipoTrabajo.POST:
+        return []
+    fotos: list[tuple[int, Path]] = []
+    for indice in range(1, trabajo.disenos + 1):
+        ruta = ruta_de_diseno(a, trabajo.id, ClaveDiseno.JPG_VISTA, indice)
+        if ruta is not None:
+            fotos.append((indice, ruta))
+    return fotos
+
+
+def _llenar_zip(
+    zip_: zipfile.ZipFile,
+    a: AjustesDep,
+    trabajo: Trabajo,
+    claves: list[ClaveArchivo],
+    por_diseno: list[tuple[int, Path]],
+) -> None:
+    """Mete en el ZIP las claves del trabajo y las fotos por diseño.
+
+    Un archivo declarado que ya no esta en disco **no es un 500**: el trabajo
+    pudo vencer entre el listado y esto. Se omite, y si al final no entro
+    ninguno, quien llama responde 404.
+    """
+    for clave in claves:
+        ruta = ruta_de(a, trabajo.id, clave)
+        if ruta is None:
+            continue
+        try:
+            zip_.write(
+                ruta,
+                nombre_de_descarga(trabajo.id, clave, trabajo.nombre_base),
+                compress_type=COMPRESION_DE.get(clave, zipfile.ZIP_DEFLATED),
+            )
+        except OSError:
+            log.warning("el archivo %s del trabajo %s no se pudo leer", clave.value, trabajo.id)
+
+    for indice, ruta in por_diseno:
+        try:
+            zip_.write(
+                ruta,
+                _nombre_de_diseno_para_bajar(trabajo, ClaveDiseno.JPG_VISTA, indice),
+                # Ya es un JPEG: comprimirlo otra vez cuesta CPU y no baja nada.
+                # Mismo criterio que `COMPRESION_DE`.
+                compress_type=zipfile.ZIP_STORED,
+            )
+        except OSError:
+            log.warning("la foto del diseño %d del trabajo %s no se leyo", indice, trabajo.id)

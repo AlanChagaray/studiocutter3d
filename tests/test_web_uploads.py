@@ -8,17 +8,29 @@ tamaño declarado.
 from __future__ import annotations
 
 import io
+import zipfile
 from pathlib import Path
 
 import pytest
+import trimesh
 from fastapi.testclient import TestClient
 from PIL import Image
 
 from app.almacen import AlmacenEnMemoria, TipoTrabajo
-from app.archivos import FORMATOS_CONVERSOR, Formato, detectar_formato, guardar_subida
+from app.archivos import (
+    EXTENSION,
+    FORMATOS_CONVERSOR,
+    FORMATOS_MALLA,
+    MAX_DISENOS,
+    Formato,
+    detectar_formato,
+    guardar_subida,
+)
 from app.config import Ajustes
 from app.errores import ErrorApi
+from app.routers.post import ROLES as ROLES_DEL_ROUTER
 from cutter3d.errors import ImagenInvalida
+from cutter3d.malla import ROLES as ROLES_DEL_MOTOR
 from cutter3d.raster import MAX_PIXELES, _abrir_raw, convertir_a_jpg
 from cutter3d.vector import a_svg
 
@@ -329,3 +341,192 @@ def test_un_tiff_comun_lo_abre_pillow_tras_el_rechazo_de_libraw(tmp_path: Path) 
     assert _abrir_raw(origen) is None, "LibRaw no deberia aceptar un TIFF comun"
     with Image.open(convertir_a_jpg(origen, tmp_path / "s.jpg")) as imagen:
         assert imagen.size == (50, 30)
+
+
+# ── F4: mallas ──────────────────────────────────────────────────────────────
+
+
+def _malla_3mf() -> bytes:
+    escena = trimesh.Scene()
+    escena.add_geometry(trimesh.creation.box(extents=(10.0, 10.0, 4.0)), geom_name="cortador")
+    return bytes(escena.export(file_type="3mf"))
+
+
+def _malla_stl() -> bytes:
+    return bytes(trimesh.creation.box(extents=(10.0, 10.0, 4.0)).export(file_type="stl"))
+
+
+def test_las_mallas_no_entran_al_conversor() -> None:
+    """⚠ `FORMATOS_CONVERSOR` era `frozenset(Formato)` y eso ya no puede ser.
+
+    Con el enum de puras imagenes funcionaba; desde que hay mallas, cada miembro
+    nuevo entraria solo al Convertidor y reventaria despues adentro de Pillow —
+    un 500 donde corresponde un 415. Este test es el que sostiene que la resta
+    de `FORMATOS_MALLA` siga ahi.
+    """
+    assert not (FORMATOS_CONVERSOR & FORMATOS_MALLA)
+    assert Formato.TRES_MF not in FORMATOS_CONVERSOR
+    assert Formato.STL not in FORMATOS_CONVERSOR
+
+
+def test_todo_formato_tiene_extension() -> None:
+    """`EXTENSION` es un dict TOTAL sin default: un miembro sin fila es un KeyError.
+
+    Explota recien adentro de `guardar_subida`, con el archivo ya a medio
+    escribir. Los tres dicts de `ClaveArchivo` ya tenian esta red; este no.
+    """
+    assert set(EXTENSION) == set(Formato)
+
+
+@pytest.mark.parametrize("nombre", ["p.3mf", "p.stl"])
+def test_post_acepta_mallas(sesion: TestClient, nombre: str) -> None:
+    contenido = _malla_3mf() if nombre.endswith(".3mf") else _malla_stl()
+    r = sesion.post("/api/post", files={"archivo": (nombre, contenido, "application/octet-stream")})
+    assert r.status_code == 200, r.text
+    assert r.json()["tipo"] == "post"
+
+
+@pytest.mark.parametrize(
+    ("nombre", "medio"),
+    [("d.svg", "image/svg+xml"), ("d.png", "image/png")],
+)
+def test_post_rechaza_lo_que_no_es_malla(
+    sesion: TestClient, png_minimo: bytes, nombre: str, medio: str
+) -> None:
+    contenido = SVG_MINIMO if nombre.endswith(".svg") else png_minimo
+    r = sesion.post("/api/post", files={"archivo": (nombre, contenido, medio)})
+    assert r.status_code == 415
+    assert r.json()["error"]["mensaje"].endswith("Se aceptan: 3mf, stl.")
+
+
+def test_post_rechaza_un_zip_que_no_es_3mf(sesion: TestClient) -> None:
+    """La firma de un 3MF es la de cualquier ZIP: docx, xlsx, jar y epub la comparten.
+
+    Lo que lo distingue vive en el central directory, al final del archivo, y la
+    deteccion por magic bytes solo ve los primeros 64 KB. Por eso el router
+    confirma la estructura ANTES de lanzar el proceso hijo — un docx se va con
+    un 422 inmediato en vez de consumir uno de los tres slots.
+    """
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as z:
+        z.writestr("word/document.xml", "<w:document/>")
+    r = sesion.post(
+        "/api/post", files={"archivo": ("t.docx", buffer.getvalue(), "application/octet-stream")}
+    )
+    assert r.status_code == 422
+    assert r.json()["error"]["codigo"] == "malla_ilegible"
+
+
+def test_el_stl_binario_se_detecta_antes_que_tga(sesion: TestClient) -> None:
+    """⚠ El orden de las ramas sin firma es la correccion misma.
+
+    Los 80 bytes de cabecera de un STL binario son libres y pueden satisfacer de
+    casualidad la heuristica de TGA, que solo mira tres campos. La condicion del
+    STL es una identidad aritmetica exacta sobre el tamaño del archivo, asi que
+    es mucho mas fuerte y tiene que evaluarse primero.
+    """
+    del sesion
+    stl = _malla_stl()
+    # Una cabecera que TGA aceptaria: [1] en {0,1}, [2] en {1,2,3,9,10,11}
+    # y [16] en {8,15,16,24,32}.
+    hostil = bytearray(stl)
+    hostil[1], hostil[2], hostil[16] = 1, 2, 24
+    assert detectar_formato(bytes(hostil), len(hostil)) is Formato.STL
+    # Y sin el tamaño no adivina: prefiere no afirmar nada.
+    assert detectar_formato(bytes(hostil)) is not Formato.STL
+
+
+def test_el_stl_ascii_se_detecta_despues_del_binario() -> None:
+    """Un STL binario puede empezar con `solid`: muchos programas escriben ahi
+    el nombre del solido. Si el ASCII fuera primero, ese archivo iria al parser
+    equivocado."""
+    ascii_stl = (
+        b"solid cubo\nfacet normal 0 0 1\nouter loop\n"
+        b"vertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid cubo\n"
+    )
+    assert detectar_formato(ascii_stl, len(ascii_stl)) is Formato.STL
+
+    binario_que_dice_solid = bytearray(_malla_stl())
+    binario_que_dice_solid[0:5] = b"solid"
+    assert (
+        detectar_formato(bytes(binario_que_dice_solid), len(binario_que_dice_solid)) is Formato.STL
+    )
+
+
+# ── F4 con varios diseños ───────────────────────────────────────────────────
+
+
+def _lote(cuantos: int) -> list[tuple[str, tuple[str, bytes, str]]]:
+    return [
+        ("archivo", (f"d{i}.3mf", _malla_3mf(), "application/octet-stream")) for i in range(cuantos)
+    ]
+
+
+def test_post_agrupa_un_cortador_con_su_marcador(sesion: TestClient) -> None:
+    """Dos archivos, UN diseño. Es lo que evita fotografiar media pieza."""
+    r = sesion.post(
+        "/api/post",
+        files=[
+            ("archivo", ("k_cortador.stl", _malla_stl(), "application/octet-stream")),
+            ("archivo", ("k_marcador.stl", _malla_stl(), "application/octet-stream")),
+        ],
+        data={"agrupacion": "0:cortador,1:marcador"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["disenos"] == 1, "un cortador y su marcador son un solo diseño"
+
+
+def test_post_sin_agrupacion_hace_un_diseno_por_archivo(sesion: TestClient) -> None:
+    """El default honesto: el servidor no ve nombres, no puede emparejar nada."""
+    r = sesion.post("/api/post", files=_lote(3))
+    assert r.status_code == 200, r.text
+    assert r.json()["disenos"] == 3
+
+
+@pytest.mark.parametrize(
+    ("caso", "agrupacion"),
+    [
+        ("dos cortadores", "0:cortador,1:cortador"),
+        ("un archivo en dos grupos", "0:unico;0:unico"),
+        ("archivo sin asignar", "0:unico"),
+        ("indice que no llego", "0:unico;9:unico"),
+        ("rol inventado", "0:pieza;1:unico"),
+        ("tres en un diseño", "0:unico,1:unico,0:unico"),
+        ("forma rota", "0-unico"),
+        ("vacia", ";"),
+    ],
+)
+def test_post_rechaza_una_agrupacion_invalida(
+    sesion: TestClient, caso: str, agrupacion: str
+) -> None:
+    """Cada regla tiene su motivo en `_parsear`; lo que importa es que ninguna
+    pase en silencio y arme un diseño con las piezas de otro."""
+    r = sesion.post("/api/post", files=_lote(2), data={"agrupacion": agrupacion})
+    assert r.status_code == 422, f"{caso}: {r.status_code}"
+    assert r.json()["error"]["codigo"] in ("agrupacion_invalida", "peticion_invalida"), caso
+
+
+def test_post_rechaza_mas_de_veinticinco_disenos(sesion: TestClient) -> None:
+    r = sesion.post(
+        "/api/post",
+        files=_lote(MAX_DISENOS + 1),
+        data={"agrupacion": ";".join(f"{i}:unico" for i in range(MAX_DISENOS + 1))},
+    )
+    assert r.status_code == 422
+    assert r.json()["error"]["codigo"] == "demasiados_disenos"
+
+
+def test_los_roles_del_router_y_del_motor_son_los_mismos() -> None:
+    """`routers/post.py` repite la lista para no importar `malla` —y con el,
+    trimesh— en el proceso web. Si se separan, el router acepta un rol que el
+    motor no entiende y el diseño falla recien adentro del proceso hijo."""
+    assert set(ROLES_DEL_ROUTER) == set(ROLES_DEL_MOTOR)
+
+
+def test_el_tope_de_disenos_del_front_es_el_del_servidor(sesion: TestClient) -> None:
+    """El JS avisa antes de subir 50 MB para que el servidor conteste 422.
+
+    Es un espejo, no una segunda verdad — pero si se desincroniza, el front deja
+    pasar un lote que el servidor rechaza, o corta uno que aceptaria."""
+    js = sesion.get("/static/js/app.js").text
+    assert f"const MAX_DISENOS = {MAX_DISENOS};" in js

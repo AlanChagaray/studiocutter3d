@@ -279,7 +279,7 @@ document.addEventListener('cortante:exportar', (e) => {
     avisarImagen(false, 'este navegador no puede generar la imagen', 'exportar');
     return;
   }
-  exportarFoto(e.detail.id);
+  exportarFoto(e.detail.destino);
 });
 
 /** Centra el objeto en X/Z y lo apoya en y = 0. Devuelve su tamaño. */
@@ -803,13 +803,24 @@ function iniciarImagen(host) {
    *
    * El costo es un render de 2048 px y una subida por descarga. Se paga: es un
    * clic explicito del usuario, no una tecla de la paleta.
+   *
+   * ⚠ **El destino lo manda quien pide la foto, no lo arma este modulo.** Antes
+   * se recibia el id del trabajo y la URL se escribia aca; con F4 hay dos
+   * destinos posibles —`/imagen` para un cortante y `/diseno/<n>/imagen` para
+   * cada diseño de un post— y elegir entre ellos desde el visor seria meterle
+   * al visor una idea de que pantalla lo llamo. El visor rinde; quien pidio la
+   * foto sabe donde va.
    */
-  async function subir(id) {
+  async function subir(destino) {
     // Contesta hasta para decir que no puede: es la unica salida de esta
     // funcion que antes se iba muda, y quien la llama espera una respuesta
     // sin la cual se queda esperando para siempre.
     if (exportando) {
       avisarImagen(false, 'ya hay una exportacion en curso', 'exportar');
+      return;
+    }
+    if (!destino) {
+      avisarImagen(false, 'no se sabe donde subir la imagen', 'exportar');
       return;
     }
     if (!modelo || !listo) {
@@ -829,10 +840,7 @@ function iniciarImagen(host) {
       // valor no toca ninguna ruta. Va uno fijo justamente para dejar claro
       // que el cliente no nombra nada.
       cuerpo.append('archivo', blob, 'vista.jpg');
-      const r = await fetch(`/api/trabajos/${encodeURIComponent(id)}/imagen`, {
-        method: 'PUT',
-        body: cuerpo,
-      });
+      const r = await fetch(destino, { method: 'PUT', body: cuerpo });
       if (!r.ok) {
         avisarImagen(false, 'el servidor rechazo la imagen', 'exportar');
         return;

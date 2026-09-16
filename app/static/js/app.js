@@ -127,6 +127,12 @@ const MS_ESPERA_FOTO = 30000;
 // lugares distintos, y un typo en uno solo rompe la entrada en silencio.
 const CLAVE_FOTO = 'jpg_vista';
 
+// El mismo tope que `app.archivos.MAX_DISENOS`. Se repite aca —y hay un test
+// que lo exige— porque el front tiene que poder avisar ANTES de subir 50 MB
+// para que el servidor conteste 422. La verdad sigue siendo la del servidor:
+// esto solo evita el viaje.
+const MAX_DISENOS = 25;
+
 function mostrar(el, visible = true) {
   if (el) el.classList.toggle('oculto', !visible);
 }
@@ -169,8 +175,10 @@ async function comoJson(respuesta) {
   return cuerpo;
 }
 
-async function pedirJson(url) {
-  return comoJson(await fetch(url, { headers: { Accept: 'application/json' } }));
+async function pedirJson(url, opciones = {}) {
+  return comoJson(
+    await fetch(url, { headers: { Accept: 'application/json' }, ...opciones })
+  );
 }
 
 /** POST multipart con progreso real de subida. `fetch` no lo expone. */
@@ -618,6 +626,396 @@ function iniciarLineas() {
 
 /* ── F3: crear cortante ──────────────────────────────────────────────────── */
 
+/* ── Vista previa 3D + foto cenital, compartida por las pantallas ────────── */
+
+/**
+ * Todo lo que rodea al visor: las dos vistas, las paletas y la foto descargable.
+ *
+ * **Vive a nivel de modulo y no adentro de una pantalla porque tiene dos.** El
+ * cortante la usa despues de generar la geometria; el post, despues de leer un
+ * `.3mf` o un `.stl` que ya existia. Que las dos fotos salgan iguales no es algo
+ * que se pueda sostener con dos copias parecidas de estas 200 lineas: es el
+ * mismo principio que ya sostiene `preview3d.js`, que tampoco tiene una version
+ * por pantalla.
+ *
+ * `preview3d.js` es modulo ES y este archivo es script clasico: **no pueden
+ * importarse**. El unico canal es el bus de `CustomEvent` sobre `document`, y
+ * los nombres de los eventos siguen siendo `cortante:*` en las dos pantallas.
+ * No se renombraron a proposito: son un contrato con el visor y con los tests,
+ * y cambiarlos costaria tocar `preview3d.js` sin ganar nada. Aca "cortante"
+ * nombra a la pieza que se esta mirando, no a la pantalla que la pidio.
+ *
+ * Los ganchos del DOM son los mismos ids en las dos pantillas (`#visor`,
+ * `#lienzo`, `#paleta`, `#paleta-pieza`, `#paleta-fondo`, `#pista-imagen`,
+ * `#botones-descarga`), tambien por contrato: `preview3d.js` los resuelve una
+ * sola vez a nivel de modulo y no tiene namespace por pantalla.
+ *
+ * @param {object} opciones
+ * @param {() => string|null} opciones.obtenerTrabajoId  El trabajo vigente. Es
+ *   una funcion y no un valor porque cambia con cada generacion, y la foto se
+ *   sube contra el trabajo que hay **al momento de pedirla**.
+ * @param {string} [opciones.vistaInicial]  `'imagen'` o `'3d'` (default).
+ * @param {(vista: string) => void} [opciones.alCambiarVista]  Para que la
+ *   pantalla persista la eleccion en su propio `sessionStorage`.
+ * @param {(id: string) => string} [opciones.urlFoto]  Donde va la foto. Cortante
+ *   la sube al trabajo; post la sube al diseño que esta mirando, asi que pasa la
+ *   suya. El visor no elige: rinde y manda adonde le digan.
+ * @param {boolean} [opciones.subirAlDescargar]  Si el clic en la descarga tiene
+ *   que rendir y subir la foto ANTES de navegar. En cortante si —la foto depende
+ *   de los colores, que se pueden cambiar hasta el ultimo segundo—. En post no:
+ *   las fotos ya se subieron todas al armar el lote, y volver a rendir al bajar
+ *   subiria la del diseño que quedo en el visor encima de la del que se pidio.
+ */
+function iniciarVistaPrevia3D({
+  obtenerTrabajoId,
+  vistaInicial,
+  alCambiarVista,
+  urlFoto = (id) => `/api/trabajos/${encodeURIComponent(id)}/imagen`,
+  subirAlDescargar = true,
+}) {
+  // El default es `3d` y se valida contra la lista: un valor raro en
+  // `sessionStorage` no puede dejar la pantalla sin ninguna vista visible.
+  let vista = vistaInicial === 'imagen' ? 'imagen' : '3d';
+  // Si la vista imagen puede producir la foto. Lo dice `cortante:imagen`,
+  // que llega tanto cuando carga el modelo como cuando no pudo.
+  let hayFoto = false;
+  let exportando = false;
+
+  // El visor solo cambia el texto de la pista. Que no haya podido pintar no
+  // deja a nadie sin poder bajar un archivo que esta perfecto.
+  document.addEventListener('cortante:preview', (e) =>
+    texto($('#pista-descargas'), e.detail.ok ? PISTA_CON_PREVIEW : PISTA_SIN_PREVIEW)
+  );
+
+  /* ── Exportar la foto: pedirsela al visor y recien despues bajar ────────── */
+
+  /**
+   * El handshake con `preview3d.js`, que es modulo y no se puede importar.
+   *
+   * El unico canal es el bus de eventos: se emite `cortante:exportar` y se
+   * espera UN `cortante:imagen`. La promesa se resuelve con el resultado, y no
+   * hace falta timeout porque del otro lado el listener esta registrado
+   * siempre — hasta sin WebGL contesta, con `ok: false`.
+   */
+  function pedirFoto(destino) {
+    return new Promise((resolver) => {
+      // ⚠ El `{once}` se registra ANTES del despacho, y no es estilo: las
+      // respuestas de "no hay vista" y "todavia no hay modelo" salen
+      // **sincronicamente** adentro del `dispatchEvent`. Al reves, el handshake
+      // se rompe entero y en silencio.
+      let listo = false;
+      const contestar = (detalle) => {
+        if (listo) return;
+        listo = true;
+        document.removeEventListener('cortante:imagen', alLlegar);
+        resolver(detalle);
+      };
+      // ⚠ Solo la respuesta a ESTA exportacion, no cualquier `cortante:imagen`.
+      // El mismo evento lo emite tambien la carga del modelo, asi que un `.glb`
+      // que termine de cargar entre el clic y la respuesta del PUT resolvia
+      // esta promesa antes de tiempo: la descarga arrancaba con la subida
+      // todavia en vuelo y el ZIP se llevaba la foto vieja — justo lo que el
+      // `await` de aca existe para impedir.
+      const alLlegar = (e) => {
+        if (e.detail.motivo === 'exportar') contestar(e.detail);
+      };
+      document.addEventListener('cortante:imagen', alLlegar);
+      // El ZIP **no necesita al visor**: los archivos ya estan enteros en el
+      // servidor. Sin este tope, un `preview3d.js` que no llego a evaluarse —o
+      // un `fetch` que se cuelga sin rechazar— dejaba esta promesa sin asentar
+      // para siempre, y con ella el boton deshabilitado y `exportando` clavado
+      // en true. O sea: el visor roto se llevaba puesta una descarga que no
+      // dependia de el. Que la promesa SIEMPRE asiente es lo que lo evita.
+      setTimeout(
+        () => contestar({ ok: false, error: 'la vista previa no respondio a tiempo' }),
+        MS_ESPERA_FOTO
+      );
+      document.dispatchEvent(new CustomEvent('cortante:exportar', { detail: { destino } }));
+    });
+  }
+
+  /**
+   * Sube la foto fresca y despues navega. **Ese orden es todo el punto.**
+   *
+   * Lo que se baja tiene que ser lo que se esta viendo: la foto depende del
+   * color de la pieza y del fondo, que se pueden cambiar en cualquier momento.
+   * Por eso el link no navega solo — se intercepta, se rinde y se sube, y
+   * recien ahi se pide el archivo al servidor.
+   */
+  async function exportarYBajar(url, seguirSinFoto) {
+    if (exportando) return;
+    if (!obtenerTrabajoId()) {
+      // Puede pasar: si `retomarTrabajo` falla despues de haber pintado el
+      // panel, el boton queda visible con el trabajo ya olvidado. Un boton que
+      // no hace nada ni dice nada es el peor de los dos mundos.
+      texto($('#pista-descargas'), 'Se perdio la referencia al trabajo: volve a generarlo.');
+      return;
+    }
+    exportando = true;
+    const boton = $('#bajar-todo');
+    if (boton) boton.disabled = true;
+    try {
+      const resultado = await pedirFoto(urlFoto(obtenerTrabajoId()));
+      if (!resultado.ok) {
+        // Degradacion declarada, nunca silenciosa — y con el motivo REAL.
+        //
+        // Habia un texto fijo que decia "este navegador no pudo generarla", y
+        // era falso en tres de los cinco motivos posibles: que el modelo
+        // todavia se este cargando, que el servidor rechace la foto o que se
+        // haya agotado la espera no tienen nada que ver con el navegador.
+        // Decir mal por que fallo algo es peor que no decirlo: manda a buscar
+        // el problema al lugar equivocado.
+        if (!seguirSinFoto) {
+          texto($('#pista-descargas'), `No se pudo preparar la imagen: ${resultado.error}.`);
+          return;
+        }
+        texto($('#pista-descargas'), `El ZIP va sin la imagen: ${resultado.error}.`);
+      } else {
+        texto($('#pista-descargas'), PISTA_LISTA);
+      }
+      window.location.assign(url);
+    } finally {
+      exportando = false;
+      if (boton) boton.disabled = false;
+    }
+  }
+
+  document.addEventListener('click', (e) => {
+    if (!subirAlDescargar) return;
+    const foto = e.target.closest(`#botones-descarga a[data-clave="${CLAVE_FOTO}"]`);
+    if (foto && foto.href) {
+      e.preventDefault();
+      // Sin foto no hay nada que bajar: el destino ES la foto.
+      exportarYBajar(foto.href, false);
+      return;
+    }
+    if (e.target.closest('#bajar-todo')) {
+      e.preventDefault();
+      // El ZIP baja igual: los otros archivos estan enteros en el servidor y
+      // no dependen del visor. Lo que falte, se dice.
+      const id = obtenerTrabajoId();
+      if (id) exportarYBajar(urlZip(id), true);
+    }
+  });
+
+  // Lo que decide si la entrada del JPG se ofrece: **solo** el aviso de carga.
+  //
+  // Un fallo de EXPORTACION no dice nada sobre si la foto se puede producir —
+  // "ya hay una exportacion en curso" o un rechazo del servidor son
+  // transitorios—, y escondiendo la entrada ante eso quedaba un boton que
+  // desaparece al tocarlo y solo vuelve regenerando el cortante.
+  document.addEventListener('cortante:imagen', (e) => {
+    if (e.detail.motivo !== 'carga') return;
+    hayFoto = e.detail.ok;
+    if (!subirAlDescargar) return;
+    const id = obtenerTrabajoId();
+    const a = $(`#botones-descarga a[data-clave="${CLAVE_FOTO}"]`);
+    if (!a) return;
+    if (hayFoto && id) a.href = urlArchivo(id, CLAVE_FOTO);
+    else a.removeAttribute('href');
+    mostrar(a, hayFoto && Boolean(id));
+  });
+
+  // El color de la PIEZA es uno para las dos vistas y se ofrece en las dos
+  // (`#paleta` flota sobre el visor 3D, `#paleta-pieza` va en la barra de la
+  // imagen). El del FONDO existe solo en la imagen.
+  //
+  // ⚠ Las dos paletas arrancan en la MISMA muestra (blanco), y eso antes no se
+  // podia: con el estudio de foto viejo la pieza casi no proyectaba sombra
+  // sobre el fondo y blanco sobre blanco no se distinguia, asi que el fondo
+  // arrancaba en la segunda (`indiceDefecto: 1`). Con la luz del visor la
+  // pieza tiene sombra propia y se lee sobre blanco — y blanco es lo que se
+  // pidio para el fondo de la foto.
+  //
+  // Ninguna de las tres declara cual muestra arranca elegida, y eso es el
+  // arreglo: el default lo decide **solo** el `activo` del macro, del lado del
+  // template. Hasta este ciclo el fondo lo declaraba tambien aca y las dos
+  // verdades se desincronizaron — el HTML servido marcaba blanco y la pantalla
+  // mostraba gris, porque `aplicar()` reescribe `aria-pressed` al arrancar y el
+  // JS siempre gana. El detalle completo esta en `iniciarPaleta`.
+  iniciarPaleta({
+    selectores: ['#paleta', '#paleta-pieza'],
+    clave: 'color-visor',
+    evento: 'cortante:color',
+  });
+  iniciarPaleta({
+    selectores: ['#paleta-fondo'],
+    clave: 'color-fondo',
+    evento: 'cortante:fondo',
+  });
+
+  /**
+   * Las dos vistas previas de la misma geometria.
+   *
+   * `3d` es el visor de siempre y no cambia en nada; `imagen` es la foto
+   * cenital descargable. Lo unico que hace esta funcion es mostrar una y
+   * esconder la otra: quien las dibuja es `preview3d.js`, que tiene el
+   * contexto de WebGL.
+   *
+   * El aviso `cortante:vista` no es decorativo. La vista imagen **no tiene
+   * loop de render** —es una toma fija, se rinde solo cuando algo cambia—, asi
+   * que mientras estuvo escondida su canvas midio 0 y no pudo pintarse. El
+   * aviso es lo que la despierta al volver.
+   */
+  function iniciarVistas() {
+    const botones = $$('.segmentado--vistas button[data-vista]');
+    if (!botones.length) return;
+
+    const aplicar = (elegida) => {
+      vista = elegida;
+      botones.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.vista === elegida)));
+      mostrar($('#visor'), elegida === '3d');
+      mostrar($('#vista-imagen'), elegida === 'imagen');
+      mostrar($('#pista-imagen'), elegida === 'imagen');
+      document.dispatchEvent(new CustomEvent('cortante:vista', { detail: { vista: elegida } }));
+    };
+
+    botones.forEach((b) =>
+      b.addEventListener('click', () => {
+        aplicar(b.dataset.vista);
+        if (alCambiarVista) alCambiarVista(vista);
+      })
+    );
+    aplicar(vista);
+  }
+
+  iniciarVistas();
+
+  return {
+    /** Si la foto se puede producir ahora mismo. Lo lee `pintarResultado`. */
+    get hayFoto() {
+      return hayFoto;
+    },
+
+    /** La vista elegida, para que la pantalla la persista. */
+    get vista() {
+      return vista;
+    },
+
+    /**
+     * ⚠ Se llama ANTES de pintar un resultado nuevo, y no es opcional.
+     *
+     * `hayFoto` es de la generacion ANTERIOR hasta que el `.glb` nuevo termine
+     * de cargar, y dejarlo en `true` abre una ventana de segundos en la que la
+     * entrada del JPG ya esta visible y apuntando al trabajo nuevo mientras el
+     * visor todavia tiene la pieza vieja. Un clic ahi sube la foto de la pieza
+     * anterior como `jpg_vista` del trabajo nuevo — el unico punto de toda la
+     * cadena donde lo que se baja NO seria lo que se esta viendo, que es la
+     * invariante que sostiene el diseño entero de estas pantallas. La vuelve a
+     * subir el aviso `cortante:imagen` de motivo `carga`.
+     */
+    reiniciar() {
+      hayFoto = false;
+    },
+
+    /** Le avisa al visor que hay un `.glb` nuevo para cargar. */
+    anunciar(url) {
+      document.dispatchEvent(new CustomEvent('cortante:listo', { detail: { url } }));
+    },
+
+    /**
+     * Anuncia un `.glb` y **espera** a que el visor lo tenga cargado.
+     *
+     * Es `anunciar` mas la espera, y existe para el lote de post: las fotos se
+     * sacan de a una, y sacar la segunda antes de que el segundo modelo este
+     * cargado fotografiaria el primero. `preview3d.js` contesta siempre —hasta
+     * sin WebGL, con `ok:false`— asi que esta promesa siempre asienta.
+     */
+    cargar(url) {
+      return new Promise((resolver) => {
+        let listo = false;
+        const contestar = (ok) => {
+          if (listo) return;
+          listo = true;
+          document.removeEventListener('cortante:imagen', alLlegar);
+          resolver(ok);
+        };
+        const alLlegar = (e) => {
+          if (e.detail.motivo === 'carga') contestar(Boolean(e.detail.ok));
+        };
+        document.addEventListener('cortante:imagen', alLlegar);
+        setTimeout(() => contestar(false), MS_ESPERA_FOTO);
+        // El despacho va directo y no por `this.anunciar`: dentro de un objeto
+        // literal `this` es el objeto devuelto, asi que desestructurar
+        // (`const {cargar} = previa`) lo dejaria en undefined. Un metodo que
+        // solo funciona si nadie lo saca de su objeto es una trampa puesta.
+        document.dispatchEvent(new CustomEvent('cortante:listo', { detail: { url } }));
+      });
+    },
+
+    /** Rinde la foto de lo que hay en el visor y la sube a `destino`. */
+    exportar(destino) {
+      return pedirFoto(destino);
+    },
+  };
+}
+
+/**
+ * Una paleta de color de la vista previa.
+ *
+ * Cambia lo que se ve en pantalla y nada mas: el `.3mf` y el `.glb` salen
+ * con los materiales del motor, y al imprimir el color lo pone el filamento.
+ * Por eso no reactiva el boton de generar ni se manda al servidor. Se
+ * recuerda en `localStorage`, igual que el tema.
+ *
+ * La lista de colores la dibuja el template desde `COLORES` del router: aca
+ * no hay ningun codigo de color escrito, solo el que trae cada boton. Las dos
+ * pantallas con visor reciben la MISMA tupla, importada y no copiada.
+ *
+ * **Recibe VARIOS contenedores y sincroniza por valor, no por elemento.** El
+ * color de la pieza se ofrece en dos lugares —la paleta que flota sobre el
+ * visor 3D y la de la barra de la vista imagen— y es un solo valor: apretar
+ * una muestra tiene que marcar la del mismo color en las dos. Comparar por
+ * `dataset.color` en vez de por identidad del boton es todo lo que hace
+ * falta para eso, y es lo que evita tener que mantener dos paletas en
+ * sincronia a mano.
+ */
+function iniciarPaleta({ selectores, clave, evento }) {
+  const muestras = selectores.flatMap((sel) => $$(`${sel} .paleta__color`));
+  if (!muestras.length) return;
+
+  let guardado = null;
+  try {
+    guardado = localStorage.getItem(clave);
+  } catch (_) {
+    /* sin localStorage se arranca con el default, que lo marca el template */
+  }
+
+  const aplicar = (color, recordar) => {
+    muestras.forEach((o) => o.setAttribute('aria-pressed', String(o.dataset.color === color)));
+    // `sinPiso` viaja junto al color y NO se deduce del hex: la muestra lo
+    // trae del router (`COLORES_FONDO`), y leerlo del DOM es lo que evita
+    // que el front tenga su propia idea de cual fondo no lleva piso. En las
+    // paletas de la pieza ninguna muestra lo declara y siempre sale `false`.
+    const elegida = muestras.find((o) => o.dataset.color === color);
+    const sinPiso = Boolean(elegida) && elegida.dataset.sinPiso === '1';
+    document.dispatchEvent(new CustomEvent(evento, { detail: { color, sinPiso } }));
+    if (!recordar) return;
+    try {
+      localStorage.setItem(clave, color);
+    } catch (_) {
+      /* sin persistencia: el color vale para esta pagina igual */
+    }
+  };
+
+  muestras.forEach((b) => b.addEventListener('click', () => aplicar(b.dataset.color, true)));
+
+  // Un color guardado que ya no este en `COLORES` se descarta: la paleta del
+  // servidor manda, y si cambio la lista el valor viejo no existe mas.
+  //
+  // Sin nada guardado se aplica la PRIMERA muestra, que es la que el macro
+  // `paleta` marca por default. Antes esto era un parametro
+  // (`indiceDefecto`) para que el fondo pudiera arrancar en la segunda, y
+  // eso creaba dos fuentes de verdad para el mismo dato: el `activo` del
+  // template y el indice de aca. Cuando este ciclo movio el del template y
+  // no el de aca, el HTML servido marcaba blanco y la pantalla mostraba
+  // gris — y ningun test lo vio, porque ninguno ejecuta JS. Con un solo
+  // lugar donde se declara, esa desincronizacion no se puede volver a dar.
+  const disponibles = muestras.map((b) => b.dataset.color);
+  const inicial = disponibles.includes(guardado) ? guardado : disponibles[0];
+  aplicar(inicial, false);
+}
+
 function iniciarCortante() {
   const estado = $('#estado');
   const generar = $('#generar');
@@ -631,13 +1029,9 @@ function iniciarCortante() {
   let firmaGenerada = null;
   let origen = new URLSearchParams(location.search).get('origen') || recordado.origen || null;
   let trabajoId = recordado.trabajo || null;
-  // El default es `3d` y se valida contra la lista: un valor raro en
-  // `sessionStorage` no puede dejar la pantalla sin ninguna vista visible.
+  // La vista elegida la administra `iniciarVistaPrevia3D`; aca se guarda solo
+  // para `recordar()`, que persiste el estado de ESTA pantalla.
   let vista = recordado.vista === 'imagen' ? 'imagen' : '3d';
-  // Si la vista imagen puede producir la foto. Lo dice `cortante:imagen`,
-  // que llega tanto cuando carga el modelo como cuando no pudo.
-  let hayFoto = false;
-  let exportando = false;
 
   const entradas = () => $$('.parametros .campo[data-campo] input');
 
@@ -793,34 +1187,17 @@ function iniciarCortante() {
     }
   }
 
-  // El color de la PIEZA es uno para las dos vistas y se ofrece en las dos
-  // (`#paleta` flota sobre el visor 3D, `#paleta-pieza` va en la barra de la
-  // imagen). El del FONDO existe solo en la imagen.
-  //
-  // ⚠ Las dos paletas arrancan en la MISMA muestra (blanco), y eso antes no se
-  // podia: con el estudio de foto viejo la pieza casi no proyectaba sombra
-  // sobre el fondo y blanco sobre blanco no se distinguia, asi que el fondo
-  // arrancaba en la segunda (`indiceDefecto: 1`). Con la luz del visor la
-  // pieza tiene sombra propia y se lee sobre blanco — y blanco es lo que se
-  // pidio para el fondo de la foto.
-  //
-  // Ninguna de las tres declara cual muestra arranca elegida, y eso es el
-  // arreglo: el default lo decide **solo** el `activo` del macro, del lado del
-  // template. Hasta este ciclo el fondo lo declaraba tambien aca y las dos
-  // verdades se desincronizaron — el HTML servido marcaba blanco y la pantalla
-  // mostraba gris, porque `aplicar()` reescribe `aria-pressed` al arrancar y el
-  // JS siempre gana. El detalle completo esta en `iniciarPaleta`.
-  iniciarPaleta({
-    selectores: ['#paleta', '#paleta-pieza'],
-    clave: 'color-visor',
-    evento: 'cortante:color',
+
+  // Las paletas, las dos vistas y toda la coreografia de la foto viven en el
+  // modulo compartido: esta pantalla y la de post tienen que comportarse igual.
+  const previa = iniciarVistaPrevia3D({
+    obtenerTrabajoId: () => trabajoId,
+    vistaInicial: vista,
+    alCambiarVista: (elegida) => {
+      vista = elegida;
+      recordar();
+    },
   });
-  iniciarPaleta({
-    selectores: ['#paleta-fondo'],
-    clave: 'color-fondo',
-    evento: 'cortante:fondo',
-  });
-  iniciarVistas();
 
   generar.addEventListener('click', async () => {
     limpiarErroresDeCampo();
@@ -893,15 +1270,8 @@ function iniciarCortante() {
     mostrar(estado, false);
     texto($('#pista-visor'), 'geometria real del archivo que vas a descargar');
 
-    // ⚠ Se baja ACA, antes de pintar. `hayFoto` es de la generacion ANTERIOR
-    // hasta que el `.glb` nuevo termine de cargar, y dejarlo en `true` abria
-    // una ventana de segundos en la que la entrada del JPG ya estaba visible y
-    // apuntando al trabajo nuevo mientras el visor todavia tenia la pieza
-    // vieja. Un clic ahi subia la foto del cortante anterior como `jpg_vista`
-    // del trabajo nuevo — el unico punto de toda la cadena donde lo que se baja
-    // NO seria lo que se esta viendo, que es la invariante que sostiene todo
-    // el diseño de esta pantalla. La vuelve a subir `cortante:imagen`.
-    hayFoto = false;
+    // ⚠ Antes de pintar, no despues: ver el docstring de `reiniciar`.
+    previa.reiniciar();
 
     $$('#botones-descarga a[data-clave]').forEach((a) => {
       // La foto es el unico archivo que TODAVIA no esta en el servidor cuando
@@ -909,7 +1279,9 @@ function iniciarCortante() {
       // que su entrada no se decide por `trabajo.archivos` sino por si la
       // vista imagen puede producirla — y eso lo dice `cortante:imagen`.
       const disponible =
-        a.dataset.clave === CLAVE_FOTO ? hayFoto : trabajo.archivos.includes(a.dataset.clave);
+        a.dataset.clave === CLAVE_FOTO
+          ? previa.hayFoto
+          : trabajo.archivos.includes(a.dataset.clave);
       // El `href` se quita cuando el archivo NO esta: si la generacion anterior
       // dejo un marcador y esta no, el enlace viejo apuntaria a otro trabajo.
       if (disponible) a.href = urlArchivo(trabajo.id, a.dataset.clave);
@@ -921,242 +1293,376 @@ function iniciarCortante() {
     mostrar($('#bajar-todo'), true);
 
     if (trabajo.archivos.includes('glb')) {
-      document.dispatchEvent(
-        new CustomEvent('cortante:listo', { detail: { url: urlArchivo(trabajo.id, 'glb') } })
-      );
+      previa.anunciar(urlArchivo(trabajo.id, 'glb'));
     }
     pintarReporte(trabajo.reporte);
   }
+}
 
-  // El visor solo cambia el texto de la pista. Que no haya podido pintar no
-  // deja a nadie sin poder bajar un archivo que esta perfecto.
-  document.addEventListener('cortante:preview', (e) =>
-    texto($('#pista-descargas'), e.detail.ok ? PISTA_CON_PREVIEW : PISTA_SIN_PREVIEW)
+/* ── F4: las fotos de cortantes que ya existen ───────────────────────────── */
+
+/**
+ * De que es cada archivo, deducido de como lo nombro el motor al exportarlo.
+ *
+ * `export.py` escribe `<base>_cortador.stl` y `<base>_marcador.stl`, asi que el
+ * sufijo es la unica pista de que dos archivos son **un solo diseño**. Se acepta
+ * tambien el guion medio porque los sistemas de archivos y las descargas del
+ * navegador lo meten solos al desduplicar.
+ *
+ * ⚠ **Esto corre en el navegador y no en el servidor, y no es un detalle.** El
+ * servidor no mira ni un nombre de archivo del cliente para decidir nada (ver
+ * `app/archivos.py`): lo que le llega es una lista de enteros y de roles, ya
+ * resuelta. Aca es seguro porque un error de emparejado no es un problema de
+ * seguridad sino de comodidad, y ademas se puede corregir a mano.
+ */
+const ROL_POR_SUFIJO = [
+  [/[_-]cortador$/i, 'cortador'],
+  [/[_-]marcador$/i, 'marcador'],
+];
+
+/** `kitty_cortador.stl` -> `{ base: 'kitty', rol: 'cortador' }`. */
+function leerNombre(nombre) {
+  const stem = String(nombre || '').replace(/\.[^.]+$/, '');
+  for (const [patron, rol] of ROL_POR_SUFIJO) {
+    if (patron.test(stem)) return { base: stem.replace(patron, ''), rol };
+  }
+  return { base: stem, rol: 'unico' };
+}
+
+/**
+ * Agrupa los archivos en diseños. El cortador y su marcador van juntos.
+ *
+ * Empareja por base **y** por rol complementario: dos cortadores de la misma
+ * base no son un diseño, son dos corridas del mismo dibujo. Lo que no encuentra
+ * pareja queda como diseño de un archivo, que es el caso del `.3mf` combinado.
+ */
+function agruparArchivos(archivos) {
+  const leidos = archivos.map((a, i) => ({ i, archivo: a, ...leerNombre(a.name) }));
+  const disenos = [];
+  const usados = new Set();
+
+  leidos.forEach((uno) => {
+    if (usados.has(uno.i) || uno.rol === 'unico') return;
+    const buscado = uno.rol === 'cortador' ? 'marcador' : 'cortador';
+    const par = leidos.find(
+      (otro) => !usados.has(otro.i) && otro.i !== uno.i && otro.base === uno.base && otro.rol === buscado
+    );
+    if (!par) return;
+    usados.add(uno.i);
+    usados.add(par.i);
+    // El cortador primero, siempre: que el orden de la lista no dependa del
+    // orden en que el sistema de archivos devolvio los nombres.
+    const [cortador, marcador] = uno.rol === 'cortador' ? [uno, par] : [par, uno];
+    disenos.push({ base: uno.base, partes: [cortador, marcador] });
+  });
+
+  leidos.forEach((uno) => {
+    if (usados.has(uno.i)) return;
+    usados.add(uno.i);
+    disenos.push({ base: uno.base, partes: [uno] });
+  });
+
+  // En el orden en que los eligio el usuario: el set se arma con este orden y
+  // reordenarlo por el emparejado seria mover piezas que nadie movio.
+  disenos.sort((a, b) => Math.min(...a.partes.map((p) => p.i)) - Math.min(...b.partes.map((p) => p.i)));
+  return disenos;
+}
+
+/**
+ * Sube hasta 25 diseños y les saca a todos la MISMA foto que la pantalla de
+ * cortante, mas una lamina con el set entero.
+ *
+ * Lo que hace propio de esta pantalla es poco a proposito: agrupar los archivos,
+ * y recorrer los diseños de a uno pidiendole la foto al visor. Todo lo que hace
+ * que la foto salga igual —el estudio de luces, el encuadre, las paletas, el
+ * handshake de exportacion— vive en `iniciarVistaPrevia3D` y en `preview3d.js`,
+ * compartidos con `iniciarCortante`.
+ */
+function iniciarPost() {
+  const estado = $('#estado');
+  const procesar = $('#procesar');
+  const lista = $('#lista-disenos');
+
+  const recordado = leerEstado('post');
+  let disenos = [];
+  let trabajoId = recordado.trabajo || null;
+  let vista = recordado.vista === 'imagen' ? 'imagen' : '3d';
+  let mirando = 1;
+  let trabajando = false;
+
+  const recordar = () => guardarEstado('post', { trabajo: trabajoId, vista });
+
+  const urlGlb = (n) => `/api/trabajos/${encodeURIComponent(trabajoId)}/diseno/${n}/archivo/glb`;
+  const urlVista = (n) =>
+    `/api/trabajos/${encodeURIComponent(trabajoId)}/diseno/${n}/archivo/jpg_vista`;
+  const urlSubida = (n) => `/api/trabajos/${encodeURIComponent(trabajoId)}/diseno/${n}/imagen`;
+
+  const previa = iniciarVistaPrevia3D({
+    obtenerTrabajoId: () => trabajoId,
+    vistaInicial: vista,
+    alCambiarVista: (elegida) => {
+      vista = elegida;
+      recordar();
+    },
+    urlFoto: () => urlSubida(mirando),
+    // Las fotos ya se subieron todas al armar el lote. Volver a rendir al bajar
+    // subiria la del diseño que quedo en el visor encima de la del que se pidio.
+    subirAlDescargar: false,
+  });
+
+  /* ── Elegir archivos y armar los diseños ───────────────────────────────── */
+
+  conectarZona(
+    $('#zona'),
+    $('#entrada'),
+    (archivos) => {
+      disenos = agruparArchivos(Array.from(archivos));
+      pintarLista();
+      recordar();
+    },
+    () => {
+      disenos = [];
+      pintarLista();
+    }
   );
 
-  /* ── Exportar la foto: pedirsela al visor y recien despues bajar ────────── */
-
   /**
-   * El handshake con `preview3d.js`, que es modulo y no se puede importar.
+   * La lista de diseños, con los botones para corregir el emparejado.
    *
-   * El unico canal es el bus de eventos: se emite `cortante:exportar` y se
-   * espera UN `cortante:imagen`. La promesa se resuelve con el resultado, y no
-   * hace falta timeout porque del otro lado el listener esta registrado
-   * siempre — hasta sin WebGL contesta, con `ok: false`.
+   * Se repinta entera en cada cambio. Con 25 filas eso no cuesta nada y evita
+   * el estado a medias de actualizar una fila sola: los indices que se muestran
+   * son posicionales, asi que separar o unir los corre a todos.
    */
-  function pedirFoto() {
-    return new Promise((resolver) => {
-      // ⚠ El `{once}` se registra ANTES del despacho, y no es estilo: las
-      // respuestas de "no hay vista" y "todavia no hay modelo" salen
-      // **sincronicamente** adentro del `dispatchEvent`. Al reves, el handshake
-      // se rompe entero y en silencio.
-      let listo = false;
-      const contestar = (detalle) => {
-        if (listo) return;
-        listo = true;
-        document.removeEventListener('cortante:imagen', alLlegar);
-        resolver(detalle);
-      };
-      // ⚠ Solo la respuesta a ESTA exportacion, no cualquier `cortante:imagen`.
-      // El mismo evento lo emite tambien la carga del modelo, asi que un `.glb`
-      // que termine de cargar entre el clic y la respuesta del PUT resolvia
-      // esta promesa antes de tiempo: la descarga arrancaba con la subida
-      // todavia en vuelo y el ZIP se llevaba la foto vieja — justo lo que el
-      // `await` de aca existe para impedir.
-      const alLlegar = (e) => {
-        if (e.detail.motivo === 'exportar') contestar(e.detail);
-      };
-      document.addEventListener('cortante:imagen', alLlegar);
-      // El ZIP **no necesita al visor**: los archivos ya estan enteros en el
-      // servidor. Sin este tope, un `preview3d.js` que no llego a evaluarse —o
-      // un `fetch` que se cuelga sin rechazar— dejaba esta promesa sin asentar
-      // para siempre, y con ella el boton deshabilitado y `exportando` clavado
-      // en true. O sea: el visor roto se llevaba puesta una descarga que no
-      // dependia de el. Que la promesa SIEMPRE asiente es lo que lo evita.
-      setTimeout(
-        () => contestar({ ok: false, error: 'la vista previa no respondio a tiempo' }),
-        MS_ESPERA_FOTO
+  function pintarLista() {
+    lista.replaceChildren();
+    disenos.forEach((d, i) => lista.appendChild(filaDeDiseno(d, i)));
+    mostrar($('#panel-disenos'), disenos.length > 0);
+    texto($('#cuenta-disenos'), textoDeCuenta());
+    const exceso = disenos.length > MAX_DISENOS;
+    mostrar($('#aviso-exceso'), exceso);
+    procesar.disabled = trabajando || disenos.length === 0 || exceso;
+  }
+
+  function textoDeCuenta() {
+    const archivos = disenos.reduce((n, d) => n + d.partes.length, 0);
+    const plural = (n, uno, varios) => `${n} ${n === 1 ? uno : varios}`;
+    return `${plural(disenos.length, 'diseño', 'diseños')} · ${plural(archivos, 'archivo', 'archivos')}`;
+  }
+
+  function filaDeDiseno(d, i) {
+    const fila = document.createElement('div');
+    fila.className = 'diseno';
+
+    const cuerpo = document.createElement('div');
+    cuerpo.className = 'diseno__cuerpo';
+    const titulo = document.createElement('div');
+    titulo.className = 'diseno__nombre';
+    titulo.textContent = `${i + 1}. ${d.base || 'sin nombre'}`;
+    const detalle = document.createElement('div');
+    detalle.className = 'lista__meta';
+    detalle.textContent = d.partes.map((p) => `${p.archivo.name} · ${p.rol}`).join('  +  ');
+    cuerpo.append(titulo, detalle);
+
+    const acciones = document.createElement('div');
+    acciones.className = 'diseno__acciones';
+    if (d.partes.length === 2) {
+      acciones.appendChild(
+        boton('Separar', 'Tratarlos como dos diseños distintos', () => separar(i))
       );
-      document.dispatchEvent(new CustomEvent('cortante:exportar', { detail: { id: trabajoId } }));
+    } else if (disenos[i + 1] && disenos[i + 1].partes.length === 1) {
+      acciones.appendChild(
+        boton('Unir', 'Unir con el diseño de abajo, como cortante + marcador', () => unir(i))
+      );
+    }
+    fila.append(cuerpo, acciones);
+    return fila;
+  }
+
+  function boton(etiqueta, titulo, alHacer) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'boton boton--fantasma boton--chico';
+    b.textContent = etiqueta;
+    b.title = titulo;
+    b.addEventListener('click', alHacer);
+    return b;
+  }
+
+  /** Parte un diseño de dos archivos en dos diseños de uno. */
+  function separar(i) {
+    const partes = disenos[i].partes.map((p) => ({ ...p, rol: 'unico' }));
+    disenos.splice(i, 1, ...partes.map((p) => ({ base: p.base, partes: [p] })));
+    pintarLista();
+  }
+
+  /**
+   * Une un diseño con el siguiente. El primero es el cortador.
+   *
+   * El orden importa poco —el color de cada cuerpo lo pisa la paleta— pero el
+   * servidor exige que un par sea cortador + marcador, asi que hay que decidir.
+   * Si los nombres lo dicen, mandan ellos; si no, el de arriba es el cortador,
+   * que es el caso normal de un par exportado en ese orden.
+   */
+  function unir(i) {
+    const [uno, otro] = [disenos[i].partes[0], disenos[i + 1].partes[0]];
+    const leidoA = leerNombre(uno.archivo.name);
+    const leidoB = leerNombre(otro.archivo.name);
+    const invertido = leidoA.rol === 'marcador' || leidoB.rol === 'cortador';
+    const [cortador, marcador] = invertido ? [otro, uno] : [uno, otro];
+    disenos.splice(i, 2, {
+      base: leerNombre(cortador.archivo.name).base,
+      partes: [
+        { ...cortador, rol: 'cortador' },
+        { ...marcador, rol: 'marcador' },
+      ],
     });
+    pintarLista();
   }
 
-  /**
-   * Sube la foto fresca y despues navega. **Ese orden es todo el punto.**
-   *
-   * Lo que se baja tiene que ser lo que se esta viendo: la foto depende del
-   * color de la pieza y del fondo, que se pueden cambiar en cualquier momento.
-   * Por eso el link no navega solo — se intercepta, se rinde y se sube, y
-   * recien ahi se pide el archivo al servidor.
-   */
-  async function exportarYBajar(url, seguirSinFoto) {
-    if (exportando) return;
-    if (!trabajoId) {
-      // Puede pasar: si `retomarTrabajo` falla despues de haber pintado el
-      // panel, el boton queda visible con el trabajo ya olvidado. Un boton que
-      // no hace nada ni dice nada es el peor de los dos mundos.
-      texto($('#pista-descargas'), 'Se perdio la referencia al trabajo: volve a generarlo.');
-      return;
-    }
-    exportando = true;
-    const boton = $('#bajar-todo');
-    if (boton) boton.disabled = true;
+  /* ── Mandar el lote y sacar las fotos ──────────────────────────────────── */
+
+  procesar.addEventListener('click', async () => {
+    trabajando = true;
+    procesar.disabled = true;
+    mostrar($('#panel-descargas'), false);
+    mostrar($('#panel-set'), false);
     try {
-      const resultado = await pedirFoto();
-      if (!resultado.ok) {
-        // Degradacion declarada, nunca silenciosa — y con el motivo REAL.
-        //
-        // Habia un texto fijo que decia "este navegador no pudo generarla", y
-        // era falso en tres de los cinco motivos posibles: que el modelo
-        // todavia se este cargando, que el servidor rechace la foto o que se
-        // haya agotado la espera no tienen nada que ver con el navegador.
-        // Decir mal por que fallo algo es peor que no decirlo: manda a buscar
-        // el problema al lugar equivocado.
-        if (!seguirSinFoto) {
-          texto($('#pista-descargas'), `No se pudo preparar la imagen: ${resultado.error}.`);
-          return;
-        }
-        texto($('#pista-descargas'), `El ZIP va sin la imagen: ${resultado.error}.`);
-      } else {
-        texto($('#pista-descargas'), PISTA_LISTA);
-      }
-      window.location.assign(url);
+      const trabajo = await enviarLote();
+      await sacarLasFotos(trabajo);
+    } catch (e) {
+      avisar(estado, 'error', e.message);
     } finally {
-      exportando = false;
-      if (boton) boton.disabled = false;
-    }
-  }
-
-  document.addEventListener('click', (e) => {
-    const foto = e.target.closest(`#botones-descarga a[data-clave="${CLAVE_FOTO}"]`);
-    if (foto && foto.href) {
-      e.preventDefault();
-      // Sin foto no hay nada que bajar: el destino ES la foto.
-      exportarYBajar(foto.href, false);
-      return;
-    }
-    if (e.target.closest('#bajar-todo')) {
-      e.preventDefault();
-      // El ZIP baja igual: los otros archivos estan enteros en el servidor y
-      // no dependen del visor. Lo que falte, se dice.
-      if (trabajoId) exportarYBajar(urlZip(trabajoId), true);
+      trabajando = false;
+      pintarLista();
     }
   });
 
-  // Lo que decide si la entrada del JPG se ofrece: **solo** el aviso de carga.
-  //
-  // Un fallo de EXPORTACION no dice nada sobre si la foto se puede producir —
-  // "ya hay una exportacion en curso" o un rechazo del servidor son
-  // transitorios—, y escondiendo la entrada ante eso quedaba un boton que
-  // desaparece al tocarlo y solo vuelve regenerando el cortante.
-  document.addEventListener('cortante:imagen', (e) => {
-    if (e.detail.motivo !== 'carga') return;
-    hayFoto = e.detail.ok;
-    const a = $(`#botones-descarga a[data-clave="${CLAVE_FOTO}"]`);
-    if (!a) return;
-    if (hayFoto && trabajoId) a.href = urlArchivo(trabajoId, CLAVE_FOTO);
-    else a.removeAttribute('href');
-    mostrar(a, hayFoto && Boolean(trabajoId));
-  });
-
   /**
-   * Una paleta de color de la vista previa.
+   * Sube los archivos con la agrupacion resuelta y espera a que terminen.
    *
-   * Cambia lo que se ve en pantalla y nada mas: el `.3mf` y el `.glb` salen
-   * con los materiales del motor, y al imprimir el color lo pone el filamento.
-   * Por eso no reactiva el boton de generar ni se manda al servidor. Se
-   * recuerda en `localStorage`, igual que el tema.
-   *
-   * La lista de colores la dibuja el template desde `COLORES` del router: aca
-   * no hay ningun codigo de color escrito, solo el que trae cada boton.
-   *
-   * **Recibe VARIOS contenedores y sincroniza por valor, no por elemento.** El
-   * color de la pieza se ofrece en dos lugares —la paleta que flota sobre el
-   * visor 3D y la de la barra de la vista imagen— y es un solo valor: apretar
-   * una muestra tiene que marcar la del mismo color en las dos. Comparar por
-   * `dataset.color` en vez de por identidad del boton es todo lo que hace
-   * falta para eso, y es lo que evita tener que mantener dos paletas en
-   * sincronia a mano.
+   * Los archivos van en el orden de los diseños y la agrupacion se escribe sobre
+   * ESE orden, no sobre el que tenian al elegirlos: separar y unir reordenan la
+   * lista, y mandar dos ordenes distintos es como se arma un diseño con las
+   * piezas de otro.
    */
-  function iniciarPaleta({ selectores, clave, evento }) {
-    const muestras = selectores.flatMap((sel) => $$(`${sel} .paleta__color`));
-    if (!muestras.length) return;
+  async function enviarLote() {
+    const datos = new FormData();
+    const grupos = [];
+    let n = 0;
+    disenos.forEach((d) => {
+      const partes = d.partes.map((p) => {
+        datos.append('archivo', p.archivo, p.archivo.name);
+        return `${n++}:${p.rol}`;
+      });
+      grupos.push(partes.join(','));
+    });
+    datos.append('agrupacion', grupos.join(';'));
+    // Como se va a llamar la descarga de cada diseño. En un par los dos archivos
+    // comparten base, y esa base es el nombre del diseño — no el de un archivo.
+    datos.append('nombres', disenos.map((d) => d.base).join(';'));
 
-    let guardado = null;
-    try {
-      guardado = localStorage.getItem(clave);
-    } catch (_) {
-      /* sin localStorage se arranca con el default, que lo marca el template */
-    }
-
-    const aplicar = (color, recordar) => {
-      muestras.forEach((o) => o.setAttribute('aria-pressed', String(o.dataset.color === color)));
-      // `sinPiso` viaja junto al color y NO se deduce del hex: la muestra lo
-      // trae del router (`COLORES_FONDO`), y leerlo del DOM es lo que evita
-      // que el front tenga su propia idea de cual fondo no lleva piso. En las
-      // paletas de la pieza ninguna muestra lo declara y siempre sale `false`.
-      const elegida = muestras.find((o) => o.dataset.color === color);
-      const sinPiso = Boolean(elegida) && elegida.dataset.sinPiso === '1';
-      document.dispatchEvent(new CustomEvent(evento, { detail: { color, sinPiso } }));
-      if (!recordar) return;
-      try {
-        localStorage.setItem(clave, color);
-      } catch (_) {
-        /* sin persistencia: el color vale para esta pagina igual */
-      }
-    };
-
-    muestras.forEach((b) => b.addEventListener('click', () => aplicar(b.dataset.color, true)));
-
-    // Un color guardado que ya no este en `COLORES` se descarta: la paleta del
-    // servidor manda, y si cambio la lista el valor viejo no existe mas.
-    //
-    // Sin nada guardado se aplica la PRIMERA muestra, que es la que el macro
-    // `paleta` marca por default. Antes esto era un parametro
-    // (`indiceDefecto`) para que el fondo pudiera arrancar en la segunda, y
-    // eso creaba dos fuentes de verdad para el mismo dato: el `activo` del
-    // template y el indice de aca. Cuando este ciclo movio el del template y
-    // no el de aca, el HTML servido marcaba blanco y la pantalla mostraba
-    // gris — y ningun test lo vio, porque ninguno ejecuta JS. Con un solo
-    // lugar donde se declara, esa desincronizacion no se puede volver a dar.
-    const disponibles = muestras.map((b) => b.dataset.color);
-    const inicial = disponibles.includes(guardado) ? guardado : disponibles[0];
-    aplicar(inicial, false);
-  }
-
-  /**
-   * Las dos vistas previas de la misma geometria.
-   *
-   * `3d` es el visor de siempre y no cambia en nada; `imagen` es la foto
-   * cenital descargable. Lo unico que hace esta funcion es mostrar una y
-   * esconder la otra: quien las dibuja es `preview3d.js`, que tiene el
-   * contexto de WebGL.
-   *
-   * El aviso `cortante:vista` no es decorativo. La vista imagen **no tiene
-   * loop de render** —es una toma fija, se rinde solo cuando algo cambia—, asi
-   * que mientras estuvo escondida su canvas midio 0 y no pudo pintarse. El
-   * aviso es lo que la despierta al volver.
-   */
-  function iniciarVistas() {
-    const botones = $$('.segmentado--vistas button[data-vista]');
-    if (!botones.length) return;
-
-    const aplicar = (elegida) => {
-      vista = elegida;
-      botones.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.vista === elegida)));
-      mostrar($('#visor'), elegida === '3d');
-      mostrar($('#vista-imagen'), elegida === 'imagen');
-      mostrar($('#pista-imagen'), elegida === 'imagen');
-      document.dispatchEvent(new CustomEvent('cortante:vista', { detail: { vista: elegida } }));
-    };
-
-    botones.forEach((b) =>
-      b.addEventListener('click', () => {
-        aplicar(b.dataset.vista);
-        recordar();
-      })
+    avisar(estado, 'info', 'Enviando…');
+    const lanzado = await enviar('/api/post', datos);
+    trabajoId = lanzado.id;
+    recordar();
+    return siFalloTirar(
+      await sondear(lanzado.id, (t) => avisar(estado, 'info', `${t.etapa}…`))
     );
-    aplicar(vista);
+  }
+
+  /**
+   * Recorre los diseños de a uno: cargar el modelo, rendir la foto, subirla.
+   *
+   * **En serie y no en paralelo**, igual que la conversion del lado del
+   * servidor, pero por otro motivo: hay UN solo visor y UN solo canvas, asi que
+   * sacar dos fotos a la vez es sacar dos veces la misma. `previa.cargar` espera
+   * a que el modelo este puesto antes de disparar la foto — sin esa espera, la
+   * foto del diseño 2 seria la del 1.
+   */
+  async function sacarLasFotos(trabajo) {
+    const ok = [];
+    const sin = [];
+    for (const d of (trabajo.reporte && trabajo.reporte.disenos) || []) {
+      if (!d.ok) {
+        sin.push(d);
+        continue;
+      }
+      mirando = d.indice;
+      avisar(estado, 'info', `Sacando la foto ${ok.length + 1} de ${trabajo.disenos}…`);
+      if (!(await previa.cargar(urlGlb(d.indice)))) {
+        sin.push({ ...d, error: { mensaje: 'no se pudo cargar el modelo' } });
+        continue;
+      }
+      const r = await previa.exportar(urlSubida(d.indice));
+      if (r.ok) ok.push(d);
+      else sin.push({ ...d, error: { mensaje: r.error } });
+    }
+
+    pintarDescargas(trabajo, ok, sin);
+    if (ok.length) await armarSet();
+    mostrar(estado, false);
+  }
+
+  /** Le pide al servidor que pegue las fotos en una sola imagen. */
+  async function armarSet() {
+    avisar(estado, 'info', 'Armando el set…');
+    try {
+      const r = await pedirJson(`/api/trabajos/${encodeURIComponent(trabajoId)}/set`, {
+        method: 'POST',
+      });
+      $('#img-set').src = `/api/trabajos/${encodeURIComponent(trabajoId)}/archivo/set?t=${Date.now()}`;
+      $('#bajar-set').href = `/api/trabajos/${encodeURIComponent(trabajoId)}/archivo/set`;
+      // El reparto tal cual quedo (`3-2-2`) y no "3x3": con filas desparejas
+      // el par columnas x filas no dice como quedo armado.
+      texto(
+        $('#pista-set'),
+        `${r.celdas} diseños · ${r.distribucion.join('-')} · ${r.tamano_px.join('×')} px`
+      );
+      mostrar($('#panel-set'), true);
+    } catch (e) {
+      // El set es lo ultimo: que falle no invalida las fotos sueltas, que ya
+      // estan arriba y se pueden bajar. Se dice y se sigue.
+      texto($('#pista-set'), `No se pudo armar el set: ${e.message}`);
+      mostrar($('#panel-set'), true);
+    }
+  }
+
+  /** Una entrada de descarga por diseño, mas el ZIP. Lo que fallo se declara. */
+  function pintarDescargas(trabajo, ok, sin) {
+    const grupo = $('#botones-descarga');
+    grupo.replaceChildren();
+    ok.forEach((d) => {
+      const a = document.createElement('a');
+      a.className = 'boton boton--secundario';
+      a.dataset.clave = 'jpg_vista';
+      a.download = '';
+      a.href = urlVista(d.indice);
+      a.textContent = `Foto ${d.indice}`;
+      a.addEventListener('click', () => {
+        // Mirar el que se baja: el visor queda en el ultimo del lote y ver una
+        // pieza mientras se baja otra es exactamente lo que confunde.
+        mirando = d.indice;
+        previa.cargar(urlGlb(d.indice));
+      });
+      grupo.appendChild(a);
+    });
+    const zip = document.createElement('a');
+    zip.className = 'boton boton--todo';
+    zip.href = urlZip(trabajoId);
+    zip.download = '';
+    zip.textContent = `Descargar todo (ZIP)`;
+    grupo.appendChild(zip);
+
+    texto(
+      $('#pista-descargas'),
+      sin.length
+        ? `${ok.length} de ${trabajo.disenos} listos. ${sin.length} no se pudieron: ${sin
+            .map((d) => `#${d.indice} (${(d.error && d.error.mensaje) || 'error'})`)
+            .join(', ')}.`
+        : PISTA_LISTA
+    );
+    mostrar($('#panel-descargas'), true);
+    texto($('#pista-visor'), 'la geometria de los archivos que subiste');
   }
 }
 
@@ -1256,4 +1762,5 @@ document.addEventListener('DOMContentLoaded', () => {
   if (pagina === 'conversor') iniciarConversor();
   if (pagina === 'lineas') iniciarLineas();
   if (pagina === 'cortante') iniciarCortante();
+  if (pagina === 'post') iniciarPost();
 });

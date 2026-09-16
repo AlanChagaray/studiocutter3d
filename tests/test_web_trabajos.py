@@ -15,6 +15,7 @@ cierra el ciclo de punta a punta.
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import re
@@ -27,7 +28,13 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.almacen import AlmacenEnMemoria, EstadoTrabajo, TipoTrabajo, Trabajo
+from app.almacen import (
+    TIPOS_CON_VISTA,
+    AlmacenEnMemoria,
+    EstadoTrabajo,
+    TipoTrabajo,
+    Trabajo,
+)
 from app.archivos import (
     LIMITE_VISTA_BYTES,
     MEDIO_DE,
@@ -40,7 +47,7 @@ from app.archivos import (
 )
 from app.config import Ajustes
 from app.errores import ErrorApi
-from app.trabajos import cancelar, lanzar, proceso_de
+from app.trabajos import cancelar, lanzar, lanzar_serie, proceso_de, vivos
 
 RAIZ_PROYECTO = Path(__file__).resolve().parent.parent
 FIXTURES = RAIZ_PROYECTO / "tests" / "fixtures"
@@ -796,10 +803,54 @@ def test_la_imagen_rechaza_un_id_que_no_es_uuid(sesion: TestClient, jpg_minimo: 
         assert r.status_code == 404, id_
 
 
-def test_la_imagen_rechaza_un_trabajo_que_no_es_cortante(
+def _post_listo(
+    almacen: AlmacenEnMemoria,
+    ajustes: Ajustes,
+    *,
+    usuario: str = "tester",
+    estado: EstadoTrabajo = EstadoTrabajo.LISTO,
+) -> Trabajo:
+    """El gemelo de `_cortante_listo` para F4: un trabajo post con su `.glb`."""
+    trabajo = almacen.crear(usuario, TipoTrabajo.POST)
+    destino = ajustes.dir_trabajo / trabajo.id
+    destino.mkdir(parents=True, exist_ok=True)
+    nombre, contenido = SALIDAS["glb"]
+    (destino / nombre).write_bytes(contenido)
+    almacen.actualizar(trabajo.id, estado=estado, archivos={"glb": nombre})
+    return trabajo
+
+
+def test_la_imagen_se_acepta_en_un_trabajo_post(
+    sesion: TestClient, almacen: AlmacenEnMemoria, ajustes: Ajustes, jpg_minimo: bytes
+) -> None:
+    """F4 existe justamente para producir esta foto: tiene que poder subirla.
+
+    Es lo que `TIPOS_CON_VISTA` habilita. Sin esto el PUT responde 404 y la
+    pantalla entera no sirve para nada — el sintoma seria "el servidor rechazo
+    la imagen" en la pista, con el visor andando perfecto.
+    """
+    trabajo = _post_listo(almacen, ajustes)
+
+    r = sesion.put(
+        f"/api/trabajos/{trabajo.id}/imagen",
+        files={"archivo": ("vista.jpg", jpg_minimo, "image/jpeg")},
+    )
+    assert r.status_code == 200, r.text
+    assert "jpg_vista" in r.json()["archivos"]
+    assert (ajustes.dir_trabajo / trabajo.id / "vista.jpg").is_file()
+
+
+def test_los_tipos_con_vista_son_los_que_dejan_glb() -> None:
+    """`TIPOS_CON_VISTA` no es una lista suelta: es "los que dejan un .glb"."""
+    assert TIPOS_CON_VISTA == {TipoTrabajo.CORTANTE, TipoTrabajo.POST}
+    assert TipoTrabajo.CONVERSOR not in TIPOS_CON_VISTA
+    assert TipoTrabajo.LINEAS not in TIPOS_CON_VISTA
+
+
+def test_la_imagen_rechaza_un_trabajo_sin_vista_3d(
     sesion: TestClient, almacen: AlmacenEnMemoria, jpg_minimo: bytes
 ) -> None:
-    """El Convertidor y Correcto no tienen vista 3D: una foto ahi no significa nada.
+    """El Convertidor y Correcto no dejan `.glb`: una foto ahi no significa nada.
 
     Responde 404 y no 403 a proposito: el mismo cuerpo que un trabajo
     inexistente, para no filtrar que el id existe.
@@ -987,3 +1038,235 @@ def test_la_imagen_el_cliente_no_nombra_el_archivo(
     # JSON** y no los bytes del JPEG. Se parsea entero y no se mira el primer
     # byte, para que tambien falle si el JPEG quedo appendeado al final.
     assert "usuarios" in json.loads(ajustes.archivo_credenciales.read_text(encoding="utf-8"))
+
+
+# ── F4 con varios diseños: la serie ─────────────────────────────────────────
+
+
+def tarea_que_anota_su_paso(dir_trabajo: str, indice: int) -> None:
+    """Deja rastro de CUANDO corrio, para poder afirmar que fue en serie.
+
+    Escribe el momento de arranque y el de fin. Dos pasos en paralelo se
+    solaparian en esa linea de tiempo; en serie no pueden.
+    """
+    inicio = time.monotonic()
+    time.sleep(0.35)
+    escribir_estado(
+        Path(dir_trabajo),
+        {
+            "ok": True,
+            "etapa": "listo",
+            "archivos": {},
+            "reporte": {"inicio": inicio, "fin": time.monotonic()},
+        },
+        indice,
+    )
+
+
+def tarea_que_falla_en_el_paso_dos(dir_trabajo: str, indice: int) -> None:
+    """El segundo diseño no se puede leer; los otros si."""
+    if indice == 2:
+        escribir_estado(
+            Path(dir_trabajo),
+            {
+                "ok": False,
+                "etapa": "error",
+                "archivos": {},
+                "error": {"codigo": "malla_ilegible", "mensaje": "No se pudo leer.", "detalle": {}},
+            },
+            indice,
+        )
+        return
+    escribir_estado(
+        Path(dir_trabajo), {"ok": True, "etapa": "listo", "archivos": {}, "reporte": {}}, indice
+    )
+
+
+def _lanzar_serie(almacen, ajustes, tarea, pasos: int, usuario="tester"):
+    trabajo = almacen.crear(usuario, TipoTrabajo.POST)
+    destino = ajustes.dir_trabajo / trabajo.id
+    destino.mkdir(parents=True, exist_ok=True)
+    almacen.actualizar(trabajo.id, disenos=pasos)
+    lanzar_serie(
+        almacen=almacen,
+        a=ajustes,
+        trabajo=trabajo,
+        objetivo=tarea,
+        pasos=tuple((str(destino), i) for i in range(1, pasos + 1)),
+        reporte_base={"nombres": [f"d{i}" for i in range(1, pasos + 1)]},
+    )
+    return trabajo
+
+
+@pytest.mark.lento
+def test_los_disenos_corren_de_a_uno_y_no_a_la_vez(
+    almacen: AlmacenEnMemoria, ajustes: Ajustes
+) -> None:
+    """Lo que se pidio: terminar un PID y recien ahi arrancar el siguiente.
+
+    No se mide "tarda mas": se mide que los intervalos **no se solapan**. Con
+    tres procesos en paralelo el total seria parecido al de uno solo y un test
+    de duracion pasaria igual.
+    """
+    trabajo = _lanzar_serie(almacen, ajustes, tarea_que_anota_su_paso, 3)
+    final = esperar_estado(almacen, trabajo.id, "tester")
+    assert final.estado is EstadoTrabajo.LISTO, final.error
+
+    tramos = [d["reporte"] for d in final.reporte["disenos"]]
+    assert len(tramos) == 3
+    for anterior, siguiente in itertools.pairwise(tramos):
+        assert anterior["fin"] <= siguiente["inicio"], (
+            f"dos diseños se solaparon: {anterior} y {siguiente}"
+        )
+
+
+@pytest.mark.lento
+def test_un_diseno_que_falla_no_se_lleva_puestos_a_los_demas(
+    almacen: AlmacenEnMemoria, ajustes: Ajustes
+) -> None:
+    """Tirar 24 diseños buenos porque uno vino corrupto seria cambiar un
+    problema chico por uno grande. Lo que falla se declara."""
+    trabajo = _lanzar_serie(almacen, ajustes, tarea_que_falla_en_el_paso_dos, 3)
+    final = esperar_estado(almacen, trabajo.id, "tester")
+
+    assert final.estado is EstadoTrabajo.LISTO
+    assert final.reporte["logrados"] == 2
+    assert final.reporte["total"] == 3
+    fallados = [d for d in final.reporte["disenos"] if not d["ok"]]
+    assert [d["indice"] for d in fallados] == [2]
+    assert fallados[0]["error"]["codigo"] == "malla_ilegible"
+
+
+@pytest.mark.lento
+def test_la_serie_conserva_lo_que_el_router_dejo_en_el_reporte(
+    almacen: AlmacenEnMemoria, ajustes: Ajustes
+) -> None:
+    """Sin `reporte_base`, el cierre reemplaza el reporte entero y las descargas
+    se quedan sin nombre — y no se ve hasta bajar un archivo."""
+    trabajo = _lanzar_serie(almacen, ajustes, tarea_que_anota_su_paso, 2)
+    final = esperar_estado(almacen, trabajo.id, "tester")
+    assert final.reporte["nombres"] == ["d1", "d2"]
+
+
+@pytest.mark.lento
+def test_una_serie_ocupa_un_solo_lugar_del_cupo(
+    almacen: AlmacenEnMemoria, ajustes: Ajustes
+) -> None:
+    """Y lo ocupa TAMBIEN entre paso y paso, cuando no tiene ningun hijo vivo.
+
+    Ese hueco es lo que `_series` cierra: contando solo procesos, dos series
+    alternadas se cuelan por encima del tope de `max_trabajos_simultaneos`.
+    """
+    trabajo = _lanzar_serie(almacen, ajustes, tarea_que_anota_su_paso, 3)
+    assert vivos() >= 1
+    esperar_estado(almacen, trabajo.id, "tester")
+    assert vivos() == 0, "al cerrar, la serie tiene que soltar su lugar"
+
+
+def test_la_foto_de_un_diseno_exige_que_ese_diseno_exista(
+    sesion: TestClient, almacen: AlmacenEnMemoria, ajustes: Ajustes, jpg_minimo: bytes
+) -> None:
+    """Pedir el diseño 20 de un trabajo de 3 es 404, y por una regla — no por no
+    encontrar el archivo, que seria depender de un accidente del disco."""
+    trabajo = _post_listo(almacen, ajustes)
+    almacen.actualizar(trabajo.id, disenos=3)
+
+    for indice in (0, 4, 99):
+        r = sesion.put(
+            f"/api/trabajos/{trabajo.id}/diseno/{indice}/imagen",
+            files={"archivo": ("v.jpg", jpg_minimo, "image/jpeg")},
+        )
+        assert r.status_code == 404, indice
+        assert r.json()["error"]["codigo"] == "diseno_inexistente"
+
+
+def test_el_set_necesita_al_menos_una_foto(
+    sesion: TestClient, almacen: AlmacenEnMemoria, ajustes: Ajustes
+) -> None:
+    trabajo = _post_listo(almacen, ajustes)
+    almacen.actualizar(trabajo.id, disenos=2)
+    r = sesion.post(f"/api/trabajos/{trabajo.id}/set")
+    assert r.status_code == 409
+    assert r.json()["error"]["codigo"] == "sin_fotos"
+
+
+def test_el_set_se_arma_con_las_fotos_que_hay(
+    sesion: TestClient, almacen: AlmacenEnMemoria, ajustes: Ajustes, jpg_minimo: bytes
+) -> None:
+    """Un diseño que fallo no impide el set: sale con los que si salieron."""
+    trabajo = _post_listo(almacen, ajustes)
+    almacen.actualizar(trabajo.id, disenos=3)
+    for indice in (1, 3):  # el 2 no tiene foto
+        subida = sesion.put(
+            f"/api/trabajos/{trabajo.id}/diseno/{indice}/imagen",
+            files={"archivo": ("v.jpg", jpg_minimo, "image/jpeg")},
+        )
+        assert subida.status_code == 200, subida.text
+
+    r = sesion.post(f"/api/trabajos/{trabajo.id}/set")
+    assert r.status_code == 200, r.text
+    assert r.json()["celdas"] == 2
+    assert "set" in r.json()["trabajo"]["archivos"]
+    assert (ajustes.dir_trabajo / trabajo.id / "set.jpg").is_file()
+
+
+def test_armar_el_set_no_refresca_el_ttl(
+    sesion: TestClient, almacen: AlmacenEnMemoria, ajustes: Ajustes, jpg_minimo: bytes
+) -> None:
+    """Mismo motivo que subir la foto: describe el trabajo, no es usarlo."""
+    trabajo = _post_listo(almacen, ajustes)
+    almacen.actualizar(trabajo.id, disenos=1)
+    sesion.put(
+        f"/api/trabajos/{trabajo.id}/diseno/1/imagen",
+        files={"archivo": ("v.jpg", jpg_minimo, "image/jpeg")},
+    )
+    guardado = almacen.obtener(trabajo.id, "tester")
+    assert guardado is not None
+    antes = guardado.actualizado_en
+    assert sesion.post(f"/api/trabajos/{trabajo.id}/set").status_code == 200
+    despues = almacen.obtener(trabajo.id, "tester")
+    assert despues is not None
+    assert despues.actualizado_en == antes
+
+
+def test_el_zip_de_un_post_trae_las_fotos_y_el_set(
+    sesion: TestClient, almacen: AlmacenEnMemoria, ajustes: Ajustes, jpg_minimo: bytes
+) -> None:
+    """Las fotos por diseño NO estan en `archivos` —se piden por indice— asi que
+    el ZIP tiene que juntarlas aparte. Bajar 25 de a una es lo que este boton
+    existe para evitar."""
+    trabajo = _post_listo(almacen, ajustes)
+    almacen.actualizar(trabajo.id, disenos=2, reporte={"nombres": ["kitty-bruja", "murcielago"]})
+    for indice in (1, 2):
+        sesion.put(
+            f"/api/trabajos/{trabajo.id}/diseno/{indice}/imagen",
+            files={"archivo": ("v.jpg", jpg_minimo, "image/jpeg")},
+        )
+    sesion.post(f"/api/trabajos/{trabajo.id}/set")
+
+    r = sesion.get(f"/api/trabajos/{trabajo.id}/zip")
+    assert r.status_code == 200
+    with zipfile.ZipFile(BytesIO(r.content)) as zip_:
+        nombres = sorted(zip_.namelist())
+    assert "kitty-bruja-01-vista.jpg" in nombres
+    assert "murcielago-02-vista.jpg" in nombres
+    assert any(n.endswith("-set.jpg") for n in nombres), nombres
+
+
+def test_dos_disenos_homonimos_no_se_pisan_en_el_zip(
+    sesion: TestClient, almacen: AlmacenEnMemoria, ajustes: Ajustes, jpg_minimo: bytes
+) -> None:
+    """⚠ Sin el indice, la segunda foto entra con la misma clave que la primera
+    y el usuario se lleva una foto menos creyendo que las tiene todas."""
+    trabajo = _post_listo(almacen, ajustes)
+    almacen.actualizar(trabajo.id, disenos=2, reporte={"nombres": ["gato", "gato"]})
+    for indice in (1, 2):
+        sesion.put(
+            f"/api/trabajos/{trabajo.id}/diseno/{indice}/imagen",
+            files={"archivo": ("v.jpg", jpg_minimo, "image/jpeg")},
+        )
+
+    r = sesion.get(f"/api/trabajos/{trabajo.id}/zip")
+    with zipfile.ZipFile(BytesIO(r.content)) as zip_:
+        nombres = zip_.namelist()
+    assert len(nombres) == len(set(nombres)) == 2, nombres

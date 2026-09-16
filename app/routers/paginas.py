@@ -35,6 +35,7 @@ MODULOS: tuple[Modulo, ...] = (
     Modulo("conversor", "/conversor", "Convertir"),
     Modulo("lineas", "/lineas", "Correcto"),
     Modulo("cortante", "/cortante", "Cortante"),
+    Modulo("post", "/post", "Post"),
 )
 """El menu, escrito UNA sola vez.
 
@@ -84,4 +85,23 @@ def pagina_cortante(request: Request, usuario: UsuarioRequerido) -> Response:
         colores=COLORES,
         colores_fondo=COLORES_FONDO,
         limite_max_mm=LIMITE_MAX_MM,
+    )
+
+
+@router.get("/post", response_class=HTMLResponse)
+def pagina_post(request: Request, usuario: UsuarioRequerido) -> Response:
+    """F4: la foto de un cortante que ya existe.
+
+    Recibe las MISMAS paletas que `/cortante` —son el mismo objeto, importado de
+    `routers/cortante.py`— porque la pantalla existe para que las dos fotos
+    salgan iguales. Lo que no recibe es `campos`: aca no hay nada que configurar,
+    la geometria ya viene decidida adentro del archivo.
+    """
+    return _pantalla(
+        request,
+        "post.html",
+        usuario,
+        pagina="post",
+        colores=COLORES,
+        colores_fondo=COLORES_FONDO,
     )

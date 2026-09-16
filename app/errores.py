@@ -22,6 +22,7 @@ from cutter3d.errors import (
     BooleanaFallida,
     Cutter3DError,
     ImagenInvalida,
+    MallaIlegible,
     MallaNoManifold,
     NoConvergeError,
     ParametroFueraDeRango,
@@ -78,7 +79,12 @@ _TRADUCCIONES: dict[type[Cutter3DError], Traduccion] = {
     NoConvergeError: Traduccion("no_converge", 422),
     BooleanaFallida: Traduccion("malla_invalida", 422),
     MallaNoManifold: Traduccion("malla_invalida", 422),
+    MallaIlegible: Traduccion("malla_ilegible", 422),
 }
+"""⚠ `ConversionInfiel` NO esta en esta tabla, y es a proposito: cae en el
+default `interno` 500 con `log.exception`. Las demas hablan de un archivo que el
+usuario puede cambiar; esa habla de un `.glb` que este motor derivo mal de una
+malla que ya habia leido bien, o sea de un bug nuestro."""
 
 
 def _mensaje_no_manifold(exc: MallaNoManifold) -> str:
@@ -107,7 +113,9 @@ def _detalle_seguro(exc: Cutter3DError) -> tuple[str, dict[str, Any]]:
             f"El parametro '{exc.parametro}' {exc.limite}.",
             {"parametro": exc.parametro, "limite": exc.limite},
         )
-    if isinstance(exc, (SvgInvalido, ImagenInvalida)):
+    if isinstance(exc, (SvgInvalido, ImagenInvalida, MallaIlegible)):
+        # Las tres llevan la ruta en su `str()` y el `.motivo` limpio en el
+        # atributo. Este es el motivo entero por el que existe este modulo.
         return (f"El archivo no se pudo interpretar: {exc.motivo}", {})
     if isinstance(exc, NoConvergeError):
         return (

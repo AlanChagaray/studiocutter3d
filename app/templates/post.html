@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block titulo %}Post{% endblock %}
+{% block titulo_pagina %}Post{% endblock %}
+{% block bajada %}Las fotos de los cortantes que ya tenes. Entran hasta 25 diseños en 3MF o STL, sale una foto de cada uno y una lamina con el set.{% endblock %}
+
+{# Sin `chip-archivo`: ese chip muestra UN nombre y aca entran hasta cincuenta
+   archivos. Lo que esta cargado se ve en la lista de diseños, que ademas dice
+   como quedaron agrupados — que es la parte que importa revisar. #}
+
+{#
+  La misma grilla de tres columnas que `cortante.html`, y por el mismo motivo:
+  el visor va al medio porque es lo unico que se mira mientras se toca
+  cualquiera de los dos costados.
+
+  ⚠ Los ids del bloque de vista previa —`#visor`, `#lienzo`, `#vista-imagen`,
+  `#paleta`, `#paleta-pieza`, `#paleta-fondo`, `#pista-visor`, `#pista-imagen`,
+  `#panel-descargas`, `#botones-descarga`— son CONTRATO con `preview3d.js`, que
+  los resuelve una sola vez a nivel de modulo y no tiene namespace por pantalla.
+  Renombrar cualquiera deja la vista previa muerta y sin un solo error a la
+  vista. Es el mismo bloque que en cortante a proposito: las dos fotos tienen
+  que salir iguales.
+#}
+{% block contenido %}
+<div class="banco">
+
+  <aside class="banco__columna">
+    <div class="panel">
+      <h2 class="panel__titulo">Archivo</h2>
+      <div class="dropzone" id="zona" style="padding:22px 16px">
+        {{ m.icono('subir', 26) }}
+        <div class="dropzone__ayuda">3MF o STL &middot; hasta 25 diseños &middot; 20 MB cada archivo</div>
+        <button type="button" class="boton boton--fantasma" id="elegir">Elegir archivos</button>
+        {# `multiple`: un diseño puede venir en dos archivos y un lote en
+           cincuenta. El agrupado lo resuelve `app.js`, que es el unico que ve
+           los nombres originales. #}
+        <input type="file" id="entrada" class="sr" multiple
+               accept=".3mf,.stl,model/3mf,model/stl">
+      </div>
+      <p class="lista__meta" style="line-height:1.45">
+        Sirve para los cortantes de antes, o para cuando no te bajaste la foto en su
+        momento. No modifica los archivos ni construye nada: los lee, los mide y los
+        fotografia. Si todavia no tenes el cortante, hacelo en
+        <a href="/cortante">Crear Cortante</a>.
+      </p>
+      <button type="button" class="boton boton--primario" id="procesar" disabled>
+        {{ m.icono('imagen', 16) }} Preparar las fotos
+      </button>
+    </div>
+
+    {# La lista de diseños, no de archivos. El cortante y su marcador son UN
+       diseño y se fotografian juntos: separados darian dos fotos de media pieza
+       cada una. El emparejado por sufijo lo hace `app.js` y estos botones son
+       el "a menos que sea adrede": un archivo renombrado a mano no se empareja
+       solo, y dos piezas que no son pareja no tienen por que quedar juntas. #}
+    <div class="panel oculto" id="panel-disenos">
+      <div class="fila">
+        <h2 class="panel__titulo">Diseños</h2>
+        <span class="lista__meta" id="cuenta-disenos"></span>
+      </div>
+      <div class="aviso aviso--alerta oculto" id="aviso-exceso">
+        {{ m.icono('alerta', 16) }}
+        <span>Son mas de 25 diseños. Saca algunos archivos y volve a intentar.</span>
+      </div>
+      <div id="lista-disenos" style="display:flex;flex-direction:column;gap:8px"></div>
+      <div class="lista__meta" style="line-height:1.45">
+        Un cortante y su marcador van juntos y salen en una sola foto. Si el
+        emparejado no es el que queres, <strong>Separar</strong> los trata como
+        diseños distintos y <strong>Unir</strong> junta uno con el de abajo.
+      </div>
+    </div>
+
+    {# Las entradas de descarga se dibujan en JS: son una por diseño y la
+       cantidad no se sabe hasta que el lote termina. El ZIP las trae todas mas
+       la lamina del set. #}
+    <div class="panel oculto" id="panel-descargas">
+      <h2 class="panel__titulo">Descargas</h2>
+      <div class="descargas" id="botones-descarga"></div>
+      <div class="lista__meta" id="pista-descargas"></div>
+      <div class="lista__meta" style="line-height:1.45">
+        Son los mismos JPG que salen de Crear Cortante: cenitales, 2048 px, fondo liso
+        y el color que elijas aca. El color es de la vista y no del archivo. Tocar una
+        foto tambien la trae al visor.
+      </div>
+    </div>
+  </aside>
+
+  {# Las dos vistas salen del MISMO `.glb`, igual que en cortante: la imagen no
+     es un render aparte sino la misma malla con otra camara y otra luz. #}
+  <div class="banco__visor panel panel--plano">
+    <div class="rotulo">
+      <span class="punto punto--activo"></span> VISTA PREVIA
+      <span class="lista__meta" style="margin-left:auto" id="pista-visor">todavia no hay nada que mostrar</span>
+    </div>
+
+    <div class="vistas">
+      <div class="segmentado segmentado--vistas" role="group" aria-label="Tipo de vista previa">
+        <button type="button" data-vista="3d" aria-pressed="true">
+          {{ m.icono('cubo', 15) }} 3D
+        </button>
+        <button type="button" data-vista="imagen" aria-pressed="false">
+          {{ m.icono('imagen', 15) }} Imagen
+        </button>
+      </div>
+      <span class="lista__meta oculto" id="pista-imagen">cenital &middot; fondo liso &middot; JPG de 2048 px</span>
+    </div>
+
+    <div class="visor" id="visor">
+      <div class="visor__pista">arrastrar para girar &middot; rueda para acercar</div>
+      {{ m.paleta(colores, 'paleta', 'Color de la vista previa', nota='solo la vista') }}
+    </div>
+
+    <div class="vista-imagen oculto" id="vista-imagen">
+      <div class="lienzo-caja">
+        <div class="lienzo" id="lienzo"></div>
+      </div>
+
+      <div class="imagen-controles">
+        <div class="imagen-controles__grupo">
+          <span class="imagen-controles__rotulo">Pieza</span>
+          {{ m.paleta(colores, 'paleta-pieza', 'Color del cortante', clase='muestras') }}
+        </div>
+        <div class="imagen-controles__grupo">
+          <span class="imagen-controles__rotulo">Fondo</span>
+          {{ m.paleta(colores_fondo, 'paleta-fondo', 'Color del fondo', clase='muestras') }}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <aside class="banco__columna">
+    <div class="aviso aviso--info">
+      {{ m.icono('info', 16) }}
+      <span>
+        Esta pantalla <strong>no toca los archivos</strong>. Los lee, comprueba que
+        cada modelo que se va a fotografiar sea el mismo que subiste, y los muestra.
+        Los diseños se convierten <strong>de a uno</strong> para no saturar el
+        servidor, asi que un lote grande tarda.
+      </span>
+    </div>
+
+    <div class="aviso oculto" id="estado" role="status"></div>
+
+    {# El set: las fotos de todos los diseños en una imagen. Lo compone el
+       SERVIDOR con Pillow y no el canvas (ver `cutter3d/lamina.py`), asi que la
+       grilla, la separacion y el fondo son cosas que la suite puede medir. #}
+    <div class="panel oculto" id="panel-set">
+      <h2 class="panel__titulo">El set</h2>
+      <div class="lienzo"><img id="img-set" alt="Las fotos de todos los diseños juntas"></div>
+      <div class="lista__meta" id="pista-set"></div>
+      <a class="boton boton--secundario" id="bajar-set" download>
+        {{ m.icono('bajar', 16) }} Bajar el set
+      </a>
+      <div class="lista__meta" style="line-height:1.45">
+        Los huecos toman el color de fondo de las propias fotos, asi que el set sale
+        parejo con lo que elegiste. No es un render 3D nuevo: son las mismas fotos.
+      </div>
+    </div>
+
+    <div class="oculto" id="panel-advertencias"></div>
+  </aside>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+{# Identico al de `cortante.html`, y no por comodidad: es el mismo visor. Los
+   modulos de three importan de 'three' por nombre y el import map es lo que
+   traduce ese nombre al archivo vendorizado.
+
+   El `nonce` es lo unico que el CSP le permite a un script inline. Lo pone
+   `proteccion.py` en cada pedido: sin el, el import map no se evalua,
+   `preview3d.js` no encuentra 'three' y la vista previa desaparece sin un solo
+   error a la vista. #}
+<script type="importmap" nonce="{{ request.state.csp_nonce }}">
+{"imports": {"three": "/static/vendor/three/three.module.js"}}
+</script>
+<script type="module" src="{{ url_for('static', path='/js/preview3d.js') }}"></script>
+{% endblock %}

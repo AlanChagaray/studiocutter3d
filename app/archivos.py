@@ -37,6 +37,11 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, BinaryIO
 
+# ⚠ De `params` y NO de `cutter3d.malla`, que es donde se usa: `malla` importa
+# trimesh, y este modulo lo carga toda la capa web. Ver el docstring de la
+# constante y el de `cutter3d/paquete3mf.py`.
+from cutter3d.params import MAX_ARCHIVOS_POR_DISENO
+
 from .almacen import AlmacenTrabajos
 from .config import MB, Ajustes
 from .errores import ErrorApi
@@ -72,6 +77,27 @@ class Formato(StrEnum):
     """El RAW de Canon moderno. No es TIFF: es ISO-BMFF, el mismo contenedor
     que HEIC y AVIF, y lo separa de ellos la marca `crx `."""
 
+    TRES_MF = "3mf"
+    """Malla, no imagen. **La firma que se detecta es la de un ZIP**, que
+    comparte con docx, xlsx, jar y epub: lo que distingue a un 3MF de verdad
+    vive en el central directory, al final del archivo, y aca solo se ven los
+    primeros `TROZO` bytes. La confirmacion la hace `cutter3d.malla.confirmar_3mf`
+    sobre el archivo ya guardado. O sea que este miembro significa "zip que
+    podria ser un 3MF", y por eso ninguna pantalla puede aceptarlo sin confirmar."""
+
+    STL = "stl"
+    """Malla, no imagen. El binario no tiene firma —80 bytes de cabecera libre—
+    y se reconoce por una identidad aritmetica sobre el tamaño; el ASCII empieza
+    con `solid`. Ver `detectar_formato`."""
+
+
+FORMATOS_MALLA = frozenset({Formato.TRES_MF, Formato.STL})
+"""Los que describen geometria 3D y NO se pueden abrir con Pillow.
+
+Existe para que nadie los meta por accidente donde se espera una imagen: el
+Convertidor los aceptaria y explotaria recien adentro de `cutter3d.raster`.
+Hay un test que lo blinda."""
+
 
 EXTENSION: dict[Formato, str] = {
     Formato.PNG: ".png",
@@ -87,19 +113,47 @@ EXTENSION: dict[Formato, str] = {
     Formato.HEIF: ".heif",
     Formato.TIFF: ".tiff",
     Formato.CR3: ".cr3",
+    Formato.TRES_MF: ".3mf",
+    Formato.STL: ".stl",
 }
 
 #: Que acepta cada pantalla. F2 pide JPG si o si — es requisito del producto,
 #: no una limitacion tecnica: la correccion de lineas trabaja sobre un raster.
 #: El Convertidor acepta todo lo que se sabe abrir: es la puerta de entrada, y
 #: su trabajo es justamente normalizar a jpg o svg lo que venga.
-FORMATOS_CONVERSOR = frozenset(Formato)
+FORMATOS_CONVERSOR = frozenset(Formato) - FORMATOS_MALLA
+"""Todo lo que se sabe **abrir como imagen**.
+
+⚠ Era `frozenset(Formato)` a secas, y eso funcionaba solo mientras el enum
+fuera de puras imagenes: desde que hay mallas, cada miembro nuevo entraba solo
+al Convertidor y reventaba despues adentro de Pillow, con un 500 en vez de un
+415. Se resta en vez de enumerar a mano para que el default siga siendo
+"el Convertidor acepta todo": lo que hay que declarar es la excepcion."""
+
 FORMATOS_LINEAS = frozenset({Formato.JPEG})
 FORMATOS_CORTANTE = frozenset({Formato.SVG})
 """**Solo SVG.** El motor trabaja sobre curvas: cada raster que entra hay que
 vectorizarlo, y una vectorizacion escondida adentro del cortante es una perdida
 de fidelidad que el usuario no eligio ni puede revisar. Vectorizar es trabajo
 del Convertidor y de F2, que dejan el SVG a la vista antes de este paso."""
+
+FORMATOS_POST = frozenset({Formato.TRES_MF, Formato.STL})
+"""Lo que acepta F4: una malla ya construida, de este motor o de cualquier otro.
+
+Es el unico flujo que entra por el lado del solido y no por el del dibujo. No se
+reusa `FORMATOS_MALLA` aunque hoy valgan lo mismo, por lo mismo que
+`FORMATOS_VISTA` no reusa `FORMATOS_LINEAS`: uno dice "esto no es una imagen" y
+el otro "esto lo acepta esta pantalla". Son dos afirmaciones distintas."""
+
+LIMITE_MALLA_BYTES = 20 * MB
+"""Tope propio de F4. Un cortante de este motor pesa entre 100 y 300 KB.
+
+20 MB de STL binario son 400.000 triangulos, dos ordenes de magnitud por encima
+de cualquier cortante real, y quedan bajo el techo duro global de 25 MB
+(`main.py`), asi que el 413 que ve el usuario es el especifico de la pantalla y
+no el generico del middleware. El techo de triangulos de verdad lo pone
+`cutter3d.malla.MAX_TRIANGULOS`, que es el que cuenta en Windows, donde el
+proceso hijo no tiene `RLIMIT_DATA`."""
 
 FORMATOS_VISTA = frozenset({Formato.JPEG})
 """Lo unico que acepta el PUT de la foto del cortante.
@@ -136,6 +190,13 @@ class ClaveArchivo(StrEnum):
     archivos distintos, producidos por dos cosas distintas, y darles la misma
     clave haria que un trabajo encadenado pisara uno con el otro."""
 
+    SET = "set"
+    """La lamina del set: las fotos de todos los diseños en una sola imagen.
+
+    Es la unica salida de F4 que NO es por diseño, y por eso es una clave de
+    trabajo comun y no una de `ClaveDiseno`. La compone `cutter3d.lamina` a
+    pedido, cuando ya estan todas las fotos arriba."""
+
 
 NOMBRE_DE: dict[ClaveArchivo, str] = {
     ClaveArchivo.TRES_MF: "salida.3mf",
@@ -148,6 +209,7 @@ NOMBRE_DE: dict[ClaveArchivo, str] = {
     ClaveArchivo.PNG: "salida.png",
     ClaveArchivo.SVG: "salida.svg",
     ClaveArchivo.JPG_VISTA: "vista.jpg",
+    ClaveArchivo.SET: "set.jpg",
 }
 
 MEDIO_DE: dict[ClaveArchivo, str] = {
@@ -161,6 +223,7 @@ MEDIO_DE: dict[ClaveArchivo, str] = {
     ClaveArchivo.PNG: "image/png",
     ClaveArchivo.SVG: "image/svg+xml",
     ClaveArchivo.JPG_VISTA: "image/jpeg",
+    ClaveArchivo.SET: "image/jpeg",
 }
 
 CLAVES_INTERNAS: frozenset[ClaveArchivo] = frozenset({ClaveArchivo.GLB})
@@ -172,7 +235,7 @@ aca —y no como una lista escrita a mano en el router— para que la pantalla y
 el ZIP no puedan discrepar sobre que es descargable."""
 
 CLAVES_NO_ENCADENABLES: frozenset[ClaveArchivo] = frozenset(
-    {ClaveArchivo.GLB, ClaveArchivo.JPG_VISTA}
+    {ClaveArchivo.GLB, ClaveArchivo.JPG_VISTA, ClaveArchivo.SET}
 )
 """Lo que un trabajo deja pero NO puede ser la entrada del siguiente.
 
@@ -215,7 +278,91 @@ SUFIJO_DESCARGA: dict[ClaveArchivo, str] = {
     ClaveArchivo.PNG: ".png",
     ClaveArchivo.SVG: ".svg",
     ClaveArchivo.JPG_VISTA: "-vista.jpg",
+    ClaveArchivo.SET: "-set.jpg",
 }
+
+MAX_DISENOS = 25
+"""Cuantos diseños admite un trabajo de F4.
+
+Un diseño no es un archivo: puede venir en uno (el `.3mf` combinado) o en dos
+(el cortador y su marcador sueltos), asi que el tope de ARCHIVOS es el doble.
+El numero sale del pedido y no de un limite tecnico, pero tambien es lo que
+mantiene acotado el peor caso: 25 procesos en serie contra el timeout de 120 s
+cada uno, y 25 celdas en la lamina del set."""
+
+MAX_ARCHIVOS_POST = MAX_DISENOS * MAX_ARCHIVOS_POR_DISENO
+"""El tope de archivos subidos de una vez. Se deriva, no se escribe aparte."""
+
+
+class ClaveDiseno(StrEnum):
+    """Lo que produce CADA diseño de un post. Se pide por clave **mas indice**.
+
+    Es un enum aparte de `ClaveArchivo` por una razon concreta: aquellas claves
+    mapean a un nombre FIJO en disco (`NOMBRE_DE`), y eso no escala a 25 copias
+    de lo mismo. Meter `jpg_vista_01`..`jpg_vista_25` en el enum serian cincuenta
+    miembros para expresar dos.
+
+    La regla de que el cliente no nombra ningun archivo en disco se sostiene
+    igual, y por el mismo mecanismo: pide una clave de un conjunto cerrado y un
+    **entero acotado**, y el nombre lo arma `nombre_de_diseno`. Un indice no es
+    menos validable que una clave — al contrario.
+    """
+
+    GLB = "glb"
+    JPG_VISTA = "jpg_vista"
+
+
+PLANTILLA_DISENO: dict[ClaveDiseno, str] = {
+    ClaveDiseno.GLB: "salida-{:02d}.glb",
+    ClaveDiseno.JPG_VISTA: "vista-{:02d}.jpg",
+}
+
+MEDIO_DISENO: dict[ClaveDiseno, str] = {
+    ClaveDiseno.GLB: "model/gltf-binary",
+    ClaveDiseno.JPG_VISTA: "image/jpeg",
+}
+
+CLAVES_DISENO_INTERNAS: frozenset[ClaveDiseno] = frozenset({ClaveDiseno.GLB})
+"""El `.glb` por diseño existe para el visor, igual que el de F3: no va al ZIP."""
+
+
+def validar_indice(indice: int) -> int:
+    """El indice de un diseño, o 4xx. Es la otra mitad de `validar_id`.
+
+    Se valida ACA y no en cada handler por lo mismo que el id: es lo unico que
+    separa un entero del cliente de un nombre de archivo, y una ruta nueva que
+    se olvide de llamarlo no puede existir si el unico camino al nombre pasa por
+    `nombre_de_diseno`, que lo llama siempre.
+    """
+    if not 1 <= indice <= MAX_DISENOS:
+        raise ErrorApi(
+            "diseno_inexistente",
+            "No existe ese diseño en el trabajo.",
+            estado=404,
+            detalle={"indice": indice},
+        )
+    return indice
+
+
+def nombre_de_diseno(clave: ClaveDiseno, indice: int) -> str:
+    """El nombre en disco de un archivo por diseño. Nunca lo elige el cliente."""
+    return PLANTILLA_DISENO[clave].format(validar_indice(indice))
+
+
+def prefijo_de_entrada(indice: int, orden: int) -> str:
+    """El nombre SIN extension del archivo `orden` del diseño `indice`.
+
+    `entrada-03b` es el segundo archivo del tercer diseño; la extension la pone
+    `guardar_subida`, que es la unica que sabe que formato dijeron los bytes.
+    Una letra y no un numero para que no se confunda con el indice del diseño al
+    leer el directorio, que es lo unico que hay para reconstruir un trabajo a
+    mano.
+    """
+    validar_indice(indice)
+    if not 0 <= orden < MAX_ARCHIVOS_POR_DISENO:
+        raise ErrorApi("interno", "No se pudo guardar el archivo.", estado=500)
+    return f"entrada-{indice:02d}{'ab'[orden]}"
+
 
 SUFIJO_ZIP = ".zip"
 """El de "descargar todo". No esta en `SUFIJO_DESCARGA` porque el ZIP no es un
@@ -270,6 +417,10 @@ FIRMAS: tuple[tuple[bytes, Formato], ...] = (
     (b"\x00\x00\x01\x00", Formato.ICO),
     (b"II*\x00", Formato.TIFF),
     (b"MM\x00*", Formato.TIFF),
+    # El ZIP del 3MF. La firma es compartida con docx/xlsx/jar/epub: lo que
+    # confirma que es un 3MF esta al final del archivo y lo chequea
+    # `cutter3d.malla.confirmar_3mf` despues de guardar. Ver `Formato.TRES_MF`.
+    (b"PK\x03\x04", Formato.TRES_MF),
     # `BM` son solo dos bytes, la firma mas debil de la tabla: va ultima para
     # que ningun formato con firma mas larga caiga aca por accidente.
     (b"BM", Formato.BMP),
@@ -277,15 +428,21 @@ FIRMAS: tuple[tuple[bytes, Formato], ...] = (
 
 LARGO_HEADER_TGA = 18
 
+CABECERA_STL_BINARIO = 84
+BYTES_POR_TRIANGULO_STL = 50
 
-def detectar_formato(cabecera: bytes) -> Formato | None:
+
+def detectar_formato(cabecera: bytes, tamano: int | None = None) -> Formato | None:
     """Formato real segun los bytes. None si no es ninguno de los soportados.
 
     **El orden importa y no es alfabetico.** Primero lo que necesita mirar mas
-    que un prefijo (WEBP y los ISO-BMFF), despues la tabla de firmas, y
-    `_parece_svg` SIEMPRE al final: su ultima rama es un `b"<svg" in` sobre los
-    primeros 512 bytes, o sea un catch-all textual. Un formato agregado despues
-    de el no se alcanzaria nunca.
+    que un prefijo (WEBP y los ISO-BMFF), despues la tabla de firmas, y al final
+    `_sin_firma`, que agrupa a los que no tienen magic bytes y donde el orden es
+    la correccion misma — ver su docstring.
+
+    `tamano` es el largo total del archivo, y es **opcional a proposito**: lo
+    unico que habilita es reconocer un STL binario, que no tiene firma. Quien no
+    lo pasa ve exactamente el comportamiento de siempre.
     """
     if cabecera[:4] == b"RIFF" and cabecera[8:12] == b"WEBP":
         return Formato.WEBP
@@ -294,11 +451,66 @@ def detectar_formato(cabecera: bytes) -> Formato | None:
     for firma, formato in FIRMAS:
         if cabecera.startswith(firma):
             return formato
+    return _sin_firma(cabecera, tamano)
+
+
+def _sin_firma(cabecera: bytes, tamano: int | None) -> Formato | None:
+    """Los formatos que NO tienen magic bytes, en el unico orden que funciona.
+
+    Estan juntos y aparte de `detectar_formato` porque comparten una propiedad
+    que los demas no tienen: ninguno se puede afirmar mirando un prefijo, asi
+    que entre ellos el orden **es** la correccion. De arriba hacia abajo, cada
+    uno es mas debil que el anterior:
+
+    1. **STL binario** — identidad aritmetica exacta entre el contador de
+       triangulos y el tamaño del archivo. Es la mas fuerte de las cuatro, y por
+       eso va primero: los 80 bytes de cabecera libre de un STL pueden satisfacer
+       de casualidad la heuristica de TGA, que solo mira tres campos.
+    2. **TGA** — tres campos del header de 18 bytes dentro de sus rangos validos.
+    3. **STL ASCII** — empieza con `solid`. Va despues del binario porque muchos
+       programas escriben el nombre del solido en esos 80 bytes libres, asi que
+       un STL binario tambien puede empezar con `solid`; confundirlos manda el
+       archivo al parser equivocado.
+    4. **SVG** — catch-all textual (`b"<svg" in` los primeros 512 bytes).
+       SIEMPRE ultimo: lo que se agregue despues no se alcanza nunca.
+    """
+    if _parece_stl_binario(cabecera, tamano):
+        return Formato.STL
     if _parece_tga(cabecera):
         return Formato.TGA
+    if _parece_stl_ascii(cabecera):
+        return Formato.STL
     if _parece_svg(cabecera):
         return Formato.SVG
     return None
+
+
+def _parece_stl_binario(cabecera: bytes, tamano: int | None) -> bool:
+    """STL binario: 80 bytes libres + un uint32 de triangulos + 50 bytes cada uno.
+
+    No hay ninguna firma que mirar, asi que lo que se verifica es que el tamaño
+    del archivo sea EXACTAMENTE el que declara su propio contador. Que la
+    igualdad cierre por casualidad en un archivo que no es un STL es
+    practicamente imposible, y por eso esta rama puede ir antes que la heuristica
+    de TGA.
+
+    Sin `tamano` no se puede afirmar nada y devuelve False — nunca adivina.
+    """
+    if tamano is None or len(cabecera) < CABECERA_STL_BINARIO:
+        return False
+    declarados = int.from_bytes(cabecera[80:84], "little")
+    return tamano == CABECERA_STL_BINARIO + declarados * BYTES_POR_TRIANGULO_STL
+
+
+def _parece_stl_ascii(cabecera: bytes) -> bool:
+    """STL de texto: empieza con `solid`.
+
+    Va **despues** del binario porque los 80 bytes libres de un STL binario
+    tambien pueden empezar con `solid` —muchos programas escriben ahi el nombre
+    del solido— y confundirlos manda el archivo al parser equivocado. Y va antes
+    de `_parece_svg`, que es el catch-all textual.
+    """
+    return cabecera.lstrip()[:5].lower() == b"solid"
 
 
 def _marca_bmff(cabecera: bytes) -> Formato | None:
@@ -377,6 +589,17 @@ def dir_de_trabajo(a: Ajustes, id_: str, *, crear: bool = False) -> Path:
 
 def ruta_de(a: Ajustes, id_: str, clave: ClaveArchivo) -> Path | None:
     ruta = dir_de_trabajo(a, id_) / NOMBRE_DE[clave]
+    return ruta if ruta.is_file() else None
+
+
+def ruta_de_diseno(a: Ajustes, id_: str, clave: ClaveDiseno, indice: int) -> Path | None:
+    """Lo mismo que `ruta_de`, para los archivos por diseño de un post.
+
+    El nombre lo arma `nombre_de_diseno`, que valida el indice: es el unico
+    camino, asi que no hay forma de llegar a un archivo por indice sin pasar por
+    la validacion.
+    """
+    ruta = dir_de_trabajo(a, id_) / nombre_de_diseno(clave, indice)
     return ruta if ruta.is_file() else None
 
 
@@ -465,6 +688,34 @@ def nombre_de_descarga(id_: str, clave: ClaveArchivo, base: str | None = None) -
     return f"{_raiz_del_nombre(id_, base)}{SUFIJO_DESCARGA[clave]}"
 
 
+SUFIJO_DISENO: dict[ClaveDiseno, str] = {
+    ClaveDiseno.JPG_VISTA: "-vista.jpg",
+    ClaveDiseno.GLB: ".glb",
+}
+
+
+def nombre_de_descarga_de_diseno(
+    id_: str, clave: ClaveDiseno, indice: int, base: str | None = None, *, con_indice: bool = True
+) -> str:
+    """Como se ve la descarga de un archivo por diseño.
+
+    Cada diseño tiene **su** nombre —el que mando el navegador, ya saneado—
+    porque un lote de 25 fotos que bajan todas como `studiocutter-...` es un lote
+    que hay que volver a ordenar a mano.
+
+    ⚠ **El indice va SIEMPRE que haya mas de un diseño, incluso con nombre
+    propio.** Dos diseños distintos pueden tener el mismo nombre de base —dos
+    corridas del mismo dibujo, o dos archivos homonimos de carpetas distintas— y
+    sin el indice las dos fotos entran al ZIP con la misma entrada: la segunda
+    pisa a la primera y el usuario se lleva 24 fotos creyendo que tiene 25.
+    """
+    raiz = _raiz_del_nombre(id_, base)
+    sufijo = SUFIJO_DISENO[clave]
+    if not con_indice:
+        return f"{raiz}{sufijo}"
+    return f"{raiz}-{validar_indice(indice):02d}{sufijo}"
+
+
 def nombre_de_zip(id_: str, base: str | None = None) -> str:
     """Nombre del ZIP de "descargar todo". Mismo criterio que las descargas sueltas."""
     return f"{_raiz_del_nombre(id_, base)}{SUFIJO_ZIP}"
@@ -498,6 +749,30 @@ def claves_descargables(archivos: dict[str, str]) -> list[ClaveArchivo]:
 # ── Subidas ──────────────────────────────────────────────────────────────────
 
 
+def _tamano_de(flujo: BinaryIO) -> int | None:
+    """Largo total del flujo sin consumirlo, o None si no se puede saber.
+
+    Lo pide `detectar_formato` para reconocer un STL binario, que no tiene firma
+    y solo se identifica por una identidad entre su contador de triangulos y el
+    tamaño del archivo.
+
+    El `UploadFile` de Starlette envuelve un `SpooledTemporaryFile`, que es
+    seekable siempre, asi que en la practica esto devuelve un numero. Igual
+    degrada a `None` en vez de romper: la firma de la funcion promete un
+    `BinaryIO` cualquiera, y un flujo que no se puede rebobinar sigue sirviendo
+    para todos los demas formatos. Lo unico que se pierde ahi es el STL binario.
+    """
+    if not flujo.seekable():
+        return None
+    try:
+        inicio = flujo.tell()
+        tamano = flujo.seek(0, os.SEEK_END)
+        flujo.seek(inicio)
+    except OSError:
+        return None
+    return tamano
+
+
 def guardar_subida(
     origen: BinaryIO,
     destino_dir: Path,
@@ -506,6 +781,7 @@ def guardar_subida(
     limite_bytes: int,
     nombre_cliente: str | None = None,
     destino_nombre: str | None = None,
+    prefijo: str | None = None,
 ) -> Subida:
     """Copia el archivo subido a `entrada.<ext>` validando contenido y tamaño.
 
@@ -519,9 +795,19 @@ def guardar_subida(
     del cortante, que va a `vista.jpg`—. **Sigue sin venir del cliente**: el
     llamador lo saca de `NOMBRE_DE`, igual que las descargas. Con `None` el
     comportamiento es el de siempre.
+
+    `prefijo` es la version para cuando el llamador sabe el nombre pero **no** la
+    extension, que es el caso de un post con varios diseños
+    (`entrada-03b` + lo que digan los bytes). No se puede resolver con
+    `destino_nombre` porque el formato se detecta adentro de esta funcion: quien
+    llama tendria que adivinarlo antes, que es exactamente lo que este modulo no
+    deja hacer. Tampoco viene del cliente — sale de `prefijo_de_entrada`.
     """
+    if destino_nombre is not None and prefijo is not None:
+        raise ErrorApi("interno", "No se pudo guardar el archivo.", estado=500)
+    tamano = _tamano_de(origen)
     cabecera = origen.read(TROZO)
-    formato = detectar_formato(cabecera)
+    formato = detectar_formato(cabecera, tamano)
     if formato is None or formato not in permitidos:
         detectado = formato.value if formato else nombrar_no_soportado(cabecera)
         que = "Ese tipo de archivo" if detectado == "desconocido" else f"Un archivo {detectado}"
@@ -555,8 +841,14 @@ def guardar_subida(
     if destino_nombre is not None and Path(destino_nombre).name != destino_nombre:
         raise ErrorApi("interno", "No se pudo guardar el archivo.", estado=500)
 
+    if prefijo is not None and Path(prefijo).name != prefijo:
+        raise ErrorApi("interno", "No se pudo guardar el archivo.", estado=500)
+
     destino_dir.mkdir(parents=True, exist_ok=True)
-    destino = destino_dir / (destino_nombre or f"entrada{EXTENSION[formato]}")
+    base = (
+        f"{prefijo}{EXTENSION[formato]}" if prefijo is not None else f"entrada{EXTENSION[formato]}"
+    )
+    destino = destino_dir / (destino_nombre or base)
 
     # ⚠ Se escribe a un temporal y se renombra al final, en vez de abrir el
     # destino en `"wb"`. Con `entrada.<ext>` daba igual —el destino era un
@@ -605,32 +897,47 @@ def guardar_subida(
 # ── Frontera con el proceso hijo ─────────────────────────────────────────────
 
 
-def escribir_estado(dir_trabajo: Path, datos: dict[str, Any]) -> None:
+def nombre_de_estado(indice: int | None = None) -> str:
+    """`estado.json`, o `estado-03.json` para el diseño 3 de un post multiple.
+
+    Cada paso de una serie escribe el suyo porque los pasos son procesos
+    distintos que corren uno detras del otro: con un solo archivo, el diseño 2
+    pisaria el resultado del 1 antes de que el padre lo haya cerrado, y el ultimo
+    seria el unico que sobrevive.
+    """
+    return NOMBRE_ESTADO if indice is None else f"estado-{validar_indice(indice):02d}.json"
+
+
+def escribir_estado(dir_trabajo: Path, datos: dict[str, Any], indice: int | None = None) -> None:
     """Escribe `estado.json` de forma atomica. Lo llama el proceso HIJO.
 
     Atomico de verdad —temporal en el mismo directorio y despues `os.replace`—
     porque el padre puede estar leyendolo justo en el medio. Un JSON a medio
     escribir se leeria como trabajo fallido.
+
+    Con `indice`, escribe el estado de ESE diseño (ver `nombre_de_estado`).
     """
     dir_trabajo.mkdir(parents=True, exist_ok=True)
     fd, temporal = tempfile.mkstemp(dir=dir_trabajo, prefix=".estado-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(datos, f, ensure_ascii=False)
-        os.replace(temporal, dir_trabajo / NOMBRE_ESTADO)
+        os.replace(temporal, dir_trabajo / nombre_de_estado(indice))
     except BaseException:
         Path(temporal).unlink(missing_ok=True)
         raise
 
 
-def leer_estado(dir_trabajo: Path) -> dict[str, Any] | None:
+def leer_estado(dir_trabajo: Path, indice: int | None = None) -> dict[str, Any] | None:
     """Lee `estado.json`. Lo llama el proceso PADRE.
 
     **Su ausencia significa fallo, no "todavia no".** El hijo lo escribe
     siempre, termine bien o mal; si no esta, el hijo murio antes de poder
     escribirlo (lo mato el timeout, o el sistema operativo).
+
+    Con `indice`, lee el estado de ESE diseño de un post multiple.
     """
-    ruta = dir_trabajo / NOMBRE_ESTADO
+    ruta = dir_trabajo / nombre_de_estado(indice)
     if not ruta.is_file():
         return None
     try:
@@ -688,6 +995,7 @@ def copiar_desde_trabajo(
     usuario: str,
     destino_dir: Path,
     permitidos: frozenset[Formato],
+    limite_bytes: int | None = None,
 ) -> Subida:
     """Trae la salida de un trabajo anterior como entrada de uno nuevo.
 
@@ -709,10 +1017,19 @@ def copiar_desde_trabajo(
         if not ruta.is_file():
             continue
         with ruta.open("rb") as f:
-            if detectar_formato(f.read(TROZO)) in permitidos:
+            # El tamaño va explicito por la misma razon que en `guardar_subida`:
+            # sin el, un `.stl` de un trabajo anterior no se reconoce y el
+            # encadenado hacia F4 responde `encadenado_incompatible` sobre un
+            # archivo que si se podia usar.
+            if detectar_formato(f.read(TROZO), ruta.stat().st_size) in permitidos:
                 f.seek(0)
                 subida = guardar_subida(
-                    f, destino_dir, permitidos=permitidos, limite_bytes=a.tamano_maximo_bytes
+                    f,
+                    destino_dir,
+                    permitidos=permitidos,
+                    limite_bytes=limite_bytes
+                    if limite_bytes is not None
+                    else a.tamano_maximo_bytes,
                 )
                 # El nombre viaja por la cadena: si el conversor arranco con
                 # `buddy.heif`, el cortante tres pantallas despues sigue
@@ -738,6 +1055,7 @@ def resolver_entrada(
     destino_dir: Path,
     permitidos: frozenset[Formato],
     nombre_cliente: str | None = None,
+    limite_bytes: int | None = None,
 ) -> Subida:
     """Una subida directa o la salida del trabajo anterior. Nunca las dos.
 
@@ -746,13 +1064,19 @@ def resolver_entrada(
 
     `nombre_cliente` solo aplica a la subida directa: cuando la entrada viene
     encadenada, el nombre lo hereda `copiar_desde_trabajo` del trabajo anterior.
+
+    `limite_bytes` deja que una pantalla se ponga un tope mas ceñido que el
+    general de 25 MB. Se aplica **por los dos caminos**: un archivo encadenado
+    no es mas confiable que uno subido, y si los dos limites no fueran el mismo
+    el encadenado seria la forma de saltearse el de la pantalla.
     """
+    tope = limite_bytes if limite_bytes is not None else a.tamano_maximo_bytes
     if flujo is not None:
         return guardar_subida(
             flujo,
             destino_dir,
             permitidos=permitidos,
-            limite_bytes=a.tamano_maximo_bytes,
+            limite_bytes=tope,
             nombre_cliente=nombre_cliente,
         )
     if origen_id:
@@ -763,6 +1087,7 @@ def resolver_entrada(
             usuario=usuario,
             destino_dir=destino_dir,
             permitidos=permitidos,
+            limite_bytes=tope,
         )
     raise ErrorApi(
         "falta_archivo",

@@ -124,3 +124,16 @@ class AjustesMotor:
             raise ParametroFueraDeRango(
                 "max_iteraciones", self.max_iteraciones, "tiene que ser al menos 1"
             )
+
+
+MAX_ARCHIVOS_POR_DISENO = 2
+"""Cuantos archivos puede tener UN diseño: un cortante y su marcador.
+
+Vive aca —el modulo de limites, `math` y `dataclasses` y nada mas— y no en
+`malla.py`, que es donde se usa, **por costo de import**: la capa web necesita
+este numero para validar una subida, y `malla.py` importa trimesh. Meter trimesh
+en el proceso de uvicorn revierte el ciclo 6. Es la misma razon por la que
+`paquete3mf.py` esta separado; ver su docstring.
+
+No hay una tercera pieza en este producto: el motor exporta exactamente dos
+cuerpos (`solids.OBJETOS`), juntos en un `.3mf` o sueltos en dos archivos."""

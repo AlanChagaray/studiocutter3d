@@ -30,6 +30,7 @@ from app.config import Ajustes
 from app.dependencias import obtener_ajustes, obtener_almacen
 from app.main import app
 from app.proteccion import reiniciar_frenos
+from app.trabajos import detener_todo
 
 USUARIO = "tester"
 CLAVE = secrets.token_urlsafe(16)
@@ -49,6 +50,22 @@ def frenos_limpios() -> Iterator[None]:
     reiniciar_frenos()
     yield
     reiniciar_frenos()
+
+
+@pytest.fixture(autouse=True)
+def trabajos_limpios() -> Iterator[None]:
+    """Ningun test le deja un proceso —ni un lugar del cupo— al siguiente.
+
+    Mismo problema y misma forma que `frenos_limpios`: el registro de procesos y
+    de series vive en el modulo, y `max_trabajos_simultaneos` es 3. Tres tests
+    que lanzan un trabajo y no lo esperan hacen que el cuarto reciba un 429
+    **segun el orden en que corran**.
+
+    Va despues del test y no antes para que el que lo necesite pueda mirar el
+    proceso mientras vive (`proceso_de`), que es lo que hacen los del timeout.
+    """
+    yield
+    detener_todo()
 
 
 @pytest.fixture

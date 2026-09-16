@@ -117,27 +117,34 @@ def _acotar_memoria() -> None:
 ETAPA_VECTORIZANDO = "vectorizando la imagen"
 ETAPA_GEOMETRIA = "construyendo la geometria"
 ETAPA_LINEAS = "corrigiendo las lineas"
+ETAPA_LEYENDO_MALLA = "leyendo la malla"
 ETAPA_LISTO = "listo"
 
 
-def _avisar(dir_trabajo: Path, etapa: str) -> None:
+def _avisar(dir_trabajo: Path, etapa: str, indice: int | None = None) -> None:
     """Deja el progreso en disco. `ok: null` significa todavia en curso."""
-    escribir_estado(dir_trabajo, {"ok": None, "etapa": etapa, "archivos": {}})
+    escribir_estado(dir_trabajo, {"ok": None, "etapa": etapa, "archivos": {}}, indice)
 
 
 def _terminar_bien(
-    dir_trabajo: Path, archivos: dict[str, str], reporte: dict[str, Any] | None
+    dir_trabajo: Path,
+    archivos: dict[str, str],
+    reporte: dict[str, Any] | None,
+    indice: int | None = None,
 ) -> None:
     escribir_estado(
         dir_trabajo,
         {"ok": True, "etapa": ETAPA_LISTO, "archivos": archivos, "reporte": reporte},
+        indice,
     )
 
 
-def _terminar_mal(dir_trabajo: Path, exc: Exception) -> None:
+def _terminar_mal(dir_trabajo: Path, exc: Exception, indice: int | None = None) -> None:
     """Traduce el fallo con el mismo criterio que la API y lo deja en disco."""
     escribir_estado(
-        dir_trabajo, {"ok": False, "etapa": "error", "archivos": {}, "error": como_dict(exc)}
+        dir_trabajo,
+        {"ok": False, "etapa": "error", "archivos": {}, "error": como_dict(exc)},
+        indice,
     )
 
 
@@ -237,6 +244,60 @@ def ejecutar_cortante(
         _terminar_bien(dir_trabajo, archivos, reporte_como_json(resultado.reporte))
     except Exception as exc:  # ver el docstring del modulo
         _terminar_mal(dir_trabajo, exc)
+
+
+# ── F4: foto de una malla ya construida ──────────────────────────────────────
+
+
+def ejecutar_post(
+    dir_trabajo_txt: str,
+    indice: int,
+    entradas_txt: tuple[str, ...],
+    roles: tuple[str, ...],
+    salida_txt: str,
+) -> None:
+    """Deja el `.glb` de UN diseño, a partir de sus uno o dos archivos.
+
+    Es la tarea mas corta de las cuatro, y lo unico que tiene de propio es que
+    **no construye geometria**: la lee. La foto la rinde despues el navegador con
+    el mismo `preview3d.js` que la del cortante, que es lo que garantiza que
+    salga igual; aca solo hay que dejarle el `.glb` con el acabado puesto.
+
+    Corre **una vez por diseño**, en su propio proceso y en serie con los demas
+    (`trabajos.lanzar_serie`), asi que escribe `estado-<indice>.json` y no
+    `estado.json`: con un solo archivo, el diseño siguiente pisaria el resultado
+    del anterior antes de que el padre lo haya leido.
+
+    `entradas_txt` y `roles` son tuplas de strings porque los argumentos cruzan
+    un `spawn`: solo primitivos, como dice el docstring del modulo.
+
+    Importa `cutter3d.malla` y nada mas: trimesh entra igual, pero manifold3d,
+    shapely y skimage no, porque no se construye ni una booleana.
+    """
+    _acotar_memoria()
+    dir_trabajo = Path(dir_trabajo_txt)
+    try:
+        from cutter3d.malla import a_glb  # noqa: PLC0415 — ver el docstring del modulo
+
+        _avisar(dir_trabajo, ETAPA_LEYENDO_MALLA, indice)
+        reporte = a_glb([Path(e) for e in entradas_txt], dir_trabajo / salida_txt, list(roles))
+
+        _terminar_bien(
+            dir_trabajo,
+            {},
+            {
+                "objetos": list(reporte.objetos),
+                "triangulos": reporte.triangulos,
+                "medidas_mm": list(reporte.medidas_mm),
+                "cerrado": reporte.cerrado,
+                "volumen_mm3": reporte.volumen_mm3,
+                "advertencias": list(reporte.advertencias),
+                "archivos": len(entradas_txt),
+            },
+            indice,
+        )
+    except Exception as exc:  # ver el docstring del modulo
+        _terminar_mal(dir_trabajo, exc, indice)
 
 
 # ── Serializacion del reporte ────────────────────────────────────────────────

@@ -200,13 +200,14 @@ def test_las_cabeceras_no_dependen_de_que_haya_cuerpo() -> None:
     assert respuesta.headers["cross-origin-opener-policy"] == "same-origin"
 
 
-def test_el_nonce_del_csp_es_el_que_lleva_el_import_map(sesion: TestClient) -> None:
+@pytest.mark.parametrize("pagina", ["/cortante", "/post"])
+def test_el_nonce_del_csp_es_el_que_lleva_el_import_map(sesion: TestClient, pagina: str) -> None:
     """Si se desincronizan, el import map no se evalua y el visor 3D desaparece.
 
     Y no hay error visible en ningun lado: el grafo de modulos deja de
     evaluarse en silencio. Es el mismo modo de falla que ya costo un ciclo.
     """
-    respuesta = sesion.get("/cortante")
+    respuesta = sesion.get(pagina)
     nonce_cabecera = re.search(r"'nonce-([^']+)'", respuesta.headers["content-security-policy"])
     nonce_html = re.search(r'<script type="importmap" nonce="([^"]+)"', respuesta.text)
 

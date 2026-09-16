@@ -22,7 +22,12 @@ from app.archivos import SUFIJO_DESCARGA, ClaveArchivo
 from app.routers.cortante import COLORES, COLORES_FONDO
 from app.routers.paginas import MODULOS
 
-PROTEGIDAS = ["/", "/conversor", "/lineas", "/cortante"]
+PROTEGIDAS = ["/", "/conversor", "/lineas", "/cortante", "/post"]
+
+#: Las dos pantallas con visor 3D. Comparten `preview3d.js`, los ids del
+#: bloque de vista previa y las paletas: los tests de contrato del front
+#: valen para las dos o no valen para ninguna.
+CON_VISOR = ["/cortante", "/post"]
 
 
 def test_login_correcto_redirige_y_deja_cookie(cliente: TestClient) -> None:
@@ -161,7 +166,8 @@ def _especificadores(codigo: str) -> set[str]:
     }
 
 
-def test_el_grafo_de_modulos_del_visor_cierra(sesion: TestClient) -> None:
+@pytest.mark.parametrize("pagina", CON_VISOR)
+def test_el_grafo_de_modulos_del_visor_cierra(sesion: TestClient, pagina: str) -> None:
     """Cada import de cada modulo servido tiene que resolver. Sin excepciones.
 
     Es el test que faltaba, y faltaba dos veces: el build de three importa
@@ -179,7 +185,7 @@ def test_el_grafo_de_modulos_del_visor_cierra(sesion: TestClient) -> None:
     mapa = json.loads(
         re.search(
             r'<script type="importmap"[^>]*>\s*(\{.*?\})\s*</script>',
-            sesion.get("/cortante").text,
+            sesion.get(pagina).text,
             re.DOTALL,
         ).group(1)
     )["imports"]
@@ -251,9 +257,14 @@ PALETAS = {
 }
 
 
-def test_las_tres_paletas_dibujan_su_lista_completa(sesion: TestClient) -> None:
-    """Cada paleta es exactamente la lista que le toca, en orden y completa."""
-    html = sesion.get("/cortante").text
+@pytest.mark.parametrize("pagina", CON_VISOR)
+def test_las_tres_paletas_dibujan_su_lista_completa(sesion: TestClient, pagina: str) -> None:
+    """Cada paleta es exactamente la lista que le toca, en orden y completa.
+
+    Vale para las dos pantallas con visor: post importa `COLORES` del router de
+    cortante, no una copia. Si alguien duplicara la lista, este test lo ve.
+    """
+    html = sesion.get(pagina).text
     assert len(COLORES) == 8
     assert len(COLORES_FONDO) == 9, "el fondo suma `Sin fondo` a los ocho colores"
 
@@ -288,7 +299,8 @@ def test_las_tres_paletas_dibujan_su_lista_completa(sesion: TestClient) -> None:
     assert PALETAS["paleta-fondo"][1] == COLORES[0].nombre
 
 
-def test_sin_fondo_es_solo_del_fondo_y_apaga_el_piso(sesion: TestClient) -> None:
+@pytest.mark.parametrize("pagina", CON_VISOR)
+def test_sin_fondo_es_solo_del_fondo_y_apaga_el_piso(sesion: TestClient, pagina: str) -> None:
     """`Sin fondo`: ultima muestra del fondo, blanco puro y con `data-sin-piso`.
 
     Las tres puntas tienen que coincidir o la opcion existe a medias: el router
@@ -306,7 +318,7 @@ def test_sin_fondo_es_solo_del_fondo_y_apaga_el_piso(sesion: TestClient) -> None
         "y deja el cortante sin relieve"
     )
 
-    html = sesion.get("/cortante").text
+    html = sesion.get(pagina).text
     for ident, (lista, _) in PALETAS.items():
         muestras = _paleta(html, ident)
         marcadas = [e for e in muestras if _atributo(e, "data-sin-piso") == "1"]
@@ -392,7 +404,7 @@ def test_el_menu_de_modulos_se_dibuja_una_sola_vez(sesion: TestClient) -> None:
     distintas en cada copia, y los dos `<nav>` tenian el mismo nombre accesible.
     Agregar un modulo eran dos ediciones y nadie se acordaba de la segunda.
     """
-    for pagina in ("conversor", "lineas", "cortante"):
+    for pagina in ("conversor", "lineas", "cortante", "post"):
         html = sesion.get(f"/{pagina}").text
 
         etiquetas = re.findall(r"<nav[^>]*aria-label=\"([^\"]*)\"", html)
@@ -490,18 +502,27 @@ IDS_VISTA_IMAGEN = (
     "vista-imagen",
     "paleta-pieza",
     "paleta-fondo",
-    "bajar-todo",
     "pista-imagen",
 )
 
+#: `#bajar-todo` es el ZIP, y el ZIP es solo de cortante: post produce un
+#: unico archivo y un zip de uno confunde. El resto de los ids SI valen para
+#: las dos pantallas — `preview3d.js` los resuelve por nombre a nivel de
+#: modulo y no tiene namespace por pantalla.
+IDS_SOLO_CORTANTE = ("bajar-todo",)
 
-def test_los_ids_de_la_vista_imagen_existen_en_las_dos_puntas(sesion: TestClient) -> None:
-    html = sesion.get("/cortante").text
+
+@pytest.mark.parametrize("pagina", CON_VISOR)
+def test_los_ids_de_la_vista_imagen_existen_en_las_dos_puntas(
+    sesion: TestClient, pagina: str
+) -> None:
+    html = sesion.get(pagina).text
     js = _sin_comentarios(
         sesion.get("/static/js/app.js").text + sesion.get("/static/js/preview3d.js").text
     )
-    for ident in IDS_VISTA_IMAGEN:
-        assert f'id="{ident}"' in html, f"la pantalla no dibuja #{ident}"
+    esperados = IDS_VISTA_IMAGEN + (IDS_SOLO_CORTANTE if pagina == "/cortante" else ())
+    for ident in esperados:
+        assert f'id="{ident}"' in html, f"{pagina} no dibuja #{ident}"
         # Con `#` o con `getElementById`, no el nombre suelto: que la palabra
         # "lienzo" aparezca en el archivo no prueba que alguien lo busque.
         assert f"'#{ident}'" in js or f"getElementById('{ident}')" in js, (
@@ -658,12 +679,21 @@ def test_la_imagen_se_exporta_en_jpg_y_con_tope_de_tamano(sesion: TestClient) ->
     # El `-vista.jpg` dejo de armarse en JS: ahora la foto se sube al trabajo y
     # el nombre lo pone el servidor, con el mismo criterio que el `.3mf`.
     assert SUFIJO_DESCARGA[ClaveArchivo.JPG_VISTA] == "-vista.jpg"
-    # La URL y el verbo juntos, no dos substrings sueltos: separados, mover el
-    # endpoint a cualquier otra ruta que contenga `/imagen` pasaba igual.
-    subida = re.search(
-        r"fetch\(`(/api/trabajos/[^`]*?/imagen)`,\s*\{\s*method:\s*'PUT'", _sin_comentarios(js)
+    # ⚠ La URL ya NO la arma el visor: desde F4 hay dos destinos posibles
+    # —`/imagen` para un cortante y `/diseno/<n>/imagen` para cada diseño de un
+    # post— y elegir entre ellos desde `preview3d.js` seria meterle al visor una
+    # idea de que pantalla lo llamo. El visor recibe el destino y hace el PUT;
+    # las URLs las arma `app.js`. Se verifican las dos mitades, porque cada una
+    # sola pasaria con la otra rota.
+    assert re.search(r"fetch\(destino,\s*\{\s*method:\s*'PUT'", _sin_comentarios(js)), (
+        "el visor tiene que subir con PUT al destino que le pasan"
     )
-    assert subida is not None, "la foto tiene que subirse con PUT a /api/trabajos/{id}/imagen"
+    app = _sin_comentarios(sesion.get("/static/js/app.js").text)
+    for destino in (
+        r"/api/trabajos/\$\{encodeURIComponent\(id\)\}/imagen",
+        r"/api/trabajos/\$\{encodeURIComponent\(trabajoId\)\}/diseno/\$\{n\}/imagen",
+    ):
+        assert re.search(destino, app), f"la pantalla no arma el destino {destino}"
 
 
 def test_la_imagen_es_cenital_con_fondo_liso(sesion: TestClient) -> None:
@@ -837,7 +867,83 @@ def test_la_luz_de_la_foto_escala_con_la_pieza(sesion: TestClient) -> None:
 
 def test_no_hay_ninguna_url_externa_en_lo_que_se_sirve(sesion: TestClient) -> None:
     """Cero pedidos a internet: es una herramienta que tiene que andar offline."""
-    for ruta in ("/login", "/conversor", "/lineas", "/cortante"):
+    for ruta in ("/login", "/conversor", "/lineas", "/cortante", "/post"):
         cuerpo = sesion.get(ruta, follow_redirects=True).text
         for prohibido in ("//fonts.googleapis", "//cdn.", "//unpkg", "//cdnjs"):
             assert prohibido not in cuerpo, f"{ruta} apunta afuera ({prohibido})"
+
+
+# ── F4: la pantalla post ────────────────────────────────────────────────────
+
+
+def test_el_grupo_de_descargas_de_post_lo_dibuja_el_js(sesion: TestClient) -> None:
+    """Post tiene una descarga por diseño y la cantidad no se sabe de antemano.
+
+    Por eso el grupo llega **vacio** del servidor y lo llena `app.js` cuando el
+    lote termina. Lo que si tiene que estar es el contenedor, que es el gancho.
+
+    ⚠ `#bajar-todo` NO puede existir en esta pantalla, y no es cosmetico: el
+    modulo compartido intercepta ese id para rendir y subir la foto ANTES de
+    navegar. En post las fotos ya estan todas arriba, asi que esa interceptacion
+    volveria a rendir la del diseño que quedo en el visor y la subiria encima de
+    otra. El ZIP de post es un enlace comun que dibuja el JS.
+    """
+    html = sesion.get("/post").text
+    grupo = re.search(r'<div[^>]*id="botones-descarga"[^>]*>(.*?)</div>', html, re.DOTALL)
+    assert grupo is not None, "no existe el grupo de descargas"
+    assert not grupo.group(1).strip(), "el grupo tiene que llegar vacio: lo llena el JS"
+    assert 'id="bajar-todo"' not in html, "ese id dispara la coreografia de cortante"
+
+    js = _sin_comentarios(sesion.get("/static/js/app.js").text)
+    assert "subirAlDescargar: false" in js, "post no puede re-rendir la foto al bajarla"
+
+
+def test_la_vista_previa_tiene_una_sola_implementacion(sesion: TestClient) -> None:
+    """Las dos pantallas con visor comparten el codigo, no lo copian.
+
+    Es la unica forma de sostener lo que F4 promete: que la foto de un archivo
+    viejo sea **la misma** que la de su ciclo. Dos copias parecidas de la
+    coreografia de la foto se separan sin que nadie se entere — es el mismo
+    razonamiento por el que `preview3d.js` tampoco tiene una version por
+    pantalla.
+    """
+    codigo = _sin_comentarios(sesion.get("/static/js/app.js").text)
+
+    assert codigo.count("function iniciarVistaPrevia3D(") == 1
+    assert codigo.count("function pedirFoto(") == 1, "la coreografia de la foto esta duplicada"
+    assert codigo.count("function iniciarPaleta(") == 1
+    assert codigo.count("function iniciarVistas(") == 1
+
+    # Y las dos pantallas la usan de verdad. Se cuentan los llamados y no las
+    # apariciones: la definicion tambien contiene el nombre seguido de `({`.
+    assert codigo.count("= iniciarVistaPrevia3D({") == 2, (
+        "cortante y post tienen que arrancar la MISMA vista previa"
+    )
+    assert "if (pagina === 'post') iniciarPost();" in codigo
+
+
+def test_post_usa_los_mismos_eventos_que_cortante(sesion: TestClient) -> None:
+    """Los `cortante:*` son contrato con `preview3d.js`, no el nombre de una pantalla.
+
+    `preview3d.js` los escucha literales y resuelve sus ganchos por id una sola
+    vez a nivel de modulo: no hay namespace por pantalla. Renombrarlos para post
+    dejaria la vista previa muerta y sin un solo error a la vista.
+    """
+    visor = _sin_comentarios(sesion.get("/static/js/preview3d.js").text)
+    for evento in ("cortante:listo", "cortante:color", "cortante:fondo", "cortante:vista"):
+        assert evento in visor, f"{evento} dejo de existir en el visor"
+
+    html = sesion.get("/post").text
+    for ident in ("visor", "lienzo", "paleta", "paleta-pieza", "paleta-fondo"):
+        assert f'id="{ident}"' in html, f"/post no dibuja #{ident}, que `preview3d.js` busca"
+
+
+def test_post_aparece_en_el_menu_con_su_icono(sesion: TestClient) -> None:
+    """Sin la rama en el macro `icono`, el `<svg>` del menu sale vacio."""
+    claves = [m.clave for m in MODULOS]
+    assert "post" in claves, "el modulo no esta declarado en MODULOS"
+
+    html = sesion.get("/post").text
+    enlace = re.search(r'<a[^>]*href="/post"[^>]*>(.*?)</a>', html, re.DOTALL)
+    assert enlace is not None, "el menu no enlaza a /post"
+    assert re.search(r"<(path|rect|circle)", enlace.group(1)), "el icono de post sale vacio"

@@ -92,7 +92,8 @@ suman. Medido: proceso web 128,7 → **95,8 MB**, `import app.tareas` 106,7 → 
 re-exportados que viven en los módulos caros (`Salidas`, `ReporteFidelidad`, `render_texto`) salen por
 el `__getattr__` de módulo. **Subir esos imports al tope revierte el ciclo 6 entero.**
 
-`generar()` en `__init__.py` es la única entrada pública, y su orden es el mejor orden de lectura:
+`generar()` en `__init__.py` es la entrada pública del pipeline, y su orden es el mejor orden de
+lectura:
 
 ```
 svg_io.cargar_svg
@@ -132,12 +133,93 @@ Lo que no se deduce leyendo un archivo solo:
   (3 MP) dice **a qué tamaño se procesa**, y es un presupuesto de memoria. Igualarlos "para
   simplificar" trae de vuelta el OOM. Lo que se reduce **se declara** (`ResultadoF2.tamano_original`).
 
+#### La entrada de atrás: `malla.py` y `paquete3mf.py`
+
+Todo el resto del paquete va de un SVG a un `.3mf`. `cutter3d/malla.py` va al revés: lee un `.3mf`
+o un `.stl` **que este motor no construyó** y le deriva el `.glb` que F4 fotografía. Va aparte de
+`export.py` porque su entrada no es confiable: ahí viven las cotas (`MAX_TRIANGULOS`) y la lectura
+defensiva.
+
+- ⚠ **Un `.3mf` no transporta materiales, y sin re-aplicarlos la foto sale distinta.** Medido: el
+  `.3mf` releído conserva geometría, bounds y watertight exactos pero llega **sin material**, y el
+  `.glb` derivado sale **sin array `materials`** — o sea con el default de glTF (`metallic` 1.0,
+  `roughness` 1.0), metal rugoso en vez de PLA mate. El front pisa el **color** (`pintarPieza`) pero
+  nunca el acabado, así que nadie lo corrige aguas abajo. Por eso `solids.aplicar_acabado` es
+  pública y tiene **un solo dueño**: la usan `construir_*_3d` y `malla.a_glb`. Separarlas es separar
+  la foto de F3 de la de F4, que es exactamente lo que F4 existe para evitar.
+- **La escala y la orientación sí se conservan**: los bounds del `.3mf`, del `.stl` y del `.glb` del
+  motor coinciden al milímetro, con Z arriba y la pieza en z=0. El `rotation.x = -π/2` del visor vale
+  igual para un archivo derivado: no hay nada que reorientar.
+- **`a_glb` relee el `.glb` del disco** y compara triángulos, bounds y volumen contra la entrada,
+  por la misma razón que `verify` relee el `.3mf`. Si no coinciden levanta `ConversionInfiel`, que
+  **no está en `_TRADUCCIONES`**: sale como `interno` 500 porque es un bug nuestro, no del archivo.
+  Una malla **abierta advierte y no bloquea** — esta pantalla no imprime nada.
+- **`paquete3mf.py` está separado por costo de import.** Confirma que un ZIP sea de verdad un 3MF
+  (`.model` adentro) y acota entradas y tamaño descomprimido leyendo el central directory, sin
+  descomprimir. Vive aparte porque **lo importa el router**, para rechazar un docx con un 422 sin
+  gastar uno de los tres slots de proceso; `malla.py` importa trimesh y meterlo en uvicorn revierte
+  el ciclo 6. Verificado: tras `import app.main`, `trimesh` sigue sin cargarse.
+
 ### La capa web (`app/`)
 
-- **Tres funcionalidades.** F1 conversor (13 formatos → jpg/svg) es **síncrona dentro del request**;
-  F2 corrección de líneas y F3 cortante corren en **un `multiprocessing.Process` por trabajo**, con
-  polling desde el navegador. No es un `ProcessPoolExecutor` y el motivo es concreto: el pool **no
-  sabe imponer un timeout** — `future.result(timeout=N)` corta la espera, no al worker.
+- **Cuatro funcionalidades.** F1 conversor (13 formatos → jpg/svg) es **síncrona dentro del
+  request**; F2 corrección de líneas, F3 cortante y F4 post corren en **un
+  `multiprocessing.Process` por trabajo**, con polling desde el navegador. No es un
+  `ProcessPoolExecutor` y el motivo es concreto: el pool **no sabe imponer un timeout** —
+  `future.result(timeout=N)` corta la espera, no al worker.
+- **F4 post (`/post`) entra por el lado del sólido, no del dibujo.** Recibe mallas ya construidas
+  —de este motor o de cualquier otro— y les saca **la misma foto cenital** que F3: la rinde el
+  mismo `preview3d.js` sobre un `.glb` derivado. Existe para los cortantes viejos y para cuando la
+  foto no se bajó, que es la única forma de recuperarla: el `.glb` de un trabajo se va con él a las
+  6 h. No hay parámetros — la geometría ya viene decidida adentro del archivo — y lo único que se
+  elige son los colores, que son de pantalla.
+- ⚠ **En F4 la unidad es el DISEÑO, no el archivo.** Un diseño puede venir en un `.3mf` combinado o
+  en dos archivos sueltos (`<base>_cortador.stl` + `<base>_marcador.stl`), y las dos formas
+  describen la misma pieza: fotografiar el cortador sin su marcador es fotografiar otra cosa.
+  Verificado: el par suelto y el combinado dan **los mismos triángulos, las mismas medidas y el
+  mismo volumen** — las coordenadas se conservan, así que unir las escenas los reencuentra
+  anidados sin mover nada. **El emparejado lo hace el navegador**, que es el único que ve los
+  nombres originales, y se puede corregir a mano (Separar / Unir). Al servidor llega
+  `agrupacion=0:cortador,1:marcador;2:unico` — enteros y roles de una lista cerrada, ni un nombre
+  de archivo, que es la regla de `app/archivos.py`.
+- **Hasta 25 diseños por lote, convertidos DE A UNO** (`trabajos.lanzar_serie`): un proceso por
+  diseño, el siguiente arranca cuando termina el anterior. No hace falta paralelismo y sí hace
+  falta no saturar el servidor. Un proceso por paso y no uno largo para los tres, porque el techo
+  de RAM y el timeout son **por proceso**, y porque un diseño ilegible no puede llevarse puestos a
+  los otros 24: falla el suyo, se declara en el reporte y la serie sigue. Una serie ocupa **un solo
+  lugar** del cupo de punta a punta, incluidos los huecos entre proceso y proceso — de eso se
+  encarga `_series` en `vivos()`, y sin eso esos huecos son la puerta para pasarse del tope.
+- **Los archivos por diseño NO están en `Trabajo.archivos`.** Ese dict mapea una clave de enum
+  cerrado a un nombre fijo y no escala a 25 copias de lo mismo; se piden por **clave más índice**
+  (`ClaveDiseno` + `nombre_de_diseno`, ruta `/api/trabajos/{id}/diseno/{n}/archivo/{clave}`). El
+  cliente manda una palabra de una lista cerrada y un entero acotado: sigue sin nombrar nada.
+  `Trabajo.disenos` es solo el contador; el detalle de cada uno viaja en `reporte`.
+- **El set lo compone el SERVIDOR con Pillow** (`cutter3d/lamina.py`), no el canvas, y la razón es
+  que así es **medible**: el reparto, la separación, el centrado y el color de los huecos se afirman
+  desde la suite, y el comportamiento del JS no lo mira ningún gate. El color de los huecos **se
+  lee de la esquina de las propias fotos** en vez de recibirse como parámetro — pedirlo aparte
+  serían dos verdades sobre el mismo color y un set con los huecos de otro tono. Las celdas se
+  achican con `Image.draft()` al abrirlas: 25 fotos de 2048 px enteras serían 314 MB de pico contra
+  ~13 MB así, que es la misma lección del presupuesto de píxeles de F2.
+- ⚠ **El set NO es una grilla rectangular: las filas pueden tener cantidades distintas.** Es lo que
+  llena el cuadro. Una grilla pareja obliga a que la última fila quede corta —7 fotos en 3 columnas
+  son `3-3-1`, con dos huecos juntos abajo— y repartirlas en `3-2-2` deja tres filas equilibradas.
+  La regla es una: **tantas filas como `round(sqrt(n))`**, repartidas lo más parejo posible con las
+  más largas arriba (3 → `2-1`, 5 → `3-2`, 7 → `3-2-2`, 9 → `3-3-3`). Por eso el dato del reporte es
+  `distribucion` y no `columnas × filas`: ese par **no describe** el armado — un set de 7 y uno de 9
+  dan los dos `3×3`.
+- ⚠ **La lámina es CUADRADA siempre. Es un requisito duro, no una preferencia**: un JPG más ancho
+  que alto, publicado en un marco cuadrado, sale con bandas arriba y abajo y **recortado de los
+  costados**. Con celdas cuadradas un reparto que no es cuadrado no puede llenar un cuadrado —5
+  fotos son `3-2`, y para que esas dos filas llegaran arriba y abajo cada celda tendría que medir
+  medio lienzo, y entonces tres no entrarían a lo ancho—. Es geometría, no una decisión: el bloque
+  se hace **lo más grande que entra** (el lado sale de `max(columnas, filas)`) y se **centra**. Lo
+  que sobra no se ve como banda porque se pinta del mismo color que el fondo de las fotos, que es el
+  mismo de los huecos.
+- **Sin borde exterior**: la separación va solo *entre* celdas (`n-1`, no `n+1`). Un marco no separa
+  nada de nada —afuera no hay otra foto— y lo único que hace es achicar las piezas para dejar un
+  margen que el visor de cualquier red social vuelve a recortar. En la dimensión que llena, las
+  celdas llegan al filo del lienzo.
 - **`app/tareas.py` es la otra orilla de la frontera entre procesos.** Funciones a nivel de módulo
   (en Windows el arranque es `spawn`), solo primitivos como argumentos, no devuelve nada, y **ninguna
   excepción escapa**. El resultado viaja por `estado.json` escrito de forma atómica: **su ausencia
@@ -178,6 +260,16 @@ Lo que no se deduce leyendo un archivo solo:
   `app/static/vendor/three/` (5 archivos con la disposición exacta de npm) y se resuelve con un
   `<script type="importmap">`. **Cero URLs externas** en templates, CSS y JS — la app anda sin
   internet y hay un test que lo verifica.
+- **La vista previa tiene UNA implementación para las dos pantallas que la usan.**
+  `iniciarVistaPrevia3D` en `app/static/js/app.js` es de nivel de módulo, no de `iniciarCortante`:
+  se lleva las paletas, las dos vistas y toda la coreografía de la foto (`pedirFoto` →
+  `cortante:exportar` → `PUT /imagen` → recién ahí navegar). Es lo único que sostiene que la foto de
+  F4 sea la misma que la de F3, y el mismo principio que ya seguía `preview3d.js`, que tampoco tiene
+  una versión por pantalla. ⚠ **Los eventos siguen llamándose `cortante:*` en las dos** y los ids del
+  bloque de vista previa (`#visor`, `#lienzo`, `#paleta*`, `#pista-*`) son **contrato**:
+  `preview3d.js` los resuelve una sola vez a nivel de módulo y no tiene namespace por pantalla.
+  Renombrar cualquiera deja la vista previa muerta y sin un solo error a la vista. Ahí "cortante"
+  nombra a la pieza que se está mirando, no a la pantalla que la pidió.
 
 ### Datos
 
@@ -247,6 +339,44 @@ real. Los `tests/test_web_*.py` cubren la capa web con `TestClient` y `dependenc
 test toca `trabajo/`, ninguno depende de que `credenciales.json` exista, y la contraseña de prueba se
 genera al vuelo (no hay una sola credencial literal en el repo).
 
+`tests/test_malla.py` hace lo propio con F4. Sus dos tests centrales:
+`test_el_glb_derivado_lleva_el_acabado_pla` —si se cae, la pieza se ve metálica y la foto de un
+archivo viejo deja de coincidir con la de su ciclo— y
+`test_un_diseno_partido_en_dos_da_lo_mismo_que_el_combinado`, que es lo que sostiene que agrupar
+dos archivos no mueve nada. Las mallas se construyen con trimesh en el test por lo mismo que el
+golden master no versiona sus salidas.
+
+`tests/test_lamina.py` cubre el set, y existe **porque el set se compone del lado del servidor**:
+el reparto, la separación, el centrado de las filas cortas y el color de los huecos son números que
+la suite afirma. Si eso viviera en el canvas, no lo miraría nada. El test que más vale es
+`test_el_reparto_es_lo_mas_cuadrado_que_se_puede`: en vez de fijar los cuatro casos del pedido,
+compara contra **todos** los repartos posibles y exige que ninguno sea más cuadrado — así falla si
+alguien cambia la fórmula por una que anda solo en los ejemplos.
+
+⚠ Al medir la lámina, **el fondo de cada foto y el hueco entre celdas son del mismo color** — ese es
+el punto del diseño. No se pueden distinguir mirando un píxel, así que el centrado se verifica por
+**simetría** y el borde exterior con fotos a sangre (`_foto(..., pieza_completa=True)`). Y no se
+sondean píxeles sueltos para medir el bloque: con un reparto en pirámide una columna cualquiera
+puede caer en el hueco de una fila corta y en una celda de la de arriba — para eso está
+`_caja_del_contenido`, que saca la caja de todo lo que no es fondo en una pasada de Pillow.
+
+`tests/test_web_trabajos.py` cubre la serie, y el que importa es
+`test_los_disenos_corren_de_a_uno_y_no_a_la_vez`: **no mide que tarde más** —tres procesos en
+paralelo tardarían parecido a uno y un test de duración pasaría igual— sino que los intervalos de
+cada paso **no se solapan**.
+
+⚠ El fixture autouse `trabajos_limpios` de `conftest.py` existe por la misma razón que
+`frenos_limpios`: `_procesos` y `_series` son estado de módulo, y con el cupo en 3, tres tests que
+lanzan y no esperan hacen que el cuarto reciba un 429 **según el orden de ejecución**.
+
 Sin cobertura: `cli.py`, `__main__.py`, y el **comportamiento** del CSS y del JS (no hay navegador ni
 Playwright). El front sí tiene tests de **contrato** en `test_web_auth.py`: verifican lo que el
-servidor sirve, no cómo se comporta.
+servidor sirve, no cómo se comporta. Los que valen para las dos pantallas con visor están
+parametrizados sobre `CON_VISOR`, así que agregar una tercera es agregarla a esa lista.
+
+⚠ **Lo único que prueba el punto de F4 es mirar las fotos.** "Salen los mismos números" lo
+verifica la suite; "se ven iguales" no lo puede verificar nadie sin un navegador. El paso manual es:
+generar un cortante, bajar su JPG y su `.3mf`, subir ese `.3mf` en `/post` con el mismo color de
+pieza y de fondo, y comparar. Para el lote: soltar varios archivos —incluyendo un par
+`_cortador`/`_marcador`— y revisar que la lista de diseños los haya agrupado como corresponde
+**antes** de mandar, que es justo la parte que los botones Separar y Unir existen para corregir.

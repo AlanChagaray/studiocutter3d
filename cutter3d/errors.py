@@ -94,3 +94,40 @@ class ImagenInvalida(Cutter3DError):
         self.ruta = ruta
         self.motivo = motivo
         super().__init__(f"{ruta}: {motivo}")
+
+
+class MallaIlegible(Cutter3DError):
+    """Un .3mf o .stl que entro desde afuera no se puede leer como malla.
+
+    Es el gemelo de `SvgInvalido` en el otro extremo del pipeline: aca el archivo
+    no lo produjo este motor y puede ser cualquier cosa —un zip que no es 3MF, una
+    escena vacia, una malla mas grande que el techo declarado—. La ruta queda en
+    el atributo y **nunca** en lo que ve el cliente, por lo mismo que en
+    `SvgInvalido`: `app/errores.py` arma el mensaje desde `.motivo`.
+
+    Es distinto de `BooleanaFallida` y de `MallaNoManifold`, que hablan de un
+    solido que ESTE motor no pudo construir o cerrar. Aca no se construyo nada:
+    no se pudo ni leer.
+    """
+
+    def __init__(self, ruta: str, motivo: str) -> None:
+        self.ruta = ruta
+        self.motivo = motivo
+        super().__init__(f"{ruta}: {motivo}")
+
+
+class ConversionInfiel(Cutter3DError):
+    """El `.glb` derivado de una malla no describe la misma geometria que ella.
+
+    No es un problema del archivo del usuario sino de este motor, y por eso no
+    esta en `_TRADUCCIONES` de `app/errores.py`: sale como `interno` 500 y se
+    loguea con traza. Existe por la misma razon que `verify` relee el `.3mf` del
+    disco — una conversion que no se comprueba no prueba nada, y la foto que sale
+    de ese `.glb` se presenta como la foto del archivo que se subio.
+    """
+
+    def __init__(self, magnitud: str, esperado: object, obtenido: object) -> None:
+        self.magnitud = magnitud
+        self.esperado = esperado
+        self.obtenido = obtenido
+        super().__init__(f"la conversion no preservo {magnitud}: {esperado!r} -> {obtenido!r}")

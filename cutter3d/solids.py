@@ -47,6 +47,32 @@ def _material(nombre: str, color: tuple[float, float, float, float]) -> PBRMater
     )
 
 
+def aplicar_acabado(malla: trimesh.Trimesh, objeto: str | None = None) -> trimesh.Trimesh:
+    """Le pone a una malla el acabado PLA mate de este motor, y devuelve la malla.
+
+    **Es publica porque tiene un segundo consumidor: `cutter3d/malla.py`**, que
+    convierte a `.glb` un `.3mf`/`.stl` que este motor no construyo. Ese es el
+    unico camino por el que la foto de un archivo viejo puede salir igual a la de
+    un cortante recien generado, y el motivo es concreto: un `.3mf` **no
+    transporta materiales**, asi que el `.glb` derivado sale sin array
+    `materials` y el visor le aplica el default de la spec de glTF
+    (`metallicFactor` 1.0, `roughnessFactor` 1.0) — o sea metal rugoso en vez de
+    plastico mate. Y `pintarPieza` del front pisa el color, nunca el acabado.
+
+    Que viva aca y no alla es lo que evita dos verdades sobre el mismo acabado.
+
+    `objeto` es el nombre de la geometria en la escena. Un `.stl` no tiene
+    nombres de objeto —el formato no los soporta— y una malla anonima es, en el
+    caso normal, un cortador: ese es el default. El color igual lo pisa la paleta
+    de la pantalla; lo que no se puede recuperar despues es el metallic y el
+    roughness.
+    """
+    color = _COLOR_MARCADOR if objeto == NOMBRE_MARCADOR else _COLOR_CORTADOR
+    nombre = NOMBRE_MARCADOR if objeto == NOMBRE_MARCADOR else NOMBRE_CORTADOR
+    malla.visual = TextureVisuals(material=_material(f"filamento_{nombre}", color))
+    return malla
+
+
 def _extruir(geom: MultiPolygon, altura: float) -> list[trimesh.Trimesh]:
     """Extruye cada parte con el triangulador de `manifold`, nunca el default.
 
@@ -92,8 +118,7 @@ def construir_marcador_3d(m: Marcador2D, p: CutterParams) -> trimesh.Trimesh:
     base = _extruir(m.silueta, p.altura_base_mm)
     trazos = _extruir(m.arte_final, p.altura_total_marcador_mm)
     malla = _unir(base + trazos, NOMBRE_MARCADOR)
-    malla.visual = TextureVisuals(material=_material("filamento_marcador", _COLOR_MARCADOR))
-    return malla
+    return aplicar_acabado(malla, NOMBRE_MARCADOR)
 
 
 def construir_cortador_3d(c: Cortador2D, p: CutterParams) -> trimesh.Trimesh:
@@ -113,8 +138,7 @@ def construir_cortador_3d(c: Cortador2D, p: CutterParams) -> trimesh.Trimesh:
     pie = _extruir(c.pie, p.pie_alto_mm)
     piezas = pie if p.filo_alto_mm <= p.pie_alto_mm else _extruir(c.filo, p.filo_alto_mm) + pie
     malla = _unir(piezas, NOMBRE_CORTADOR)
-    malla.visual = TextureVisuals(material=_material("filamento_cortador", _COLOR_CORTADOR))
-    return malla
+    return aplicar_acabado(malla, NOMBRE_CORTADOR)
 
 
 def construir_escena(

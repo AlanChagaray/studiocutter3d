@@ -545,6 +545,16 @@ body[data-pagina='cortante'] {
   box-shadow: none;
 }
 
+/* Un boton de accion secundaria dentro de una fila, no de un panel. Baja el
+   alto minimo de 44 px, que es el objetivo tactil de un boton principal y aca
+   deformaria la fila; sigue arriba de los 32 px que necesita un dedo. */
+.boton--chico {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+  border-radius: 9px;
+}
+
 .boton svg {
   stroke: currentcolor;
 }
@@ -1341,4 +1351,42 @@ body[data-pagina='cortante'] {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
   }
+}
+
+/* ── La lista de diseños de F4 ────────────────────────────────────────────── */
+
+/* Una fila por DISEÑO, no por archivo: el cortante y su marcador son uno solo.
+   Es una grilla de dos columnas —el contenido crece, las acciones no— y no la
+   `.lista__fila` del Convertidor, que tiene seis columnas fijas para una cola
+   de conversion y aca dejaria cuatro huecos. */
+.diseno {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--borde-suave);
+  border-radius: 11px;
+  background: var(--card-2);
+}
+
+.diseno__cuerpo {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  /* Sin esto, un nombre largo estira la grilla y empuja las acciones fuera del
+     panel: `1fr` es "lo que sobre", pero el minimo de un item de grilla es su
+     contenido, no cero. */
+  min-width: 0;
+}
+
+.diseno__nombre {
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.diseno__acciones {
+  display: flex;
+  gap: 6px;
 }

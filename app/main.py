@@ -37,7 +37,7 @@ from . import __version__, proteccion, trabajos
 from .archivos import limpiar_vencidos
 from .dependencias import obtener_ajustes, obtener_almacen
 from .errores import ErrorApi, RedireccionALogin, traducir
-from .routers import auth, conversor, cortante, lineas, paginas
+from .routers import auth, conversor, cortante, lineas, paginas, post
 from .routers import trabajos as router_trabajos
 from .seguridad import obtener_secreto_sesion
 
@@ -153,6 +153,7 @@ def crear_app() -> FastAPI:
         conversor.router,
         lineas.router,
         cortante.router,
+        post.router,
         router_trabajos.router,
     ):
         aplicacion.include_router(router)
