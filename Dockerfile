@@ -28,7 +28,7 @@
 #   docker compose up --build
 
 # ── Etapa 1: el venv ─────────────────────────────────────────────────────────
-FROM python:3.13-slim-bookworm@sha256:ed86c82274b3c69b52fb5820f358f0bd7df0b603332063cb5c6e32bd220c3e6e AS constructor
+FROM python:3.14-slim-bookworm@sha256:9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f AS constructor
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -44,7 +44,7 @@ RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --only-binary=:all: -r /tmp/requirements.txt
 
 # ── Etapa 2: lo que corre ────────────────────────────────────────────────────
-FROM python:3.13-slim-bookworm@sha256:ed86c82274b3c69b52fb5820f358f0bd7df0b603332063cb5c6e32bd220c3e6e AS final
+FROM python:3.14-slim-bookworm@sha256:9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f AS final
 
 # `tini` como PID 1. La app lanza un proceso hijo por trabajo y lo mata por
 # timeout: sin un init de verdad arriba, un hijo que quede colgado no tiene
