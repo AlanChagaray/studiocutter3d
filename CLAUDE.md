@@ -136,9 +136,9 @@ Lo que no se deduce leyendo un archivo solo:
 #### La entrada de atrás: `malla.py` y `paquete3mf.py`
 
 Todo el resto del paquete va de un SVG a un `.3mf`. `cutter3d/malla.py` va al revés: lee un `.3mf`
-o un `.stl` **que este motor no construyó** y le deriva el `.glb` que F4 fotografía. Va aparte de
-`export.py` porque su entrada no es confiable: ahí viven las cotas (`MAX_TRIANGULOS`) y la lectura
-defensiva.
+o un `.stl` **que este motor no construyó** y le deriva el `.glb` que F4 fotografía, o lo escribe
+en el otro formato de malla (`convertir`). Va aparte de `export.py` porque su entrada no es
+confiable: ahí viven las cotas (`MAX_TRIANGULOS`) y la lectura defensiva.
 
 - ⚠ **Un `.3mf` no transporta materiales, y sin re-aplicarlos la foto sale distinta.** Medido: el
   `.3mf` releído conserva geometría, bounds y watertight exactos pero llega **sin material**, y el
@@ -154,6 +154,18 @@ defensiva.
   por la misma razón que `verify` relee el `.3mf`. Si no coinciden levanta `ConversionInfiel`, que
   **no está en `_TRADUCCIONES`**: sale como `interno` 500 porque es un bug nuestro, no del archivo.
   Una malla **abierta advierte y no bloquea** — esta pantalla no imprime nada.
+- ⚠ **`convertir` (3MF ↔ STL) admite exactamente DOS modificaciones, y las dos las obliga el
+  formato.** (1) **La escala a milímetros**: un 3MF declara su unidad en el XML y un STL no tiene
+  ninguna, así que pasar un 3MF en pulgadas sin escalar entrega la misma pieza **25,4 veces más
+  chica**, sin un solo error a la vista. La unidad sale de una **lista cerrada** —`unit_conversion`
+  de trimesh también acepta `"1.21 * meters"`, que el 3MF no permite— y una que no esté **falla**:
+  asumir mm sería adivinar. (2) **La unión de cuerpos al ir a STL**, que no sabe contener más de
+  uno: las coordenadas no se tocan pero el slicer ya no los separa. Las dos se declaran en el
+  reporte, con el número. Lo que **no** hace: reparar, simplificar, reorientar, centrar ni cerrar —
+  una malla abierta se convierte igual y se declara abierta. Y como todo lo demás del módulo, la
+  equivalencia se prueba **releyendo el archivo escrito**, con una tolerancia que suma un término
+  relativo (`TOLERANCIA_RELATIVA`) porque STL guarda en `float32` y su error crece con la
+  coordenada — un cortante real de este repo hace el roundtrip bit a bit, pero una pieza de 2 m no.
 - **`paquete3mf.py` está separado por costo de import.** Confirma que un ZIP sea de verdad un 3MF
   (`.model` adentro) y acota entradas y tamaño descomprimido leyendo el central directory, sin
   descomprimir. Vive aparte porque **lo importa el router**, para rechazar un docx con un 422 sin
@@ -167,6 +179,16 @@ defensiva.
   `multiprocessing.Process` por trabajo**, con polling desde el navegador. No es un
   `ProcessPoolExecutor` y el motivo es concreto: el pool **no sabe imponer un timeout** —
   `future.result(timeout=N)` corta la espera, no al worker.
+- ⚠ **F1 tiene DOS mitades y solo una es síncrona.** El conversor también pasa mallas entre
+  `.3mf` y `.stl`, y eso **no puede correr en el request**: `cutter3d.malla` importa trimesh, y
+  trimesh adentro de uvicorn revierte el ciclo 6. Va a un hijo como F2/F3/F4 — la respuesta
+  vuelve `procesando` y el JS sondea—, y de paso hereda el techo de RAM y el timeout, que es lo
+  que un STL de 20 MB de un desconocido justifica solo. Lo único que el router importa de mallas
+  es `paquete3mf`, que cuesta `zipfile`. **Las dos mitades no se cruzan**
+  (`archivos.destinos_de`): una malla a JPG sería una foto, y eso es F4; una imagen a 3MF sería
+  construir geometría, y eso es F3. El par se valida y el 422 nombra la pantalla que sí lo hace.
+  Un par que ya coincide —un `.stl` que los bytes dicen que era 3MF— **se copia tal cual**, igual
+  que un SVG pedido como SVG.
 - **F2 deja tres archivos y cada uno tiene un consumidor distinto.** `salida.png` (binario puro)
   es lo que se vectoriza y lo que muestra la pantalla; `salida.svg` es lo que acepta el cortante;
   y `editable.jpg` (`ClaveArchivo.JPG_EDITABLE`) es **lo que el usuario se baja**: lo abre en
@@ -486,7 +508,12 @@ constante, a propósito: lo que hay que sostener es que la etapa no ensucia el d
 depende de cuánto ruido traiga. El proxy es `_dientes` (píxeles de tinta con 5+ vecinos de fondo)
 sobre el raster y no los nodos del SVG, para no atar la suite a la versión de vtracer.
 
-`tests/test_malla.py` hace lo propio con F4. Sus dos tests centrales:
+`tests/test_malla.py` hace lo propio con F4 **y con la conversión entre formatos**. De esta última
+el que más vale es `test_un_3mf_en_pulgadas_sale_en_milimetros_y_lo_declara`: es el único caso donde
+"no cambiar las medidas" se rompe en silencio y el usuario lo descubre recién con la galletita en la
+mano. Los de vértices (`..._no_mueve_un_solo_vertice`, `..._float32_permite`) comparan **vértice a
+vértice y no por la caja**, porque una pieza espejada o rotada 90° tiene la misma caja. Sus dos tests
+centrales de F4:
 `test_el_glb_derivado_lleva_el_acabado_pla` —si se cae, la pieza se ve metálica y la foto de un
 archivo viejo deja de coincidir con la de su ciclo— y
 `test_un_diseno_partido_en_dos_da_lo_mismo_que_el_combinado`, que es lo que sostiene que agrupar

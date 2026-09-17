@@ -81,6 +81,25 @@ def exportar_glb(escena: trimesh.Scene, destino: Path) -> Path:
     return _escribir_atomico(bytes(datos), destino)
 
 
+def exportar_stl_unico(malla: trimesh.Trimesh, destino: Path) -> Path:
+    """Un STL con UN cuerpo, al archivo que se pida.
+
+    Es la pieza chica que comparten los dos productores de STL del proyecto: el
+    motor, que escribe uno por objeto (`exportar_stl`), y el conversor de mallas
+    (`cutter3d.malla.convertir`), que escribe uno solo porque el formato no sabe
+    contener mas. Lo unico que aporta sobre `malla.export` es el temporal y el
+    rename, que es justo lo que no conviene reimplementar dos veces.
+    """
+    datos = malla.export(file_type="stl")
+    # `Trimesh.export` esta tipado como `dict | bytes | str` porque su retorno
+    # depende del `file_type`, y el binario de STL siempre es `bytes`. El chequeo
+    # es lo que se lo dice a mypy y, de paso, convierte esa promesa en algo que
+    # falla ruidoso si alguna version de trimesh la rompe.
+    if not isinstance(datos, bytes):  # pragma: no cover — trimesh devuelve bytes
+        raise Cutter3DError(f"{destino}: trimesh no devolvio bytes para el STL")
+    return _escribir_atomico(datos, destino)
+
+
 def exportar_stl(escena: trimesh.Scene, destino_3mf: Path) -> tuple[Path, ...]:
     """Un STL por objeto, nombrado `<base>_<objeto>.stl`."""
     rutas: list[Path] = []
@@ -88,9 +107,8 @@ def exportar_stl(escena: trimesh.Scene, destino_3mf: Path) -> tuple[Path, ...]:
         malla = escena.geometry.get(nombre)
         if malla is None:
             continue
-        datos = malla.export(file_type="stl")
         ruta = destino_3mf.with_name(f"{destino_3mf.stem}_{nombre}.stl")
-        rutas.append(_escribir_atomico(bytes(datos), ruta))
+        rutas.append(exportar_stl_unico(malla, ruta))
     return tuple(rutas)
 
 

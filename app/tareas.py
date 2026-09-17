@@ -118,6 +118,7 @@ ETAPA_VECTORIZANDO = "vectorizando la imagen"
 ETAPA_GEOMETRIA = "construyendo la geometria"
 ETAPA_LINEAS = "corrigiendo las lineas"
 ETAPA_LEYENDO_MALLA = "leyendo la malla"
+ETAPA_CONVIRTIENDO_MALLA = "convirtiendo la malla"
 ETAPA_LISTO = "listo"
 
 
@@ -338,6 +339,62 @@ def ejecutar_post(
         )
     except Exception as exc:  # ver el docstring del modulo
         _terminar_mal(dir_trabajo, exc, indice)
+
+
+# ── F1-mallas: 3MF <-> STL ───────────────────────────────────────────────────
+
+
+def ejecutar_malla(
+    dir_trabajo_txt: str,
+    entrada_txt: str,
+    salida_txt: str,
+    clave_txt: str,
+) -> None:
+    """Pasa la malla subida al otro formato y deja el reporte de lo que midio.
+
+    **Es la unica parte del Convertidor que no corre en linea, y el motivo no es
+    que tarde.** Tarda milisegundos. Lo que no puede es correr adentro de
+    uvicorn: `cutter3d.malla` importa trimesh, y eso son ~1200 modulos y ~89 MB
+    en un proceso que no construye un solo poligono — exactamente lo que el
+    ciclo 6 saco de ahi. La contra es el arranque en frio del hijo (~1 s), y a
+    cambio la conversion hereda el techo de RAM y el timeout, que es lo que un
+    STL de 20 MB de un desconocido justifica por si solo.
+
+    `salida_txt` es un nombre, no una ruta, y sale de `NOMBRE_DE`: el cliente
+    sigue sin nombrar nada en disco. El formato de destino se deduce de su
+    extension —`convertir` es quien la traduce a `file_type`— asi que no hay un
+    segundo parametro que pueda discrepar del nombre del archivo.
+    """
+    _acotar_memoria()
+    dir_trabajo = Path(dir_trabajo_txt)
+    try:
+        from cutter3d.malla import convertir  # noqa: PLC0415 — ver el docstring del modulo
+
+        _avisar(dir_trabajo, ETAPA_CONVIRTIENDO_MALLA)
+        reporte = convertir(Path(entrada_txt), dir_trabajo / salida_txt)
+
+        _terminar_bien(
+            dir_trabajo,
+            {clave_txt: salida_txt},
+            {
+                "formato_original": reporte.origen,
+                "formato_destino": reporte.destino,
+                "objetos": list(reporte.objetos),
+                "triangulos": reporte.triangulos,
+                "medidas_mm": list(reporte.medidas_mm),
+                "cerrado": reporte.cerrado,
+                "volumen_mm3": reporte.volumen_mm3,
+                # Las dos modificaciones que el formato obliga se declaran, con
+                # el mismo criterio que la reduccion por presupuesto de F2: lo
+                # que se toco se dice, con el numero.
+                "unidad_origen": reporte.unidad_origen,
+                "escala_a_mm": reporte.escala_a_mm,
+                "cuerpos_unidos": reporte.cuerpos_unidos,
+                "advertencias": list(reporte.advertencias),
+            },
+        )
+    except Exception as exc:  # ver el docstring del modulo
+        _terminar_mal(dir_trabajo, exc)
 
 
 # ── Serializacion del reporte ────────────────────────────────────────────────

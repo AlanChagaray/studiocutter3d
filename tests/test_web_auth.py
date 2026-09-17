@@ -19,6 +19,7 @@ from conftest import CLAVE, USUARIO
 from fastapi.testclient import TestClient
 
 from app.archivos import SUFIJO_DESCARGA, ClaveArchivo
+from app.config import Ajustes
 from app.routers.cortante import COLORES, COLORES_FONDO
 from app.routers.paginas import MODULOS
 
@@ -105,12 +106,26 @@ def test_la_sesion_guarda_solo_el_usuario(sesion: TestClient) -> None:
     assert contenido["usuario"] == USUARIO
 
 
-def test_la_cookie_de_sesion_es_httponly_y_samesite(sesion: TestClient) -> None:
+def test_la_cookie_de_sesion_es_httponly_y_samesite(sesion: TestClient, ajustes: Ajustes) -> None:
     """Sin HttpOnly, cualquier XSS se lleva la sesion puesta."""
     galleta = sesion.post("/login", data={"usuario": USUARIO, "clave": CLAVE}).headers["set-cookie"]
     assert "httponly" in galleta.lower()
     assert "samesite=lax" in galleta.lower()
-    assert "max-age=604800" in galleta.lower()
+    # Contra el ajuste y no contra un numero escrito aca: dos verdades sobre la
+    # misma duracion se desincronizan, y la que manda es la que viaja en la
+    # cookie. Cuanto vale ese ajuste lo fija el test de abajo.
+    assert f"max-age={ajustes.duracion_sesion_s}" in galleta.lower()
+
+
+def test_la_sesion_dura_ocho_horas(ajustes: Ajustes) -> None:
+    """Es una decision de producto, no un default que se pueda mover sin querer.
+
+    ⚠ Y es un tope de **inactividad**: `SessionMiddleware` reescribe la cookie
+    en toda respuesta con sesion, asi que el reloj arranca de nuevo con cada
+    click. Una jornada de trabajo entera no vuelve a pedir login; una pestaña
+    que quedo abierta de ayer, si.
+    """
+    assert ajustes.duracion_sesion_s == 8 * 60 * 60
 
 
 def test_el_estatico_se_sirve_sin_internet(sesion: TestClient) -> None:

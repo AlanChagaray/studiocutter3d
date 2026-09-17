@@ -37,6 +37,7 @@ from cutter3d.malla import (
     ReporteMalla,
     a_glb,
     cargar_malla,
+    convertir,
     cota_de_triangulos,
 )
 from cutter3d.measure import MedidaTrazo
@@ -391,3 +392,174 @@ def test_un_diseno_sin_archivos_o_con_demasiados_se_rechaza(tmp_path: Path, stl:
         a_glb([], tmp_path / "s.glb")
     with pytest.raises(MallaIlegible, match="hasta 2 archivos"):
         a_glb([stl, stl, stl], tmp_path / "s.glb")
+
+
+# ── Conversion entre formatos de malla ───────────────────────────────────────
+#
+# Lo que hay que sostener aca es una sola afirmacion: **el archivo que sale
+# describe la misma pieza que el que entro**. No alcanza con que abra — un
+# conversor que repara, centra o reorienta tambien abre, y entrega otra cosa.
+# Por eso los asserts son numericos y comparan contra la ENTRADA, no contra
+# constantes escritas a mano.
+
+
+def _con_unidad(origen: Path, destino: Path, unidad: str) -> Path:
+    """Copia un `.3mf` cambiandole la unidad declarada en el XML.
+
+    Se reescribe el ZIP en vez de construir el 3MF a mano porque lo que se
+    quiere probar es la lectura de un archivo de otro programa, y trimesh
+    siempre escribe `millimeter`.
+    """
+    with zipfile.ZipFile(origen) as entrada, zipfile.ZipFile(destino, "w") as salida:
+        for info in entrada.infolist():
+            datos = entrada.read(info.filename)
+            if info.filename.endswith(".model"):
+                datos = datos.replace(b'unit="millimeter"', f'unit="{unidad}"'.encode())
+            salida.writestr(info, datos)
+    return destino
+
+
+def test_un_3mf_a_stl_conserva_triangulos_medidas_y_volumen(tres_mf: Path, tmp_path: Path) -> None:
+    """El caso normal, medido contra la entrada y no contra numeros a mano."""
+    entrada = cargar_malla(tres_mf)
+    reporte = convertir(tres_mf, tmp_path / "salida.stl")
+
+    assert reporte.origen == "3mf"
+    assert reporte.destino == "stl"
+    assert reporte.triangulos == sum(len(m.faces) for m in entrada.geometry.values())
+    assert np.allclose(reporte.medidas_mm, entrada.extents, atol=1e-3)
+    assert reporte.volumen_mm3 == pytest.approx(
+        sum(abs(m.volume) for m in entrada.geometry.values()), rel=1e-6
+    )
+    assert reporte.cerrado is True
+
+
+def test_un_stl_a_3mf_no_mueve_un_solo_vertice(stl: Path, tmp_path: Path) -> None:
+    """3MF guarda las coordenadas como texto, asi que el roundtrip es EXACTO.
+
+    Se compara vertice a vertice y no por la caja: una pieza espejada o rotada
+    90 grados tiene la misma caja y no es la misma pieza.
+    """
+    antes = trimesh.load(str(stl), file_type="stl")
+    convertir(stl, tmp_path / "salida.3mf")
+    despues = trimesh.load(str(tmp_path / "salida.3mf"), file_type="3mf", force="scene").to_mesh()
+
+    assert len(despues.faces) == len(antes.faces)
+    assert np.array_equal(np.sort(despues.vertices, axis=0), np.sort(antes.vertices, axis=0))
+
+
+def test_ir_a_stl_no_mueve_las_piezas_mas_que_lo_que_float32_permite(
+    tres_mf: Path, tmp_path: Path
+) -> None:
+    """La unica perdida admitida es la del formato: STL guarda en `float32`.
+
+    Medido en este repo, un cortante real hace el roundtrip **bit a bit**; el
+    techo de 1e-4 mm sobre una pieza de 24 mm deja tres ordenes de magnitud de
+    aire y se cae al toque si algo empieza a redondear de verdad.
+    """
+    antes = cargar_malla(tres_mf).to_mesh()
+    convertir(tres_mf, tmp_path / "salida.stl")
+    despues = trimesh.load(str(tmp_path / "salida.stl"), file_type="stl")
+
+    ordenados = (np.sort(despues.vertices, axis=0), np.sort(antes.vertices, axis=0))
+    assert np.allclose(*ordenados, atol=1e-4)
+
+
+def test_la_union_de_cuerpos_al_ir_a_stl_se_declara(tres_mf: Path, tmp_path: Path) -> None:
+    """STL no sabe contener dos objetos, y eso el usuario tiene que saberlo.
+
+    No es una perdida de geometria —las coordenadas quedan donde estaban, y eso
+    lo cubre el test de los vertices— pero si de estructura: el slicer ya no
+    puede mover el marcador sin el cortador. Como todo lo que este proyecto
+    toca, se declara con el numero.
+    """
+    reporte = convertir(tres_mf, tmp_path / "salida.stl")
+    assert reporte.cuerpos_unidos == 2
+    assert any("2 objetos" in a for a in reporte.advertencias)
+
+
+def test_del_stl_al_3mf_no_se_une_nada(stl: Path, tmp_path: Path) -> None:
+    """La otra direccion no tiene nada que unir: un STL ya es un solo cuerpo."""
+    reporte = convertir(stl, tmp_path / "salida.3mf")
+    assert reporte.cuerpos_unidos == 0
+    assert reporte.advertencias == ()
+
+
+def test_un_3mf_en_pulgadas_sale_en_milimetros_y_lo_declara(tres_mf: Path, tmp_path: Path) -> None:
+    """⚠ Sin esto, "no cambiar las medidas" se rompe justo donde importa.
+
+    Un 3MF declara su unidad; un STL no tiene ninguna y todo el ecosistema de
+    impresion lo lee en mm. Pasar las coordenadas tal cual entregaria la misma
+    pieza **25,4 veces mas chica**, sin un solo error a la vista — y el usuario
+    lo descubriria recien con la galletita en la mano.
+    """
+    pulgadas = _con_unidad(tres_mf, tmp_path / "pulgadas.3mf", "inch")
+    reporte = convertir(pulgadas, tmp_path / "salida.stl")
+
+    assert reporte.unidad_origen == "inch"
+    assert reporte.escala_a_mm == 25.4
+    assert np.allclose(reporte.medidas_mm, (24.0 * 25.4, 14.0 * 25.4, 8.0 * 25.4), atol=1e-2)
+    assert any("milimetros" in a for a in reporte.advertencias)
+
+
+def test_un_3mf_en_milimetros_no_se_escala(tres_mf: Path, tmp_path: Path) -> None:
+    """El caso normal no paga nada y no ensucia el reporte con una advertencia."""
+    reporte = convertir(tres_mf, tmp_path / "salida.stl")
+    assert reporte.escala_a_mm == 1.0
+    assert not any("milimetros" in a for a in reporte.advertencias)
+
+
+def test_una_unidad_desconocida_no_se_asume_en_milimetros(tres_mf: Path, tmp_path: Path) -> None:
+    """Nada de fallbacks silenciosos: una escala que no se entiende, falla.
+
+    Asumir mm seria adivinar, y adivinar mal entrega una pieza del tamaño
+    equivocado sin decirlo. `unit_conversion` de trimesh ademas acepta formas
+    como `"1.21 * meters"`, que el 3MF no permite: por eso la lista es cerrada.
+    """
+    raro = _con_unidad(tres_mf, tmp_path / "raro.3mf", "1.21 * meters")
+    with pytest.raises(MallaIlegible):
+        convertir(raro, tmp_path / "salida.stl")
+
+
+def test_el_3mf_derivado_de_un_stl_no_filtra_el_nombre_en_disco(stl: Path, tmp_path: Path) -> None:
+    """STL no tiene nombres de objeto: trimesh usa el del archivo, que es interno.
+
+    La capa web guarda todo como `entrada.<ext>`, asi que sin renombrar el 3MF
+    saldria con un `<object name="entrada">` adentro — un detalle del servidor
+    metido en un archivo que el usuario se lleva, y que ademas no informa nada.
+    """
+    reporte = convertir(stl, tmp_path / "salida.3mf")
+    assert reporte.objetos == ("cuerpo",)
+
+    with zipfile.ZipFile(tmp_path / "salida.3mf") as z:
+        modelo = next(n for n in z.namelist() if n.endswith(".model"))
+        xml = z.read(modelo).decode("utf-8")
+    assert stl.stem not in xml
+    assert 'name="cuerpo"' in xml
+
+
+def test_una_malla_abierta_se_convierte_igual_y_se_declara_abierta(tmp_path: Path) -> None:
+    """No se repara nada. La regla del proyecto es medir y reportar, no compensar.
+
+    Cerrarle el agujero seria cambiar el diseño —justo lo que el pedido prohibe—
+    y hacerlo en silencio, encima. Se convierte, y se avisa.
+    """
+    caja = trimesh.creation.box(extents=(10.0, 10.0, 4.0))
+    abierta = trimesh.Trimesh(vertices=caja.vertices, faces=caja.faces[:-1])
+    entrada = tmp_path / "abierta.stl"
+    entrada.write_bytes(bytes(abierta.export(file_type="stl")))
+
+    reporte = convertir(entrada, tmp_path / "salida.3mf")
+    assert reporte.cerrado is False
+    assert reporte.triangulos == len(abierta.faces)
+    assert any("cerrado" in a for a in reporte.advertencias)
+
+
+def test_un_destino_que_no_es_malla_no_se_intenta(stl: Path, tmp_path: Path) -> None:
+    """El tipo sale de la extension del destino, que la pone `NOMBRE_DE`.
+
+    Nunca lo elige el cliente, pero el modulo no depende de eso: una extension
+    fuera de `SUFIJOS` falla antes de escribir nada.
+    """
+    with pytest.raises(MallaIlegible):
+        convertir(stl, tmp_path / "salida.obj")

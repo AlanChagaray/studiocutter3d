@@ -105,7 +105,17 @@ class Ajustes:
     intervalo_limpieza_s: int = 900
 
     # ── Sesion ────────────────────────────────────────────────────────────
-    duracion_sesion_s: int = 604800  # 7 dias, renovando en cada uso
+    duracion_sesion_s: int = 28800
+    """8 horas, y **se renueva en cada pedido**: es un tope de inactividad, no
+    de antiguedad.
+
+    `SessionMiddleware` reescribe la cookie en toda respuesta con sesion, asi
+    que el reloj arranca de nuevo con cada click. En la practica: una jornada
+    de trabajo entera no pide login, y una pestaña que quedo abierta de ayer
+    si. Starlette no tiene expiracion absoluta, y fabricarla —guardar el
+    instante de alta adentro de la sesion y compararlo— seria una segunda
+    verdad sobre lo mismo: la cookie diria una cosa y el servidor otra."""
+
     cookie_nombre: str = "studiocutter_sesion"
     cookie_secure: bool = False
     """False en localhost, que no tiene HTTPS. Con un proxy TLS adelante se

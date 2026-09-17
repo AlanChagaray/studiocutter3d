@@ -341,16 +341,41 @@ function iniciarTema() {
 /* ── F1: convertidor ─────────────────────────────────────────────────────── */
 
 /**
+ * De que extension a que destino, cuando lo que entra es un archivo 3D.
+ *
+ * Son dos formatos y nadie convierte un `.3mf` a `.3mf`: el destino obvio es
+ * siempre el otro, asi que la fila entra ya resuelta y el selector queda para
+ * el caso raro. La extension es solo una propuesta del navegador — el formato
+ * real lo deciden los bytes del lado del servidor, que ademas sabe copiar el
+ * archivo tal cual si el par termino siendo el mismo.
+ */
+const OTRA_MALLA = { '3mf': 'stl', stl: '3mf' };
+
+/** Codigo de error de la API -> que dice el chip de la fila. */
+const CHIP_DE_ERROR = {
+  formato_no_soportado: 'formato invalido',
+  conversion_no_aplica: 'no aplica',
+  malla_ilegible: 'archivo 3D invalido',
+  demasiados_trabajos: 'sin lugar',
+};
+
+/**
  * Cola de conversion con destino por archivo.
  *
- * La cola se arma primero y se convierte despues, en dos pasos: el destino
- * (JPG o SVG) es una decision por archivo, y no se puede decidir mientras la
- * conversion ya arranco. Los botones de arriba fijan el destino de todo lo
- * que este pendiente —el caso comun, todos iguales— y el selector de cada
- * fila lo pisa cuando hacen falta mezclados.
+ * La cola se arma primero y se convierte despues, en dos pasos: el destino es
+ * una decision por archivo, y no se puede decidir mientras la conversion ya
+ * arranco. Los botones de arriba fijan el destino de todas las IMAGENES
+ * pendientes —el caso comun, todas iguales— y el selector de cada fila lo pisa
+ * cuando hacen falta mezcladas.
  *
  * Los archivos se mandan **de a uno y en serie**: asi cada uno tiene su
  * propio resultado y su propio error, y uno que falla no arrastra al resto.
+ *
+ * ⚠ **Las dos mitades no terminan igual.** Una imagen vuelve del POST ya
+ * convertida, porque Pillow tarda milisegundos y eso corre en linea. Un archivo
+ * 3D vuelve `procesando`: su conversion vive en un proceso hijo —trimesh no
+ * puede entrar al proceso web— y hay que sondearla. Por eso `convertirUno`
+ * mira el estado que vino en vez de darlo por terminado.
  */
 function iniciarConversor() {
   const molde = $('#molde-fila');
@@ -375,10 +400,14 @@ function iniciarConversor() {
   botonesDestino.forEach((b) =>
     b.addEventListener('click', () => {
       botonesDestino.forEach((o) => o.setAttribute('aria-pressed', String(o === b)));
-      pendientes().forEach((f) => {
-        f.destino = b.dataset.destino;
-        $('[data-rol="destino"]', f.nodo).value = f.destino;
-      });
+      // Solo las imagenes: "todos a JPG" no tiene nada que decirle a un .stl,
+      // y aplicarselo lo dejaria con un destino que el servidor rechaza.
+      pendientes()
+        .filter((f) => !f.esMalla)
+        .forEach((f) => {
+          f.destino = b.dataset.destino;
+          $('[data-rol="destino"]', f.nodo).value = f.destino;
+        });
     })
   );
 
@@ -391,15 +420,63 @@ function iniciarConversor() {
     texto($('[data-rol="nombre"]', nodo), archivo.name);
     texto($('[data-rol="peso"]', nodo), `${(archivo.size / 1024).toFixed(0)} KB`);
 
-    const fila = { archivo, nodo, destino: destinoGlobal(), estado: 'pendiente', id: null };
-    const selector = $('[data-rol="destino"]', nodo);
-    selector.value = fila.destino;
-    selector.addEventListener('change', () => {
-      fila.destino = selector.value;
-    });
+    const opuesto = OTRA_MALLA[ext.toLowerCase()];
+    const fila = { archivo, nodo, esMalla: false, destino: 'jpg', estado: 'pendiente', id: null };
+    ofrecer(fila, Boolean(opuesto), opuesto || destinoGlobal());
 
     cola.appendChild(nodo);
     filas.push(fila);
+  }
+
+  /**
+   * Deja la fila con la familia de destinos que le corresponde.
+   *
+   * El molde trae los cuatro y aca se borra el par que sobra. Se rearma desde
+   * el molde —y no se esconden opciones— porque la fila puede cambiar de
+   * familia despues de haber salido: ver `reofrecer`.
+   */
+  function ofrecer(fila, esMalla, destino) {
+    const viejo = $('[data-rol="destino"]', fila.nodo);
+    const nuevo = $('[data-rol="destino"]', molde.content.firstElementChild.cloneNode(true));
+    $$('[data-tipo]', nuevo).forEach((o) => {
+      if (o.dataset.tipo !== (esMalla ? 'malla' : 'imagen')) o.remove();
+    });
+
+    fila.esMalla = esMalla;
+    fila.destino = destino;
+    nuevo.value = destino;
+    nuevo.addEventListener('change', () => {
+      fila.destino = nuevo.value;
+    });
+    viejo.replaceWith(nuevo);
+  }
+
+  /**
+   * Vuelve a ofrecer la fila con la familia que dicen sus BYTES, y la deja lista.
+   *
+   * El navegador propone el destino mirando la extension y el servidor decide
+   * mirando el contenido: un `.3mf` renombrado —o un archivo sin extension—
+   * entra con los destinos de imagen y se lleva un `conversion_no_aplica`. Sin
+   * esto la fila queda en un callejon sin salida, porque el destino correcto ni
+   * siquiera esta en su selector.
+   */
+  function reofrecer(fila, origen) {
+    const esMalla = Boolean(OTRA_MALLA[origen]);
+    ofrecer(fila, esMalla, esMalla ? OTRA_MALLA[origen] : 'jpg');
+    const barra = $('[data-rol="barra"]', fila.nodo);
+    const chip = $('[data-rol="chip"]', fila.nodo);
+    barra.style.width = '0%';
+    barra.style.background = '';
+    chip.className = 'chip chip--proceso';
+    chip.textContent = 'en espera';
+    fila.estado = 'pendiente';
+    // Pisa el mensaje del servidor, que mandaba a otra pantalla: ya no hace
+    // falta ir a ningun lado, el destino que sirve esta ahi al lado.
+    texto(
+      $('[data-rol="aviso"]', fila.nodo),
+      `Por adentro es ${esMalla ? 'un archivo 3D' : 'una imagen'}, no lo que decia la extension. ` +
+        'Ya tenes los destinos que acepta: elegi uno y volve a convertir.'
+    );
   }
 
   function refrescar() {
@@ -428,11 +505,16 @@ function iniciarConversor() {
     if (svg) aCortante.href = `/cortante?origen=${encodeURIComponent(svg.id)}`;
     mostrar(aLineas, Boolean(jpg));
     mostrar(aCortante, Boolean(svg));
+    // Sin JPG ni SVG lo unico que salio son archivos 3D, que no encadenan con
+    // ninguna pantalla: decir "el JPG es la entrada de la correccion" ahi seria
+    // hablar de un archivo que no existe.
     texto(
       $('#pista-pie'),
       svg
         ? 'El SVG es lo unico que entra al cortante.'
-        : 'El JPG es la entrada de la correccion de lineas.'
+        : jpg
+          ? 'El JPG es la entrada de la correccion de lineas.'
+          : 'Los archivos 3D se bajan de la lista: no siguen a ninguna otra pantalla.'
     );
     mostrar($('#pie'), listos.length > 0);
   }
@@ -452,23 +534,35 @@ function iniciarConversor() {
     const chip = $('[data-rol="chip"]', fila.nodo);
     const barra = $('[data-rol="barra"]', fila.nodo);
     const selector = $('[data-rol="destino"]', fila.nodo);
+    const aviso = $('[data-rol="aviso"]', fila.nodo);
+    // ⚠ `selector` es el de AHORA. `reofrecer` lo reemplaza por uno nuevo —ya
+    // habilitado— asi que esta referencia solo vale hasta ese punto. El destino
+    // no se puede cambiar con la conversion en curso, de ahi el `disabled`.
     const datos = new FormData();
     datos.append('archivo', fila.archivo, fila.archivo.name);
     datos.append('formato', fila.destino);
 
     selector.disabled = true;
+    mostrar(aviso, false);
     chip.className = 'chip chip--proceso';
     chip.textContent = fila.destino === 'svg' ? 'vectorizando' : 'convirtiendo';
 
     try {
-      const trabajo = await enviar('/api/conversor', datos, (f) => {
+      let trabajo = await enviar('/api/conversor', datos, (f) => {
         barra.style.width = `${Math.round(f * 92)}%`;
       });
+      // Lo 3D se fue a un proceso hijo y todavia no termino. Lo de imagen ya
+      // vuelve `listo` y no entra aca.
+      if (trabajo.estado !== 'listo') {
+        barra.style.width = '100%';
+        trabajo = siFalloTirar(await sondear(trabajo.id));
+      }
       barra.style.width = '100%';
       chip.className = 'chip chip--ok';
       chip.textContent = 'listo';
       fila.estado = 'listo';
       fila.id = trabajo.id;
+      describir(fila, trabajo.reporte);
 
       const bajar = $('[data-rol="bajar"]', fila.nodo);
       bajar.href = urlArchivo(trabajo.id, fila.destino);
@@ -478,9 +572,54 @@ function iniciarConversor() {
       barra.style.width = '100%';
       barra.style.background = 'var(--rojo)';
       chip.className = 'chip chip--error';
-      chip.textContent = e.codigo === 'formato_no_soportado' ? 'formato invalido' : 'error';
+      chip.textContent = CHIP_DE_ERROR[e.codigo] || 'error';
       chip.title = e.message;
+      // Tambien a la vista: un motivo que solo se lee pasando el mouse por
+      // arriba de un chip de tres palabras no lo lee nadie, y este es justo el
+      // error que se arregla eligiendo otro destino.
+      texto(aviso, e.message);
+      mostrar(aviso, true);
       fila.estado = 'error';
+
+      // El servidor dijo que el archivo es de la otra familia. Se le devuelve
+      // los destinos que si acepta y la fila vuelve a quedar pendiente: el
+      // pedido se rehace eligiendo el correcto, sin volver a arrastrarlo.
+      const origen = (e.detalle || {}).origen;
+      if (e.codigo === 'conversion_no_aplica' && origen) reofrecer(fila, origen);
+    }
+  }
+
+  /**
+   * Publica lo que la conversion midio, o lo que tuvo que tocar.
+   *
+   * Solo los archivos 3D traen que declarar: los triangulos y las medidas son
+   * la prueba de que el diseño no cambio, y las advertencias son las dos
+   * modificaciones que el formato obliga —la escala a milimetros y la union de
+   * cuerpos al ir a STL—. Una imagen no pasa por aca.
+   */
+  function describir(fila, reporte) {
+    if (!reporte) return;
+    const aviso = $('[data-rol="aviso"]', fila.nodo);
+    const avisos = reporte.advertencias || [];
+
+    if (reporte.triangulos) {
+      const [x, y, z] = reporte.medidas_mm || [];
+      const lado = (v) => Number(v).toFixed(1);
+      texto(
+        $('[data-rol="peso"]', fila.nodo),
+        `${reporte.triangulos.toLocaleString('es-AR')} triangulos · ` +
+          `${lado(x)} × ${lado(y)} × ${lado(z)} mm` +
+          (reporte.cerrado ? ' · cerrado' : '')
+      );
+    } else if (reporte.sin_conversion) {
+      avisos.push(
+        `Ya estaba en ${String(reporte.formato_destino).toUpperCase()}: se copio sin tocarlo.`
+      );
+    }
+
+    if (avisos.length) {
+      texto(aviso, avisos.join(' '));
+      mostrar(aviso, true);
     }
   }
 }

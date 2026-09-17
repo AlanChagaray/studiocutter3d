@@ -15,14 +15,22 @@ import pytest
 import trimesh
 from fastapi.testclient import TestClient
 from PIL import Image
+from test_web_trabajos import sondear_hasta_el_final
 
 from app.almacen import AlmacenEnMemoria, TipoTrabajo
 from app.archivos import (
+    CLAVE_SALIDA,
+    DESTINOS_IMAGEN,
+    DESTINOS_MALLA,
     EXTENSION,
     FORMATOS_CONVERSOR,
+    FORMATOS_CONVERSOR_IMAGEN,
     FORMATOS_MALLA,
     MAX_DISENOS,
+    NOMBRE_DE,
     Formato,
+    FormatoSalida,
+    destinos_de,
     detectar_formato,
     guardar_subida,
 )
@@ -101,7 +109,7 @@ def test_un_formato_de_destino_inventado_se_rechaza(sesion: TestClient, png_mini
     r = sesion.post(
         "/api/conversor",
         files={"archivo": ("d.png", png_minimo, "image/png")},
-        data={"formato": "3mf"},
+        data={"formato": "obj"},
     )
     assert r.status_code == 422
 
@@ -249,7 +257,7 @@ def test_los_raw_de_camara_son_formatos_permitidos(cabecera: bytes) -> None:
     """
     formato = detectar_formato(cabecera)
     assert formato in (Formato.CR3, Formato.TIFF)
-    assert formato in FORMATOS_CONVERSOR
+    assert formato in FORMATOS_CONVERSOR_IMAGEN
 
 
 @pytest.mark.parametrize(
@@ -356,17 +364,35 @@ def _malla_stl() -> bytes:
     return bytes(trimesh.creation.box(extents=(10.0, 10.0, 4.0)).export(file_type="stl"))
 
 
-def test_las_mallas_no_entran_al_conversor() -> None:
-    """⚠ `FORMATOS_CONVERSOR` era `frozenset(Formato)` y eso ya no puede ser.
+def test_una_malla_nunca_puede_terminar_en_pillow() -> None:
+    """⚠ El Convertidor acepta mallas, pero las dos mitades no se cruzan NUNCA.
 
-    Con el enum de puras imagenes funcionaba; desde que hay mallas, cada miembro
-    nuevo entraria solo al Convertidor y reventaria despues adentro de Pillow —
-    un 500 donde corresponde un 415. Este test es el que sostiene que la resta
-    de `FORMATOS_MALLA` siga ahi.
+    `FORMATOS_CONVERSOR` era `frozenset(Formato)` y con el enum de puras
+    imagenes funcionaba; desde que hay mallas, cada miembro nuevo entraba solo y
+    reventaba despues adentro de Pillow — un 500 donde corresponde un 4xx. Hoy
+    la malla si entra, pero por su propio camino: lo que sostiene la separacion
+    ya no es la lista de formatos sino el par (origen, destino).
+
+    Los dos lados se prueban juntos porque son la misma afirmacion: nada que no
+    se pueda abrir con Pillow puede pedir un destino de imagen.
     """
-    assert not (FORMATOS_CONVERSOR & FORMATOS_MALLA)
-    assert Formato.TRES_MF not in FORMATOS_CONVERSOR
-    assert Formato.STL not in FORMATOS_CONVERSOR
+    assert not (FORMATOS_CONVERSOR_IMAGEN & FORMATOS_MALLA)
+    for malla in FORMATOS_MALLA:
+        assert destinos_de(malla) == DESTINOS_MALLA, malla
+    for imagen in FORMATOS_CONVERSOR_IMAGEN:
+        assert destinos_de(imagen) == DESTINOS_IMAGEN, imagen
+
+
+def test_todo_destino_tiene_clave_y_nombre_en_disco() -> None:
+    """`CLAVE_SALIDA` es un dict TOTAL: un destino sin fila es un KeyError.
+
+    Explota en el router, con el trabajo ya creado y el archivo ya subido. Es la
+    misma red que `EXTENSION` para `Formato`, y hace falta desde que el enum de
+    destinos dejo de tener dos miembros.
+    """
+    assert set(CLAVE_SALIDA) == set(FormatoSalida)
+    for clave in CLAVE_SALIDA.values():
+        assert clave in NOMBRE_DE
 
 
 def test_todo_formato_tiene_extension() -> None:
@@ -530,3 +556,122 @@ def test_el_tope_de_disenos_del_front_es_el_del_servidor(sesion: TestClient) -> 
     pasar un lote que el servidor rechaza, o corta uno que aceptaria."""
     js = sesion.get("/static/js/app.js").text
     assert f"const MAX_DISENOS = {MAX_DISENOS};" in js
+
+
+# ── F1: mallas, el otro camino del Convertidor ──────────────────────────────
+
+
+def test_el_conversor_rechaza_una_imagen_pedida_como_3d(
+    sesion: TestClient, png_minimo: bytes
+) -> None:
+    """Construir geometria es F3, con su reporte de fidelidad y sus parametros.
+
+    Un conversor que lo hiciera de callado seria exactamente la perdida de
+    fidelidad no elegida que este proyecto no hace. Y el mensaje tiene que
+    NOMBRAR la pantalla que si lo hace: un 422 que solo dice "no se puede" deja
+    al usuario creyendo que la app no sabe.
+    """
+    r = sesion.post(
+        "/api/conversor",
+        files={"archivo": ("d.png", png_minimo, "image/png")},
+        data={"formato": "3mf"},
+    )
+    assert r.status_code == 422
+    assert r.json()["error"]["codigo"] == "conversion_no_aplica"
+    assert "Cortante" in r.json()["error"]["mensaje"]
+
+
+@pytest.mark.parametrize("destino", ["jpg", "svg"])
+def test_el_conversor_rechaza_una_malla_pedida_como_imagen(
+    sesion: TestClient, destino: str
+) -> None:
+    """La foto de una pieza es F4, que la rinde con el estudio de luces del cortante.
+
+    Sacarla aca seria una segunda foto que no se parece a la primera, que es
+    justo lo que F4 existe para evitar.
+    """
+    r = sesion.post(
+        "/api/conversor",
+        files={"archivo": ("p.3mf", _malla_3mf(), "application/octet-stream")},
+        data={"formato": destino},
+    )
+    assert r.status_code == 422
+    assert r.json()["error"]["codigo"] == "conversion_no_aplica"
+    assert "Post" in r.json()["error"]["mensaje"]
+
+
+@pytest.mark.parametrize(("nombre", "formato"), [("p.3mf", "3mf"), ("p.stl", "stl")])
+def test_una_malla_ya_en_el_formato_pedido_sale_identica(
+    sesion: TestClient, nombre: str, formato: str
+) -> None:
+    """Se copia tal cual: es lo unico honesto y lo unico que no puede alterar nada.
+
+    Pasa mas de lo que parece — el destino lo propone el navegador mirando la
+    extension y el formato real lo deciden los bytes, asi que un `.stl` que en
+    verdad era un 3MF llega como un par identico. **No gasta un proceso hijo**:
+    vuelve `listo` del mismo request.
+    """
+    contenido = _malla_3mf() if formato == "3mf" else _malla_stl()
+    r = sesion.post(
+        "/api/conversor",
+        files={"archivo": (nombre, contenido, "application/octet-stream")},
+        data={"formato": formato},
+    )
+    assert r.status_code == 200, r.text
+    trabajo = r.json()
+    assert trabajo["estado"] == "listo"
+    assert trabajo["reporte"]["sin_conversion"] is True
+
+    descarga = sesion.get(f"/api/trabajos/{trabajo['id']}/archivo/{formato}")
+    assert descarga.content == contenido, "el archivo tiene que salir identico"
+
+
+def test_el_conversor_rechaza_un_zip_que_no_es_3mf(sesion: TestClient) -> None:
+    """Mismo motivo que en `/api/post`: se confirma ANTES de gastar un slot.
+
+    La firma `PK\\x03\\x04` la comparten docx, xlsx, jar y epub, y lo que
+    distingue a un 3MF vive en el central directory, al final del archivo, donde
+    la deteccion por magic bytes no llega.
+    """
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as z:
+        z.writestr("word/document.xml", "<w:document/>")
+    r = sesion.post(
+        "/api/conversor",
+        files={"archivo": ("t.docx", buffer.getvalue(), "application/octet-stream")},
+        data={"formato": "stl"},
+    )
+    assert r.status_code == 422
+    assert r.json()["error"]["codigo"] == "malla_ilegible"
+
+
+@pytest.mark.lento
+def test_la_conversion_de_malla_va_a_un_proceso_hijo_y_conserva_las_medidas(
+    sesion: TestClient,
+) -> None:
+    """De punta a punta: POST, polling, descarga, y la pieza mide lo mismo.
+
+    ⚠ **No vuelve `listo` del request**, y eso es la mitad del test: trimesh no
+    puede entrar al proceso web (~1200 modulos, ~89 MB en un proceso que no
+    construye un solo poligono), asi que la conversion vive en un hijo. Si algun
+    dia alguien la trae al request para "simplificar", este assert se cae.
+    """
+    r = sesion.post(
+        "/api/conversor",
+        files={"archivo": ("pieza.3mf", _malla_3mf(), "application/octet-stream")},
+        data={"formato": "stl"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["estado"] != "listo", "la malla no puede convertirse en el proceso web"
+
+    final = sondear_hasta_el_final(sesion, r.json()["id"], limite_s=120)
+    assert final["estado"] == "listo", final
+    assert final["archivos"] == ["stl"]
+    assert final["reporte"]["medidas_mm"] == [10.0, 10.0, 4.0]
+    assert final["reporte"]["cerrado"] is True
+
+    descarga = sesion.get(f"/api/trabajos/{final['id']}/archivo/stl")
+    assert descarga.status_code == 200
+    assert descarga.headers["content-type"] == "model/stl"
+    malla = trimesh.load(io.BytesIO(descarga.content), file_type="stl")
+    assert list(malla.extents) == [10.0, 10.0, 4.0]

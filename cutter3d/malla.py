@@ -1,10 +1,17 @@
-"""Lectura de una malla que este motor NO construyo, y su `.glb` para el visor.
+"""Lectura de una malla que este motor NO construyo: su `.glb`, y su otro formato.
 
 Todo el resto del paquete parte de un SVG y termina en un `.3mf`. Este modulo va
 en la direccion contraria: toma un `.3mf` o un `.stl` **que entro desde afuera**
-—de una corrida vieja, o de cualquier otro programa— y produce el `.glb` que la
-capa web le da al visor de three.js, para que se le pueda sacar la misma foto
-cenital que a un cortante recien generado.
+—de una corrida vieja, o de cualquier otro programa— y hace dos cosas con el.
+
+- `a_glb` produce el `.glb` que la capa web le da al visor de three.js, para que
+  se le pueda sacar la misma foto cenital que a un cortante recien generado.
+- `convertir` lo escribe en **el otro formato de malla**, sin tocar el diseño ni
+  las medidas. Es la unica funcion del paquete que no construye ni deriva nada:
+  transcribe, y prueba que transcribio bien.
+
+Las dos comparten la lectura defensiva (`cargar_malla`) y la misma manera de
+probar lo que afirman: releer del disco lo que se escribio.
 
 ## Por que no vive en `export.py`
 
@@ -58,7 +65,7 @@ import numpy as np
 import trimesh
 
 from .errors import ConversionInfiel, MallaIlegible
-from .export import exportar_glb
+from .export import exportar_3mf, exportar_glb, exportar_stl_unico
 from .paquete3mf import confirmar_3mf
 from .params import MAX_ARCHIVOS_POR_DISENO
 from .solids import NOMBRE_CORTADOR, NOMBRE_MARCADOR, aplicar_acabado
@@ -74,6 +81,31 @@ TOLERANCIA_MM = 1e-4
 
 TOLERANCIA_VOLUMEN = 1e-6
 """Desvio relativo admitido en el volumen. Es un roundtrip binario: deberia dar 0."""
+
+TOLERANCIA_RELATIVA = 1e-6
+"""Parte de `TOLERANCIA_MM` que escala con el tamaño de la pieza.
+
+**STL guarda coordenadas en `float32` y eso no es negociable: lo dice el
+formato.** La resolucion de `float32` es relativa (~1,2e-7), asi que un borde a
+48 mm se mueve 6e-6 mm y uno a 2000 mm se mueve 2,4e-4 — el segundo pasaria el
+techo fijo de 1e-4 mm sin que nada haya salido mal. Medido en este repo: los
+cortantes reales (`out/*.3mf`, magnitud 48 mm) hacen el roundtrip 3MF→STL
+**bit a bit**, y una esfera con coordenadas feas se movio 8e-7 mm. El termino
+relativo existe para el archivo grande y ajeno que nadie midio, no para el
+caso normal."""
+
+
+UNIDADES_3MF = frozenset(
+    {"micron", "millimeter", "millimeters", "centimeter", "inch", "foot", "meter"}
+)
+"""Las unidades que un 3MF puede declarar. Lista cerrada, como los roles.
+
+Son las seis de la especificacion mas `millimeters`, que es lo que trimesh pone
+cuando el archivo **no** declara ninguna (el default del formato). El factor no
+se hardcodea: sale de `trimesh.units.unit_conversion`, que es la libreria y por
+lo tanto la unica verdad sobre el numero. La lista cerrada esta para lo otro —
+`unit_conversion` tambien acepta cosas como `"1.21 * meters"`, que el 3MF no
+permite y que aca entraria como una escala arbitraria salida del archivo."""
 
 SUFIJOS = {".3mf": "3mf", ".stl": "stl"}
 """Extension en disco -> `file_type` de trimesh. El tipo se fuerza, nunca se adivina."""
@@ -337,3 +369,229 @@ def _comprobar(escena: trimesh.Scene, glb: Path) -> ReporteMalla:
         volumen_mm3=round(volumen, 3),
         advertencias=tuple(advertencias),
     )
+
+
+# ── Conversion entre formatos de malla ───────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ReporteConversion:
+    """Lo que se puede AFIRMAR de la conversion, medido sobre el archivo escrito.
+
+    Es el equivalente de `ReporteFidelidad` para esta entrada: no hay dibujo
+    original contra el cual comparar, pero si hay algo que probar — que la malla
+    que sale describe la misma geometria y las mismas medidas que la que entro.
+    Todos estos numeros salen de **releer el archivo del disco**.
+    """
+
+    origen: str
+    destino: str
+    objetos: tuple[str, ...]
+    """Los cuerpos que traia la ENTRADA, con nombres presentables."""
+
+    triangulos: int
+    medidas_mm: tuple[float, float, float]
+    cerrado: bool
+    volumen_mm3: float
+    unidad_origen: str
+    escala_a_mm: float
+    """Por cuanto se multiplico para llevar la pieza a milimetros. 1.0 = nada."""
+
+    cuerpos_unidos: int
+    """Cuantos objetos quedaron fundidos en uno. 0 cuando no se unio nada."""
+
+    advertencias: tuple[str, ...]
+
+
+def convertir(entrada: Path, destino: Path) -> ReporteConversion:
+    """Un `.3mf` o un `.stl` al otro formato, **sin tocar el diseño ni las medidas**.
+
+    Es lo unico del paquete que no construye ni deriva nada: transcribe. La unica
+    modificacion admitida es la que el propio formato obliga, y las dos que hay
+    se declaran en el reporte:
+
+    1. **La escala a milimetros.** Un 3MF declara su unidad en el XML; un STL no
+       tiene unidades y todo el ecosistema de impresion lo lee en mm. Convertir a
+       STL un 3MF en pulgadas sin escalar entregaria la misma pieza 25,4 veces
+       mas chica, que es exactamente "cambiar las medidas". Se escala por el
+       factor exacto de la unidad declarada y se dice cual era.
+    2. **La union de cuerpos al ir a STL.** El formato no sabe contener mas de
+       uno: un `.3mf` con `marcador` y `cortador` sale como un solo cuerpo de dos
+       cascaras. **Las coordenadas no se tocan** —cada pieza queda donde estaba—
+       pero el slicer ya no las puede mover por separado, asi que se advierte.
+
+    Lo que **no** se hace, y es lo que lo distingue de un conversor cualquiera:
+    no se repara, no se simplifica, no se reorienta, no se centra y no se cierra
+    nada. Una malla abierta se convierte igual y se declara abierta.
+
+    La equivalencia se comprueba **releyendo el archivo escrito**, por la misma
+    razon que `verify` relee el `.3mf` y que `a_glb` relee el `.glb`: comparar la
+    escena en memoria contra si misma no prueba nada sobre lo que se entrega.
+    """
+    tipo_destino = SUFIJOS.get(destino.suffix.lower())
+    if tipo_destino is None:
+        raise MallaIlegible(str(destino), f"extension de destino no soportada: '{destino.suffix}'")
+    tipo_origen = SUFIJOS.get(entrada.suffix.lower())
+
+    escena = cargar_malla(entrada)
+    unidad, escala = _a_milimetros(escena)
+    objetos = _nombrar(list(escena.geometry))
+
+    advertencias: list[str] = []
+    if escala != 1.0:
+        advertencias.append(
+            f"El archivo venia en {unidad} y se paso a milimetros (x{escala:g}) "
+            "para que la pieza mida lo mismo."
+        )
+
+    cuerpos_unidos = 0
+    escrito: trimesh.Scene | trimesh.Trimesh
+    if tipo_destino == "stl":
+        # Hornear el grafo de la escena en los vertices: un 3MF puede posicionar
+        # sus objetos con transformaciones y un STL no tiene donde guardarlas.
+        # Sin esto las piezas saldrian todas apiladas en el origen.
+        horneada = escena.to_mesh()
+        _mismo_bulto(escena, horneada)
+        if len(escena.geometry) > 1:
+            cuerpos_unidos = len(escena.geometry)
+            advertencias.append(
+                f"El archivo traia {cuerpos_unidos} objetos y STL no sabe separarlos: "
+                "salen como un solo cuerpo de varias cascaras. Las coordenadas no se "
+                "movieron, pero el slicer ya no los puede acomodar por separado."
+            )
+        exportar_stl_unico(horneada, destino)
+        escrito = horneada
+    else:
+        # STL no tiene nombres de objeto y trimesh usa el del archivo, que aca
+        # siempre es `entrada.stl` porque asi lo guarda la capa web. Escribir eso
+        # adentro del 3MF seria filtrar un nombre interno en un archivo que el
+        # usuario se lleva. Se reconstruye la escena con los nombres de
+        # `_nombrar`, que son los mismos que muestra el reporte.
+        suelta = trimesh.Scene()
+        for nombre, malla in zip(objetos, escena.geometry.values(), strict=True):
+            suelta.add_geometry(malla, geom_name=nombre)
+        exportar_3mf(suelta, destino)
+        escrito = suelta
+
+    triangulos, medidas, volumen, cerrado = _releer(escrito, destino, tipo_destino)
+    if not cerrado:
+        advertencias.append(
+            "La malla no es un solido cerrado. El archivo se convierte igual —no se "
+            "repara nada— pero puede dar problemas al laminar."
+        )
+
+    return ReporteConversion(
+        origen=tipo_origen or "?",
+        destino=tipo_destino,
+        objetos=objetos,
+        triangulos=triangulos,
+        medidas_mm=medidas,
+        cerrado=cerrado,
+        volumen_mm3=round(volumen, 3),
+        unidad_origen=unidad,
+        escala_a_mm=escala,
+        cuerpos_unidos=cuerpos_unidos,
+        advertencias=tuple(advertencias),
+    )
+
+
+def _a_milimetros(escena: trimesh.Scene) -> tuple[str, float]:
+    """Lleva la escena a milimetros y devuelve (unidad declarada, factor aplicado).
+
+    Un STL no declara nada y cae en el default `millimeter` con factor 1, que es
+    lo correcto: el formato no tiene unidades y todo el ecosistema de impresion
+    lo lee en mm. Inventar otra cosa ahi seria adivinar.
+
+    Una unidad fuera de la lista cerrada **falla**, no se asume mm: un 3MF que
+    declara algo que no entendemos puede estar en cualquier escala, y entregar en
+    silencio una pieza del tamaño equivocado es peor que no entregarla.
+    """
+    unidad = str(escena.metadata.get("units") or "millimeter").strip().lower()
+    if unidad not in UNIDADES_3MF:
+        raise MallaIlegible("(la malla)", f"el archivo declara una unidad desconocida: '{unidad}'")
+    escala = float(trimesh.units.unit_conversion(unidad, "millimeter"))
+    if escala != 1.0:
+        escena.apply_scale(escala)
+    return unidad, escala
+
+
+def _mismo_bulto(escena: trimesh.Scene, horneada: trimesh.Trimesh) -> None:
+    """Hornear no puede mover ni perder nada. Si lo hizo, es un bug nuestro.
+
+    Se comparan triangulos y caja y **no** el volumen: fundir varios cuerpos en
+    uno cambia el signo del que venga invertido, y un archivo ajeno con una
+    cascara al reves es raro pero legitimo. Las otras dos magnitudes no tienen
+    esa ambiguedad.
+    """
+    esperados = sum(len(malla.faces) for malla in escena.geometry.values())
+    if esperados != len(horneada.faces):
+        raise ConversionInfiel("los triangulos al hornear", esperados, len(horneada.faces))
+    if not np.allclose(escena.bounds, horneada.bounds, atol=_tolerancia(escena.bounds)):
+        raise ConversionInfiel(
+            "las medidas al hornear",
+            np.round(escena.extents, 4).tolist(),
+            np.round(horneada.extents, 4).tolist(),
+        )
+
+
+def _tolerancia(caja: np.ndarray) -> float:
+    """Cuanto puede moverse un borde, con el termino que escala con la pieza.
+
+    Ver `TOLERANCIA_RELATIVA`: el techo fijo solo alcanza mientras las
+    coordenadas sean chicas, y `float32` se equivoca en proporcion al numero.
+    """
+    return TOLERANCIA_MM + TOLERANCIA_RELATIVA * float(np.abs(caja).max())
+
+
+def _releer(
+    escrito: trimesh.Scene | trimesh.Trimesh, ruta: Path, tipo: str
+) -> tuple[int, tuple[float, float, float], float, bool]:
+    """Relee el archivo del disco y lo compara contra lo que se mando a escribir.
+
+    Devuelve las magnitudes **de lo releido**, que es lo unico que el reporte
+    puede afirmar: son las del archivo que el usuario se lleva.
+    """
+    try:
+        releida = trimesh.load(str(ruta), file_type=tipo, force="scene")
+    except Exception as exc:
+        raise ConversionInfiel(f"la lectura del {tipo}", "una escena", "un error") from exc
+    if not isinstance(releida, trimesh.Scene):
+        raise ConversionInfiel(f"la forma del {tipo}", "Scene", type(releida).__name__)
+
+    mallas = list(releida.geometry.values())
+    obtenidos = sum(len(m.faces) for m in mallas)
+    esperados = _triangulos_de(escrito)
+    if esperados != obtenidos:
+        raise ConversionInfiel("los triangulos", esperados, obtenidos)
+
+    if not np.allclose(escrito.bounds, releida.bounds, atol=_tolerancia(escrito.bounds)):
+        raise ConversionInfiel(
+            "las medidas",
+            np.round(escrito.extents, 4).tolist(),
+            np.round(releida.extents, 4).tolist(),
+        )
+
+    volumen = float(sum(abs(m.volume) for m in mallas))
+    esperado = _volumen_de(escrito)
+    if esperado > 0 and abs(volumen - esperado) / esperado > TOLERANCIA_VOLUMEN:
+        raise ConversionInfiel("el volumen", esperado, volumen)
+
+    medidas = releida.extents
+    return (
+        obtenidos,
+        (round(float(medidas[0]), 3), round(float(medidas[1]), 3), round(float(medidas[2]), 3)),
+        volumen,
+        all(m.is_watertight for m in mallas),
+    )
+
+
+def _triangulos_de(malla_o_escena: trimesh.Scene | trimesh.Trimesh) -> int:
+    if isinstance(malla_o_escena, trimesh.Trimesh):
+        return len(malla_o_escena.faces)
+    return sum(len(m.faces) for m in malla_o_escena.geometry.values())
+
+
+def _volumen_de(malla_o_escena: trimesh.Scene | trimesh.Trimesh) -> float:
+    if isinstance(malla_o_escena, trimesh.Trimesh):
+        return abs(float(malla_o_escena.volume))
+    return float(sum(abs(m.volume) for m in malla_o_escena.geometry.values()))

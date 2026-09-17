@@ -119,16 +119,25 @@ EXTENSION: dict[Formato, str] = {
 
 #: Que acepta cada pantalla. F2 pide JPG si o si — es requisito del producto,
 #: no una limitacion tecnica: la correccion de lineas trabaja sobre un raster.
-#: El Convertidor acepta todo lo que se sabe abrir: es la puerta de entrada, y
-#: su trabajo es justamente normalizar a jpg o svg lo que venga.
-FORMATOS_CONVERSOR = frozenset(Formato) - FORMATOS_MALLA
+#: El Convertidor acepta todo lo que se sabe leer: es la puerta de entrada, y su
+#: trabajo es normalizar a jpg o svg lo que venga, o pasar una malla al otro
+#: formato. Que puede ir a que lo decide `destinos_de`, no esta lista.
+FORMATOS_CONVERSOR_IMAGEN = frozenset(Formato) - FORMATOS_MALLA
 """Todo lo que se sabe **abrir como imagen**.
 
-⚠ Era `frozenset(Formato)` a secas, y eso funcionaba solo mientras el enum
-fuera de puras imagenes: desde que hay mallas, cada miembro nuevo entraba solo
-al Convertidor y reventaba despues adentro de Pillow, con un 500 en vez de un
-415. Se resta en vez de enumerar a mano para que el default siga siendo
-"el Convertidor acepta todo": lo que hay que declarar es la excepcion."""
+⚠ Era `FORMATOS_CONVERSOR` a secas y valia `frozenset(Formato)`, que funcionaba
+solo mientras el enum fuera de puras imagenes: desde que hay mallas, cada
+miembro nuevo entraba solo al Convertidor y reventaba despues adentro de
+Pillow, con un 500 en vez de un 415. Se resta en vez de enumerar a mano para
+que el default siga siendo "todo lo que se sabe abrir": lo que hay que declarar
+es la excepcion.
+
+Hoy el Convertidor tambien acepta mallas, pero por un camino distinto y sin
+cruce posible entre los dos — ver `destinos_de`."""
+
+FORMATOS_CONVERSOR = FORMATOS_CONVERSOR_IMAGEN | FORMATOS_MALLA
+"""Lo que el Convertidor deja SUBIR. Que se pueda subir no es que sirva para
+cualquier destino: el par (origen, destino) lo decide `destinos_de`."""
 
 FORMATOS_LINEAS = frozenset({Formato.JPEG})
 FORMATOS_CORTANTE = frozenset({Formato.SVG})
@@ -180,6 +189,15 @@ class ClaveArchivo(StrEnum):
     GLB = "glb"
     STL_MARCADOR = "stl_marcador"
     STL_CORTADOR = "stl_cortador"
+    STL = "stl"
+    """El STL de UN cuerpo que deja el Convertidor de mallas.
+
+    **No es `STL_CORTADOR` ni `STL_MARCADOR`**, que son los dos que exporta el
+    motor con sus roles conocidos. Este sale de un archivo ajeno, donde no hay
+    ningun rol que afirmar: es "la malla que subiste, en el otro formato". La
+    misma regla que separa `JPG` de `JPG_VISTA` — dos productores no comparten
+    clave."""
+
     JPG = "jpg"
     PNG = "png"
     SVG = "svg"
@@ -215,6 +233,7 @@ NOMBRE_DE: dict[ClaveArchivo, str] = {
     ClaveArchivo.GLB: "salida.glb",
     ClaveArchivo.STL_MARCADOR: "salida_marcador.stl",
     ClaveArchivo.STL_CORTADOR: "salida_cortador.stl",
+    ClaveArchivo.STL: "salida.stl",
     ClaveArchivo.JPG: "salida.jpg",
     ClaveArchivo.PNG: "salida.png",
     ClaveArchivo.SVG: "salida.svg",
@@ -230,6 +249,7 @@ MEDIO_DE: dict[ClaveArchivo, str] = {
     ClaveArchivo.GLB: "model/gltf-binary",
     ClaveArchivo.STL_MARCADOR: "model/stl",
     ClaveArchivo.STL_CORTADOR: "model/stl",
+    ClaveArchivo.STL: "model/stl",
     ClaveArchivo.JPG: "image/jpeg",
     ClaveArchivo.PNG: "image/png",
     ClaveArchivo.SVG: "image/svg+xml",
@@ -269,14 +289,56 @@ class FormatoSalida(StrEnum):
 
     JPG = "jpg"
     SVG = "svg"
+    TRES_MF = "3mf"
+    STL = "stl"
 
 
 CLAVE_SALIDA: dict[FormatoSalida, ClaveArchivo] = {
     FormatoSalida.JPG: ClaveArchivo.JPG,
     FormatoSalida.SVG: ClaveArchivo.SVG,
+    FormatoSalida.TRES_MF: ClaveArchivo.TRES_MF,
+    FormatoSalida.STL: ClaveArchivo.STL,
 }
 """El formato pedido decide bajo que clave queda el resultado, y la clave
 decide el nombre en disco. El cliente sigue sin nombrar ningun archivo."""
+
+
+DESTINOS_IMAGEN = frozenset({FormatoSalida.JPG, FormatoSalida.SVG})
+DESTINOS_MALLA = frozenset({FormatoSalida.TRES_MF, FormatoSalida.STL})
+
+
+def destinos_de(formato: Formato) -> frozenset[FormatoSalida]:
+    """A que puede ir lo que entro. **Las dos mitades no se cruzan nunca.**
+
+    Una imagen sale como imagen y una malla sale como malla, y no hay pasarela
+    entre las dos — ni aca ni en ninguna pantalla:
+
+    - **Una malla a JPG** seria una foto de la pieza, y eso es F4 (`/post`), que
+      la rinde con el mismo estudio de luces que el cortante. Sacarla aca seria
+      una segunda foto que no se parece a la primera.
+    - **Una imagen a 3MF o STL** seria construir geometria, que es F3: el
+      cortante, con sus parametros, su reporte de fidelidad y su prueba de que
+      no altero el dibujo. Un conversor que lo hiciera de callado seria
+      exactamente la perdida de fidelidad no elegida que este proyecto no hace.
+
+    Por eso el par se valida y no se "resuelve": lo que no corresponde se
+    rechaza con el nombre de la pantalla que si lo hace.
+    """
+    return DESTINOS_MALLA if formato in FORMATOS_MALLA else DESTINOS_IMAGEN
+
+
+FORMATO_DE_MALLA: dict[FormatoSalida, Formato] = {
+    FormatoSalida.TRES_MF: Formato.TRES_MF,
+    FormatoSalida.STL: Formato.STL,
+}
+"""El destino de malla, leido como formato de entrada.
+
+Sirve para una sola pregunta: **¿lo que subieron ya esta en el formato que
+pidieron?** Ahi no hay nada que convertir y el archivo se copia tal cual, que es
+lo unico honesto — la misma regla que ya seguia un SVG pedido como SVG. Pasa mas
+de lo que parece: el destino lo elige el navegador por la extension y el formato
+real lo deciden los bytes, asi que un `.stl` que en realidad era un 3MF llega
+aca como un par identico."""
 
 
 SUFIJO_DESCARGA: dict[ClaveArchivo, str] = {
@@ -286,6 +348,7 @@ SUFIJO_DESCARGA: dict[ClaveArchivo, str] = {
     ClaveArchivo.GLB: ".glb",
     ClaveArchivo.STL_MARCADOR: "-marcador.stl",
     ClaveArchivo.STL_CORTADOR: "-cortador.stl",
+    ClaveArchivo.STL: ".stl",
     ClaveArchivo.JPG: ".jpg",
     ClaveArchivo.PNG: ".png",
     ClaveArchivo.SVG: ".svg",
