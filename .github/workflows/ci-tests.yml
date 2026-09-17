@@ -79,4 +79,18 @@ jobs:
       # y el almacén se reemplazan por `tmp_path` y la contraseña de prueba se
       # genera al vuelo (tests/conftest.py).
       - name: Correr la suite completa
+        env:
+          # El techo de RAM del proceso hijo (`RLIMIT_DATA`, 380 MB) está
+          # dimensionado para el CONTENEDOR, donde estas tres variables acotan
+          # los hilos de BLAS y las arenas de glibc (ver el Dockerfile). El
+          # runner tiene 4 núcleos y no las trae: OpenBLAS abría 4 hilos con
+          # sus buffers adentro del hijo ya acotado y el hijo moría con
+          # `pthread_create failed: Resource temporarily unavailable` antes de
+          # escribir `estado.json`. Fallaban exactamente los 4 tests que lanzan
+          # el motor real — y solo acá, porque en Windows el techo no existe.
+          # Son las mismas tres líneas de `ENV` del Dockerfile: la suite prueba
+          # el hijo en las condiciones en que va a correr.
+          OMP_NUM_THREADS: '1'
+          OPENBLAS_NUM_THREADS: '1'
+          MALLOC_ARENA_MAX: '2'
         run: python -m pytest
