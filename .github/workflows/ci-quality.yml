@@ -383,7 +383,7 @@ jobs:
       # otro commit; un SHA no. El comentario deja legible qué versión es, y es
       # lo que Dependabot actualiza junto con el hash.
       - name: Lint de los workflows de Actions
-        uses: reviewdog/action-actionlint@d63ba7532e0942965320cd8d73cbae4c7b3c5283 # v1.73.1
+        uses: reviewdog/action-actionlint@8b682e1e7e512151d73a6b9449cbff173846226e # v1.74.0
         with:
           reporter: github-check
           level: error

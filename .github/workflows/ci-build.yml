@@ -136,7 +136,7 @@ jobs:
       # evita volver a bajar los ~400 MB de wheels en cada push: la capa del
       # `pip install` sólo se rehace cuando cambia requirements.txt.
       - name: Configurar Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       # `load: true` deja la imagen en el daemon local del runner para poder
       # arrancarla y escanearla. No se publica (ver la cabecera).
