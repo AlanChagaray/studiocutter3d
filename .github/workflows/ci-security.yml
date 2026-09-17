@@ -1,0 +1,178 @@
+# =============================================================================
+# CI · Seguridad — cuatro capas de riesgo distintas, cuatro jobs independientes.
+#
+#   secretos       credenciales commiteadas (incluso hace meses, en el historial)
+#   dependencias   CVEs conocidos en lo que clava requirements.txt
+#   codigo         patrones inseguros en el código propio (bandit)
+#   filesystem     vulnerabilidades en manifests y archivos del repo (trivy)
+#
+# Van en jobs separados a propósito: corren en paralelo, y cuando uno falla se
+# ve exactamente QUÉ tipo de problema hay sin leer un log de 400 líneas.
+#
+# Son los mismos gates que corre la skill `gate` en local (CLAUDE.md), más trivy,
+# que en local no está. La imagen construida se escanea en `ci-build.yml`, no
+# acá: es otra superficie (el Debian base y sus paquetes).
+#
+# El `schedule` no es decorativo: un CVE aparece sin que vos cambies nada. Un
+# escaneo que sólo corre en los PRs no se entera de las vulnerabilidades que se
+# publican las semanas en que no tocaste el repo. Diario y no semanal como en el
+# api porque esta app está expuesta a internet con login: la ventana entre que
+# se publica un CVE de `python-multipart` o `starlette` y que alguien lo mire
+# tiene que ser de horas.
+# =============================================================================
+name: CI · Seguridad
+
+on:
+  pull_request:
+  schedule:
+    # Todos los días 08:00 en Argentina (UTC-3, sin horario de verano) = 11:00 UTC.
+    - cron: '0 11 * * *'
+  # Invocable desde otro workflow (lo usa ci-build.yml como compuerta).
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-ci-security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Capa 1 — secretos.
+  #
+  # Lo único que atrapa un token que se subió hace tres meses y sigue vivo en el
+  # historial de git aunque el archivo ya no exista en HEAD. `credenciales.json`
+  # y `sesion.key` están gitignoreados; esto verifica que NUNCA hayan entrado.
+  # ---------------------------------------------------------------------------
+  secretos:
+    name: Secretos en el historial (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout con historial completo
+        uses: actions/checkout@v7
+        with:
+          # Por defecto Actions clona un solo commit. gitleaks necesita el
+          # historial entero: ahí es donde viven los secretos que ya se
+          # "borraron".
+          fetch-depth: 0
+
+      # Se usa la imagen oficial en vez de la action `gitleaks/gitleaks-action`,
+      # como en el resto de la familia: el binario en Docker hace exactamente lo
+      # mismo, sin la condición de licencia de la action.
+      #
+      # Escanea el historial de git (no el árbol con `--no-git`): acá no hay
+      # `.venv/` que dé los 208 falsos positivos de CLAUDE.md, así que la
+      # corrida sobre la raíz es la correcta.
+      - name: Escanear con gitleaks
+        run: |
+          docker run --rm \
+            --volume "${PWD}:/repo:ro" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            git \
+              --redact \
+              --no-banner \
+              --verbose \
+              /repo
+        # --redact es obligatorio: sin esa bandera, gitleaks imprime el secreto
+        # encontrado EN EL LOG del workflow. Los logs de Actions son legibles por
+        # cualquiera con acceso de lectura al repo — encontrar una credencial y
+        # publicarla en el mismo paso sería el peor final posible.
+
+  # ---------------------------------------------------------------------------
+  # Capa 2 — dependencias.
+  #
+  # Audita `requirements.txt` DIRECTAMENTE, sin instalar nada: es el cierre
+  # transitivo completo con versiones exactas, o sea, exactamente lo que corre
+  # en el contenedor. `--no-deps` le dice a pip-audit que no resuelva (todo ya
+  # está clavado) y `--strict` que falle si algo no se pudo auditar, en vez de
+  # saltearlo en silencio.
+  #
+  # En local, `pip-audit` sobre el venv saltea `studiocutter3d` ("not found on
+  # PyPI"): acá no pasa, porque no se audita el venv sino el archivo.
+  # ---------------------------------------------------------------------------
+  dependencias:
+    name: CVEs en requirements.txt (pip-audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configurar Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Instalar pip-audit
+        run: python -m pip install --upgrade pip pip-audit
+
+      - name: Auditar el cierre clavado
+        run: python -m pip_audit --requirement requirements.txt --no-deps --strict --desc on
+
+  # ---------------------------------------------------------------------------
+  # Capa 3 — código propio.
+  #
+  # bandit busca los patrones que un linter de estilo no mira: `subprocess` con
+  # shell, `pickle`, `yaml.load`, `assert` como control de flujo, hashes débiles,
+  # temporales inseguros. La configuración (`exclude_dirs`) sale de
+  # pyproject.toml, igual que en local.
+  # ---------------------------------------------------------------------------
+  codigo:
+    name: Patrones inseguros (bandit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configurar Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Instalar bandit
+        run: python -m pip install --upgrade pip bandit
+
+      - name: Escanear app/ y cutter3d/
+        run: python -m bandit -c pyproject.toml -r app cutter3d
+
+  # ---------------------------------------------------------------------------
+  # Capa 4 — filesystem.
+  #
+  # Trivy sobre el repo: dependencias declaradas en cualquier manifest y
+  # configuraciones. Cubre lo que pip-audit no ve (las de desarrollo en
+  # pyproject.toml) con otra base de advisories.
+  # ---------------------------------------------------------------------------
+  filesystem:
+    name: Vulnerabilidades en el repositorio (trivy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Trivy (modo filesystem)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          # Sólo `vuln`: los secretos ya los cubre gitleaks arriba. `misconfig`
+          # marcaría el `read_only`/`cap_drop` del compose y el USER del
+          # Dockerfile según reglas genéricas; ese análisis ya está hecho a mano
+          # en DESPLIEGUE.md §4 y se puede sumar con su .trivyignore cuando valga.
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          # Falla el job si encuentra algo. Sin esta línea Trivy reporta y sale
+          # en verde: la misma trampa que el fail_level de actionlint.
+          exit-code: '1'
+          # No frenar por vulnerabilidades que todavía no tienen parche
+          # disponible: no hay acción posible, sólo ruido que enseña a ignorar
+          # el rojo.
+          ignore-unfixed: true

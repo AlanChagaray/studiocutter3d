@@ -1,0 +1,393 @@
+# =============================================================================
+# CI · Calidad — la compuerta barata: nada de esto EJECUTA la aplicación.
+#
+# Cinco preguntas, cinco jobs, para que un rojo diga QUÉ falló sin abrir el log:
+#
+#   rama          el nombre de la rama del PR sigue `tipo/descripcion`
+#   coherencia    la versión del proyecto es UNA en sus tres copias, y la de
+#                 Python es UNA en pyproject, ruff, mypy, Dockerfile y estos YAML
+#   codigo        sintaxis (.py, .js, plantillas Jinja), estilo y tipos
+#   arquitectura  el monolito sigue ordenado: `cutter3d/` no conoce la web,
+#                 `app/` no hace geometría, y la web arranca sin cargar el motor
+#   workflows     estos mismos archivos son YAML válido de Actions
+#
+# Doble vida, como en api/admin/tienda: corre solo en cada pull request, y
+# `ci-build.yml` lo invoca por `workflow_call` como compuerta antes de construir.
+# Un archivo, dos usos, cero YAML duplicado.
+#
+# Las herramientas y sus flags son las mismas que corre la skill `gate` en local
+# (CLAUDE.md → "Gates de calidad"), sin baseline: el proyecto nació con la deuda
+# en cero y cualquier hallazgo es del cambio que lo produjo.
+# =============================================================================
+name: CI · Calidad
+
+on:
+  pull_request:
+  # Invocable desde otro workflow (lo usa ci-build.yml como compuerta).
+  workflow_call:
+  # Botón "Run workflow" en la pestaña Actions.
+  workflow_dispatch:
+
+# Permiso mínimo a nivel workflow. Sin esta declaración el GITHUB_TOKEN puede
+# venir con permisos amplios heredados de la configuración del repositorio.
+permissions:
+  contents: read
+
+# Si llegan dos pushes seguidos al mismo PR, la corrida vieja se cancela.
+# `github.workflow` distingue la corrida directa de la invocada por ci-build,
+# para que no se cancelen entre sí.
+concurrency:
+  group: ${{ github.workflow }}-ci-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. La rama se llama `tipo/descripcion`.
+  #
+  # El tipo decide qué número de la versión sube al mergear (ci-release.yml), así
+  # que un nombre que no sigue la regla no es cosmético: es un release que no se
+  # puede calcular. La lista de tipos vive en `scripts/version.py` y se lee de
+  # ahí — un solo lugar para agregar uno.
+  #
+  # Solo en pull_request: en un push a main ya no hay rama que validar. Y esto
+  # NO impide crear la rama mal llamada —eso lo hace un ruleset de GitHub, ver
+  # DESPLIEGUE.md §8—: impide que se mergee.
+  # ---------------------------------------------------------------------------
+  rama:
+    name: Nombre de la rama
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configurar Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Verificar `tipo/descripcion`
+        env:
+          # El nombre de la rama lo escribe quien abre el PR: es entrada externa.
+          # Pasa por env y se lee entre comillas, nunca interpolado en el script.
+          RAMA: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          TIPOS="$(python scripts/version.py tipos)"
+
+          if printf '%s' "$RAMA" | grep -qE "^(${TIPOS})/[a-z0-9][a-z0-9._-]*$"; then
+            TIPO="${RAMA%%/*}"
+            echo "Rama '${RAMA}' → tipo '${TIPO}'."
+            echo "Al mergear, la versión pasa a: $(python scripts/version.py siguiente --tipo "$TIPO")"
+            exit 0
+          fi
+
+          # Dependabot nombra sus ramas `dependabot/<ecosistema>/...` y no se le
+          # puede pedir otra cosa. El tipo del release, en ese caso, sale del
+          # prefijo del commit (`chore:` / `ci:`), que sí se configura en
+          # dependabot.yml.
+          if printf '%s' "$RAMA" | grep -qE '^dependabot/'; then
+            echo "Rama de Dependabot ('${RAMA}'): se acepta."
+            exit 0
+          fi
+
+          echo "::error::La rama '${RAMA}' no sigue 'tipo/descripcion'. Tipos aceptados: ${TIPOS//|/, }. La descripción va en minúsculas, dígitos, '.', '_' o '-' (ej.: feat/lamina-cuadrada, fix/euler-del-pie)."
+          exit 1
+
+  # ---------------------------------------------------------------------------
+  # 2. Coherencia: una versión del proyecto, una versión de Python.
+  #
+  # Sin instalar nada: Python pelado y grep. Es el job más rápido del pipeline y
+  # atrapa los dos desórdenes que un humano introduce sin querer — editar una
+  # copia de la versión a mano, o subir Python en un archivo y no en los otros.
+  # ---------------------------------------------------------------------------
+  coherencia:
+    name: Versión del proyecto y de Python
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configurar Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      # `app/__init__.py` es la fuente; `pyproject.toml` y `cutter3d/__init__.py`
+      # la espejan. Si difieren, el frontend mostraría una versión y el paquete
+      # otra — y `ci-release` se negaría a bumpear.
+      - name: Las tres copias de la versión coinciden
+        run: python scripts/version.py verificar
+
+      # El intérprete que corre en producción es el del Dockerfile. Todo lo demás
+      # —los rangos que acepta pip, lo que asume ruff, lo que chequea mypy, lo
+      # que instala esta CI— tiene que decir el MISMO número, o se está
+      # verificando un Python distinto del que se despliega.
+      - name: Una sola versión de Python en todo el repo
+        run: |
+          set -euo pipefail
+          PY='3.13'
+          fallos=0
+
+          chequear() {  # patron  archivo  descripcion
+            if grep -qE "$1" "$2"; then
+              echo "  ok   $2 — $3"
+            else
+              echo "::error file=$2::$3 no dice Python ${PY}"
+              fallos=1
+            fi
+          }
+
+          chequear "^requires-python = \">=${PY}\"" pyproject.toml "requires-python"
+          chequear "^target-version = \"py${PY/./}\"" pyproject.toml "ruff target-version"
+          chequear "^python_version = \"${PY}\"" pyproject.toml "mypy python_version"
+
+          etapas=$(grep -cE "^FROM python:${PY}-slim" Dockerfile || true)
+          if [ "$etapas" -eq 2 ]; then
+            echo "  ok   Dockerfile — las dos etapas parten de python:${PY}-slim"
+          else
+            echo "::error file=Dockerfile::se esperaban 2 etapas FROM python:${PY}-slim y hay ${etapas}"
+            fallos=1
+          fi
+
+          for wf in ci-quality ci-tests ci-security; do
+            chequear "python-version: '${PY}'" ".github/workflows/${wf}.yml" "setup-python"
+          done
+
+          exit "$fallos"
+
+      # `.env*`, `credenciales.json` y `sesion.key` están gitignoreados. Esto
+      # verifica que SIGAN afuera: un `git add -f` los mete igual, y un secreto
+      # commiteado vive en el historial para siempre aunque se borre después.
+      - name: Ningún secreto ni `.env` versionado
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -E '(^|/)\.env(\.|$)|(^|/)credenciales\.json$|(^|/)sesion\.key$'; then
+            echo "::error::Hay archivos de secretos o .env en el repositorio (arriba). Sacalos del índice y rotá lo que contengan."
+            exit 1
+          fi
+          echo "  ok   ningún .env, credenciales.json ni sesion.key versionado"
+
+  # ---------------------------------------------------------------------------
+  # 3. Sintaxis, estilo y tipos — los gates de la skill `gate`, sin baseline.
+  #
+  # La sintaxis se chequea aparte del linter y ANTES, porque es el error más
+  # tonto y más caro: un archivo que no parsea llegando a producción. Cubre las
+  # tres cosas que el servidor sirve o ejecuta: Python, JavaScript y plantillas.
+  # ---------------------------------------------------------------------------
+  codigo:
+    name: Sintaxis, estilo y tipos
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configurar Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+
+      # Primero el cierre clavado de producción —el MISMO que instala el
+      # Dockerfile, con la misma alarma `--only-binary`—, y encima las
+      # herramientas de desarrollo. Así mypy y ruff miran las versiones reales de
+      # las librerías, no las últimas que pip encuentre.
+      - name: Instalar el cierre clavado y las herramientas de desarrollo
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --only-binary=:all: -r requirements.txt
+          python -m pip install -e ".[dev]"
+
+      - name: Sintaxis Python (compileall)
+        run: python -m compileall -q app cutter3d tests scripts
+
+      # `node --check` solo parsea: es el único gate que mira el JS (no hay
+      # eslint, y es a propósito — el front no tiene Node ni build step).
+      - name: Sintaxis JavaScript (node --check)
+        run: |
+          set -euo pipefail
+          for js in app/static/js/app.js app/static/js/preview3d.js; do
+            node --check "$js"
+            echo "  ok   $js"
+          done
+
+      # Jinja2 compila las plantillas recién cuando alguien pide la página: una
+      # etiqueta sin cerrar en `post.html` no la ve nadie hasta el primer usuario
+      # que entra a /post. Parsearlas acá las hace fallar en el PR.
+      - name: Sintaxis de las plantillas (Jinja2)
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          from jinja2 import Environment, FileSystemLoader
+
+          entorno = Environment(loader=FileSystemLoader("app/templates"), autoescape=True)
+          plantillas = sorted(Path("app/templates").glob("*.html"))
+          for ruta in plantillas:
+              entorno.parse(ruta.read_text(encoding="utf-8"), filename=str(ruta))
+              print(f"  ok   {ruta}")
+          print(f"{len(plantillas)} plantillas parsean")
+          PY
+
+      # `--output-format=github` anota cada hallazgo sobre la línea exacta en la
+      # vista "Files changed" del PR.
+      - name: Lint y complejidad (ruff check, C901 ≤ 10)
+        run: python -m ruff check --output-format=github app cutter3d tests scripts
+
+      - name: Formato (ruff format --check)
+        run: python -m ruff format --check app cutter3d tests scripts
+
+      # `files` y `strict` vienen de pyproject.toml: es el mismo comando que en
+      # local, sin argumentos.
+      - name: Tipos (mypy --strict)
+        run: python -m mypy
+
+  # ---------------------------------------------------------------------------
+  # 4. Arquitectura: el monolito sigue ordenado.
+  #
+  # Dos capas con una frontera real —`cutter3d/` es una librería de dominio pura
+  # y `app/` la orquesta— y esa frontera está escrita en CLAUDE.md como algo
+  # "verificado en las dos direcciones" con un grep. Acá el grep corre solo, en
+  # cada PR, y se le suman las dos invariantes del ciclo 6 que un grep no ve:
+  # importar el motor no lo carga, e importar la web tampoco.
+  #
+  # Son chequeos de lo que el proyecto decidió ser, no de estilo. Por eso van en
+  # un job aparte: cuando falla, el mensaje es "rompiste la arquitectura", no
+  # "te faltó un espacio".
+  # ---------------------------------------------------------------------------
+  arquitectura:
+    name: Frontera motor ↔ web
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configurar Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+
+      - name: Instalar el cierre clavado
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --only-binary=:all: -r requirements.txt
+          python -m pip install --no-deps -e .
+
+      # Dirección 1: el motor no sabe que existe HTTP. Es lo que permite
+      # testearlo aislado y correrlo desde la CLI sin levantar nada.
+      - name: cutter3d/ no importa nada de la capa web
+        run: |
+          set -euo pipefail
+          if grep -rnE '^[[:space:]]*(from|import)[[:space:]]+(fastapi|starlette|uvicorn|jinja2|itsdangerous|argon2|anyio|multipart)\b' cutter3d/; then
+            echo "::error::cutter3d/ importa la capa web (arriba). El motor es una librería de dominio pura: lo que necesite de HTTP se lo pasa app/."
+            exit 1
+          fi
+          echo "  ok   cutter3d/ no conoce fastapi, starlette, uvicorn, jinja2, itsdangerous, argon2, anyio ni multipart"
+
+      # Dirección 2: la web no hace geometría ni toca imágenes. Lo que sabe de
+      # polígonos, mallas y píxeles lo sabe por `cutter3d`, y solo por ahí.
+      - name: app/ no importa las librerías del motor
+        run: |
+          set -euo pipefail
+          if grep -rnE '^[[:space:]]*(from|import)[[:space:]]+(numpy|scipy|shapely|trimesh|manifold3d|skimage|PIL|vtracer|svgelements|resvg_py|rawpy|pillow_heif|mapbox_earcut|lxml)\b' app/; then
+            echo "::error::app/ importa una librería del motor (arriba). La geometría y las imágenes viven en cutter3d/: app/ orquesta, no reimplementa."
+            exit 1
+          fi
+          echo "  ok   app/ no conoce numpy, shapely, trimesh, skimage, PIL ni el resto del motor"
+
+      # Ciclo 6: `cutter3d/__init__.py` importa el motor ADENTRO de `generar()`.
+      # `app/errores.py` hace `from cutter3d.errors import ...`, y con los
+      # imports arriba eso arrastraba 1200 módulos y ~89 MB a cada proceso web.
+      # Subirlos "porque quedan más prolijos" revierte el ciclo entero, y este
+      # chequeo es lo que lo hace visible en el PR.
+      - name: import cutter3d no carga el motor (ciclo 6)
+        run: |
+          python - <<'PY'
+          import sys
+
+          import cutter3d  # noqa: F401
+
+          pesados = {"trimesh", "shapely", "numpy", "scipy", "skimage", "PIL"} & set(sys.modules)
+          if pesados:
+              print(f"::error::`import cutter3d` cargó {sorted(pesados)}. Los imports del motor van ADENTRO de generar() (CLAUDE.md → ciclo 6).")
+              raise SystemExit(1)
+          print("  ok   import cutter3d no carga trimesh, shapely, numpy, scipy, skimage ni PIL")
+          PY
+
+      # La otra mitad del mismo hallazgo: el proceso de uvicorn tampoco. Lo único
+      # que el router importa de mallas es `paquete3mf`, que cuesta `zipfile`.
+      - name: import app.main no carga trimesh
+        run: |
+          python - <<'PY'
+          import sys
+
+          import app.main  # noqa: F401
+
+          if "trimesh" in sys.modules:
+              print("::error::`import app.main` cargó trimesh. La web no construye geometría: eso va al proceso hijo (app/tareas.py).")
+              raise SystemExit(1)
+          print("  ok   el proceso web arranca sin trimesh")
+          PY
+
+      # Regla del proyecto: nada de `innerHTML` con datos del servidor o del
+      # usuario. Se busca la ASIGNACIÓN, no la palabra, porque el comentario de
+      # cabecera de app.js la menciona para prohibirla.
+      - name: El JS no escribe HTML desde strings
+        run: |
+          set -euo pipefail
+          if grep -nE '\.innerHTML[[:space:]]*[+]?=|\.outerHTML[[:space:]]*=|insertAdjacentHTML\(|document\.write\(' app/static/js/app.js app/static/js/preview3d.js; then
+            echo "::error::El front escribe HTML desde un string (arriba). Va con createElement/textContent: es la regla de CLAUDE.md y lo que hace que el CSP sin unsafe-inline alcance."
+            exit 1
+          fi
+          echo "  ok   sin innerHTML=, outerHTML=, insertAdjacentHTML ni document.write"
+
+  # ---------------------------------------------------------------------------
+  # 5. Los propios workflows.
+  #
+  # actionlint valida los YAML de .github/workflows/: claves inexistentes,
+  # expresiones ${{ }} mal formadas, `needs:` apuntando a jobs que no existen,
+  # shell roto dentro de los `run:`. Sin esto, un typo se descubre cuando el
+  # workflow falla en vivo — o peor, cuando deja de dispararse en silencio.
+  # ---------------------------------------------------------------------------
+  workflows:
+    name: YAML de Actions (actionlint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    permissions:
+      contents: read
+      # actionlint publica sus hallazgos como un check del commit. Es el único
+      # permiso de escritura de todo este workflow.
+      checks: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Acción de terceros → pineada por SHA completo. Un tag se puede mover a
+      # otro commit; un SHA no. El comentario deja legible qué versión es, y es
+      # lo que Dependabot actualiza junto con el hash.
+      - name: Lint de los workflows de Actions
+        uses: reviewdog/action-actionlint@d63ba7532e0942965320cd8d73cbae4c7b3c5283 # v1.73.1
+        with:
+          reporter: github-check
+          level: error
+          # ⚠ El default de esta acción es `none`, que significa "no falles
+          # nunca". Sin esta línea el step reporta los errores y sale en verde
+          # igual — una compuerta que no cierra.
+          fail_level: error

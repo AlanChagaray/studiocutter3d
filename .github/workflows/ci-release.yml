@@ -1,0 +1,333 @@
+# =============================================================================
+# CI · Release — sube la versión según el tipo de la rama y deja el tag.
+#
+# Es el eslabón entre "se mergeó" y "se desplegó": lee de qué rama vino el
+# merge (`feat/...`, `fix/...`), calcula la versión que sigue, la escribe en las
+# tres copias, commitea, taggea `vX.Y.Z` y pushea a `main`. Después de esto,
+# lo que Render construye lleva el número nuevo debajo del logo.
+#
+# ⚠ A DIFERENCIA DE api/admin/tienda, ESTO ESCRIBE EN ESTE MISMO REPO.
+#
+#   Allá el release bumpea el `newTag` de un manifest en el repo GitOps y abre
+#   un PR. Acá no hay repo de estado ni imagen por digest: la versión vive en el
+#   código (`app/__init__.py`) porque el Dockerfile no instala el paquete y es
+#   la única forma de que el proceso web la sepa. Por eso el commit va a `main`
+#   directo, con `[skip ci]`: es un commit de tres líneas que este mismo
+#   pipeline acaba de validar en su forma anterior, y volver a correr todo sobre
+#   él sería pagar dos veces la misma verificación.
+#
+# ⭐ LA REGLA DE LA VERSIÓN (scripts/version.py, con tests)
+#
+#   `MAYOR.MENOR.PARCHE`, sin ceros a la izquierda. `feat` sube MENOR y pone
+#   PARCHE en 0; `break` sube MAYOR; todo lo demás (fix, hotfix, docs, chore,
+#   ci, refactor, perf, test, style, build) sube PARCHE. MENOR y PARCHE van de 0
+#   a 99: al pasarse vuelven a 0 y suman uno al de la izquierda.
+#
+#   El tipo se resuelve en este orden, y si ninguno aplica el release FALLA con
+#   el motivo — nada de adivinar "parche" y seguir:
+#
+#     1. el input `tipo` de un disparo manual (workflow_dispatch)
+#     2. el prefijo de la rama del PR mergeado en este commit (`feat/x` → feat)
+#     3. el prefijo del asunto del commit (`feat: ...`, `fix(app)!: ...` → break)
+#
+# ⚠ QUÉ TOKEN PUSHEA, Y POR QUÉ HAY DOS
+#
+#   Con `main` protegida por un ruleset (DESPLIEGUE.md §8), el GITHUB_TOKEN de la
+#   corrida NO puede pushear: no está en la lista de bypass y no se lo puede
+#   agregar. Hace falta un fine-grained PAT del dueño del repo, acotado a ESTE
+#   repositorio con Contents: Read and write, cargado como secret RELEASE_TOKEN.
+#   Si el secret no está, se cae al GITHUB_TOKEN — que anda mientras `main` no
+#   esté protegida, o sea, hoy. El día que se active el ruleset y el release
+#   falle en el push con un 403, el mensaje de abajo dice exactamente eso.
+#
+#   ⚠ Un PAT VENCE. El día que expire, el release falla en el checkout y `main`
+#   se queda sin bump — nada más se rompe ni avisa. Anotarse la fecha.
+#
+# ⚠ CARRERAS
+#
+#   `ci-build` serializa las corridas de `main` (concurrency sin cancelar), así
+#   que dos merges seguidos releasean uno después del otro. Este workflow hace
+#   checkout de `main` FRESCA (no del commit que disparó la corrida), para que
+#   el segundo bump parta de la versión que dejó el primero y no de la que
+#   tenía el merge. Si `main` avanzó mientras corría, el push falla como
+#   non-fast-forward y se reintenta la corrida: nunca se pisa un commit ajeno.
+# =============================================================================
+name: CI · Release
+
+on:
+  workflow_call:
+    inputs:
+      tipo:
+        description: 'Tipo de cambio (vacío = deducir de la rama del PR o del commit)'
+        required: false
+        type: string
+        default: ''
+    outputs:
+      version:
+        description: 'La versión nueva (vacía si no se releaseó nada)'
+        value: ${{ jobs.release.outputs.version }}
+      tag:
+        description: 'El tag creado (vacío si no se releaseó nada)'
+        value: ${{ jobs.release.outputs.tag }}
+    secrets:
+      RELEASE_TOKEN:
+        description: 'Fine-grained PAT con Contents: write sobre este repo. Opcional mientras main no esté protegida.'
+        required: false
+
+  workflow_dispatch:
+    inputs:
+      tipo:
+        description: 'Tipo de cambio: decide qué número sube'
+        required: true
+        type: choice
+        options:
+          - fix
+          - feat
+          - break
+          - hotfix
+          - perf
+          - refactor
+          - docs
+          - chore
+          - ci
+          - test
+          - style
+          - build
+
+# Un release a la vez, y se deja terminar: cortarlo a mitad puede dejar el
+# commit hecho y el tag sin pushear.
+concurrency:
+  group: ci-release-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Bump de versión y tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: write        # commit + tag + push a main
+      pull-requests: read    # saber de qué rama vino el merge
+
+    outputs:
+      version: ${{ steps.version.outputs.nueva }}
+      tag: ${{ steps.version.outputs.tag }}
+
+    steps:
+      # `ref: main` y no el commit de la corrida: ver "carreras" en la cabecera.
+      # `fetch-depth: 0` porque hacen falta los tags para saber si `vX.Y.Z` ya
+      # existe. El token queda configurado en el remoto para el push de abajo.
+      - name: Checkout de main (fresca)
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+
+      - name: Configurar Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      # -----------------------------------------------------------------------
+      # Guarda contra el bucle. Si HEAD ya es un commit de release (el que dejó
+      # la corrida anterior), no hay nada que bumpear: el deploy de esa versión
+      # ya salió. Con `[skip ci]` esto no debería llegar a correr, pero la
+      # guarda no cuesta nada y es lo que impide que un `[skip ci]` borrado por
+      # accidente bumpee para siempre.
+      # -----------------------------------------------------------------------
+      - name: Este commit no es ya un release
+        id: guarda
+        run: |
+          set -euo pipefail
+          ASUNTO="$(git log -1 --format=%s HEAD)"
+          if printf '%s' "$ASUNTO" | grep -qE '^chore\(release\):'; then
+            echo "HEAD ya es un release ('${ASUNTO}'). No se bumpea."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # -----------------------------------------------------------------------
+      # El tipo. Todo lo que viene del evento pasa por env, nunca interpolado en
+      # el cuerpo del script: el nombre de una rama y el asunto de un commit los
+      # escribe una persona, y una persona puede escribir `$(rm -rf .)`.
+      # -----------------------------------------------------------------------
+      - name: Resolver el tipo de cambio
+        id: tipo
+        if: steps.guarda.outputs.release == 'true'
+        env:
+          TIPO_INPUT: ${{ inputs.tipo }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TIPOS="$(python scripts/version.py tipos)"
+          es_tipo() { printf '%s' "$1" | grep -qE "^(${TIPOS})$"; }
+
+          TIPO=""
+          ORIGEN=""
+          RAMA=""
+
+          # 1. Disparo manual con tipo explícito.
+          if [ -n "$TIPO_INPUT" ]; then
+            TIPO="$TIPO_INPUT"; ORIGEN="input"
+          fi
+
+          # 2. La rama del PR mergeado en este commit. El endpoint devuelve los
+          #    PRs asociados al commit; con squash o merge commit hay uno.
+          if [ -z "$TIPO" ]; then
+            RAMA="$(gh api "repos/${REPO}/commits/${SHA}/pulls" \
+                      --jq '[.[] | select(.merged_at != null)] | .[0].head.ref // empty' 2>/dev/null || true)"
+            if [ -n "$RAMA" ] && es_tipo "${RAMA%%/*}"; then
+              TIPO="${RAMA%%/*}"; ORIGEN="rama ${RAMA}"
+            fi
+          fi
+
+          # 3. El asunto del commit: `tipo(ambito)!: ...`. El `!` es breaking.
+          if [ -z "$TIPO" ]; then
+            ASUNTO="$(git log -1 --format=%s "$SHA" 2>/dev/null || git log -1 --format=%s HEAD)"
+            if printf '%s' "$ASUNTO" | grep -qE "^(${TIPOS})(\([^)]*\))?!:"; then
+              TIPO="break"; ORIGEN="commit con '!' ('${ASUNTO}')"
+            elif printf '%s' "$ASUNTO" | grep -qE "^(${TIPOS})(\([^)]*\))?:"; then
+              TIPO="$(printf '%s' "$ASUNTO" | sed -E "s/^(${TIPOS}).*/\1/")"; ORIGEN="commit ('${ASUNTO}')"
+            fi
+          fi
+
+          if [ -z "$TIPO" ]; then
+            echo "::error::No se pudo deducir el tipo de cambio: la rama del PR no es 'tipo/...' (rama: '${RAMA:-desconocida}') y el commit no empieza con 'tipo:'. Tipos: ${TIPOS//|/, }. Para releasear igual: Actions → CI · Release → Run workflow, eligiendo el tipo."
+            exit 1
+          fi
+
+          echo "Tipo: ${TIPO} (según ${ORIGEN})"
+          {
+            echo "tipo=${TIPO}"
+            echo "origen=${ORIGEN}"
+          } >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      # La versión que sigue. `siguiente` ya verifica que las tres copias
+      # coincidan; acá se suma que el tag no exista todavía — si existe, alguien
+      # bumpeó a mano o hay dos corridas pisándose, y en los dos casos hay que
+      # mirar antes de escribir.
+      # -----------------------------------------------------------------------
+      - name: Calcular la versión siguiente
+        id: version
+        if: steps.guarda.outputs.release == 'true'
+        env:
+          TIPO: ${{ steps.tipo.outputs.tipo }}
+        run: |
+          set -euo pipefail
+          ACTUAL="$(python scripts/version.py leer)"
+          NUEVA="$(python scripts/version.py siguiente --tipo "$TIPO")"
+          TAG="v${NUEVA}"
+
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "::error::El tag ${TAG} ya existe. ¿Alguien bumpeó la versión a mano sin taggear, o hay dos releases pisándose? Revisá 'git tag --list v*' contra app/__init__.py antes de reintentar."
+            exit 1
+          fi
+
+          echo "Versión: ${ACTUAL} → ${NUEVA} (tag ${TAG})"
+          {
+            echo "actual=${ACTUAL}"
+            echo "nueva=${NUEVA}"
+            echo "tag=${TAG}"
+          } >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      # Escribir, commitear, taggear, pushear. El script cambia las tres copias
+      # o ninguna; `git add` nombra los tres archivos y nada más, para que un
+      # archivo suelto en el runner no se cuele en el commit.
+      #
+      # Identidad fija en vez de una persona: el push lo autentica el token,
+      # pero el autor dice de dónde salió el commit y no suplanta a nadie.
+      # -----------------------------------------------------------------------
+      - name: Escribir la versión, commitear, taggear y pushear
+        id: push
+        if: steps.guarda.outputs.release == 'true'
+        env:
+          ACTUAL: ${{ steps.version.outputs.actual }}
+          NUEVA: ${{ steps.version.outputs.nueva }}
+          TAG: ${{ steps.version.outputs.tag }}
+          TIPO: ${{ steps.tipo.outputs.tipo }}
+          ORIGEN: ${{ steps.tipo.outputs.origen }}
+          SRC_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CON_PAT: ${{ secrets.RELEASE_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          python scripts/version.py escribir "$NUEVA"
+
+          RESUMEN="$(git diff --numstat | awk '{print $1, $2}' | sort -u | tr '\n' ' ')"
+          if [ "$RESUMEN" != "1 1 " ]; then
+            echo "::error::El bump tenía que cambiar exactamente una línea por archivo. Diff obtenido:"
+            git diff
+            exit 1
+          fi
+
+          git config user.name "ci-release"
+          git config user.email "ci-release@users.noreply.github.com"
+          git add app/__init__.py cutter3d/__init__.py pyproject.toml
+          git commit \
+            -m "chore(release): v${ACTUAL} -> v${NUEVA} [skip ci]" \
+            -m "Tipo: ${TIPO} (${ORIGEN})." \
+            -m "Source-Commit: ${SRC_SHA}" \
+            -m "Source-Run: ${RUN_URL}"
+          git tag --annotate "$TAG" --message "studioCutter3D ${TAG}" --message "Source-Commit: ${SRC_SHA}"
+
+          if SALIDA=$(git push origin "HEAD:refs/heads/main" "refs/tags/${TAG}" 2>&1); then
+            echo "$SALIDA"
+            echo "Pusheado: main → ${NUEVA}, tag ${TAG}."
+            exit 0
+          fi
+          echo "$SALIDA"
+
+          if printf '%s' "$SALIDA" | grep -qiE 'protected branch|rule violations|GH006|GH013'; then
+            if [ "$CON_PAT" = "true" ]; then
+              echo "::error::main está protegida y el RELEASE_TOKEN no puede saltear la regla. Agregá a su dueño a la lista de bypass del ruleset (Settings → Rules → main → Bypass list)."
+            else
+              echo "::error::main está protegida y el GITHUB_TOKEN no puede pushear. Cargá el secret RELEASE_TOKEN (fine-grained PAT, Contents: Read and write, sólo este repo) — ver DESPLIEGUE.md §8."
+            fi
+          elif printf '%s' "$SALIDA" | grep -qiE 'non-fast-forward|fetch first|rejected'; then
+            echo "::error::main avanzó mientras corría el release. No se pisó nada: relanzá esta corrida (Re-run jobs) y va a partir de la main nueva."
+          fi
+          exit 1
+
+      - name: Resumen
+        if: always() && steps.guarda.outputs.release != ''
+        env:
+          RELEASE: ${{ steps.guarda.outputs.release }}
+          ACTUAL: ${{ steps.version.outputs.actual }}
+          NUEVA: ${{ steps.version.outputs.nueva }}
+          TAG: ${{ steps.version.outputs.tag }}
+          TIPO: ${{ steps.tipo.outputs.tipo }}
+          ORIGEN: ${{ steps.tipo.outputs.origen }}
+          PUSH_OK: ${{ steps.push.outcome }}
+        run: |
+          {
+            if [ "$RELEASE" != "true" ]; then
+              echo "### Sin release"
+              echo
+              echo "HEAD ya era un commit de release: el deploy de esa versión salió en la corrida anterior."
+            elif [ "$PUSH_OK" = "success" ]; then
+              echo "### Release ${TAG}"
+              echo
+              echo "| | |"
+              echo "|---|---|"
+              echo "| Versión anterior | \`${ACTUAL}\` |"
+              echo "| Versión nueva | \`${NUEVA}\` |"
+              echo "| Tipo | \`${TIPO}\` (${ORIGEN}) |"
+              echo "| Tag | \`${TAG}\` |"
+              echo
+              echo "El número nuevo ya está en \`main\` (\`app/__init__.py\`, \`cutter3d/__init__.py\`, \`pyproject.toml\`) y es el que va a mostrar el frontend debajo del logo después del deploy."
+            else
+              echo "### Release fallido"
+              echo
+              echo "Se iba a pasar de \`${ACTUAL:-?}\` a \`${NUEVA:-?}\` (tipo \`${TIPO:-?}\`). Ver el paso que falló arriba: el motivo y qué hacer están en su último \`::error::\`."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

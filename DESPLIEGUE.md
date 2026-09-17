@@ -301,3 +301,113 @@ docker compose up -d && curl -i http://127.0.0.1:8000/salud
 | El JPG convertido salió más chico de lo que subí | El presupuesto de píxeles (`MAX_PIXELES_TRABAJO`, 3 MP). El reporte del trabajo trae `tamano_salida` |
 | 429 sin haber hecho nada raro | Un script propio pollea sin pausa. El front real pollea cada 0,8 s y nunca lo toca |
 | `ERROR — no puedo escribir en /datos/trabajo` | El volumen se montó como bind mount de una carpeta del host, que llega como root. Usar un volumen con nombre |
+| El release de la CI falla en el push con `GH006`/`GH013`/*protected branch* | `main` quedó protegida y falta el secret `RELEASE_TOKEN`, o su dueño no está en la lista de bypass del ruleset (§8.3) |
+| El release falla con *non-fast-forward* | `main` avanzó mientras corría. No se pisó nada: *Re-run jobs* y parte de la `main` nueva |
+| Render desplegó antes de que la CI terminara | El Auto-Deploy de Render sigue prendido (§8.2). Con eso apagado, el único que despliega es `ci-deploy` |
+| El frontend muestra una versión vieja después del deploy | Render construyó el commit del merge y no el del release: el hook se disparó antes del push del bump, o el bump falló. Mirar la corrida de `CI · Build` → job *Versión y tag* |
+
+---
+
+## 8. CI → deploy: la compuerta antes de Render (GitHub Actions)
+
+Desde este ciclo el deploy **no lo dispara el push a `main`: lo dispara la CI**, y recién cuando
+calidad, tests, seguridad y la construcción de la imagen están en verde. Los workflows viven en
+`.github/workflows/ci-*.yml` con la nomenclatura de `api`/`admin`/`tienda`, y cada archivo explica
+su porqué en la cabecera. Esta sección es lo que **no** vive en un archivo: lo que hay que
+configurar a mano en Render y en GitHub, una vez.
+
+### 8.1 Cómo fluye un cambio
+
+```
+rama feat/…  ──PR──►  main
+   en el PR:   ci-quality · ci-tests · ci-security · ci-build (construye, no despliega)
+   al mergear: ci-build → compuertas → imagen + /salud + trivy
+                        → ci-release  (1.0.0 → 1.1.0, commit + tag v1.1.0 en main)
+                        → ci-deploy   (POST al deploy hook → Render reconstruye main)
+```
+
+La versión sube según el **tipo de la rama**: `feat/` → MENOR (y PARCHE a 0), `break/` → MAYOR, el
+resto (`fix`, `hotfix`, `docs`, `chore`, `ci`, `refactor`, `perf`, `test`, `style`, `build`) → PARCHE.
+MENOR y PARCHE van de 0 a 99 y acarrean (`0.2.99` + fix → `0.3.0`). La regla y su test están en
+`scripts/version.py` y `tests/test_version.py`. El número queda **debajo del logo** en toda pantalla
+con sesión.
+
+La versión arranca en **`1.0.0`**, con el tag `v1.0.0` sobre el commit que trajo la CI — puesto a
+mano, porque `ci-release` solo taggea lo que bumpea. El primer merge la lleva a `1.0.1` (fix,
+docs, chore…) o `1.1.0` (feat) y crea el segundo tag. Un push de tag no dispara ningún workflow.
+
+### 8.2 Render — una vez
+
+1. El servicio → **Settings → Build & Deploy → Auto-Deploy: `Off`**. ⚠ Es el paso que importa: con
+   Auto-Deploy prendido Render construye en paralelo con la CI, y el deploy sale antes de que los
+   tests digan nada — la CI reportaría el error *después*.
+2. Mismo panel → **Deploy Hook** → copiar la URL. Es una URL con una clave embebida: va a un secret
+   de GitHub (abajo), nunca al repo ni a un log.
+3. `STUDIOCUTTER_HOSTS` (§2.3) sigue siendo manual y **hoy está vacío**, o sea que se acepta
+   cualquier `Host`. Cerrarlo es una variable en el panel, y es el hallazgo de phishing más barato
+   de resolver del informe de seguridad.
+
+### 8.3 GitHub — una vez
+
+**Secrets** (Settings → Secrets and variables → Actions → *New repository secret*):
+
+| Secret | Qué es | Cuándo hace falta |
+|---|---|---|
+| `RENDER_DEPLOY_HOOK_URL` | La URL del paso 8.2.2 | Desde el primer merge: sin él `ci-deploy` falla diciendo exactamente esto |
+| `RELEASE_TOKEN` | Fine-grained PAT del dueño del repo: *Only select repositories* → `studiocutter3d`; *Repository permissions* → **Contents: Read and write**, nada más | Apenas se active el ruleset de `main` de abajo. Antes, `ci-release` pushea con el `GITHUB_TOKEN` y anda. ⚠ Un PAT **vence**: anotarse la fecha, porque el día que expire el release falla en el checkout y `main` se queda sin bump sin que nada más avise |
+
+Van como *repository secrets* y no como secrets del environment `production`: los workflows
+reusables los reciben con `secrets: inherit`, que hereda los del repositorio. El environment
+`production` se crea solo en el primer deploy y sirve para la traza (pestaña *Environments*) y para
+exigir aprobación manual si algún día se quiere.
+
+**Ruleset de `main`** (Settings → Rules → Rulesets → *New branch ruleset*) — es lo que convierte
+"la CI avisa" en "la CI frena":
+
+- *Target branches*: `main`.
+- ☑ **Require a pull request before merging** (0 aprobaciones alcanza en un repo de una persona: lo
+  que se exige es el PR, no la revisión).
+- ☑ **Require status checks to pass** → elegir los jobs de los tres workflows de verificación y el
+  build: `Nombre de la rama`, `Versión del proyecto y de Python`, `Sintaxis, estilo y tipos`,
+  `Frontera motor ↔ web`, `YAML de Actions (actionlint)`, `pytest (Python 3.13, Linux)`, `Secretos en
+  el historial (gitleaks)`, `CVEs en requirements.txt (pip-audit)`, `Patrones inseguros (bandit)`,
+  `Vulnerabilidades en el repositorio (trivy)`, `Construir, arrancar y escanear la imagen`. Aparecen
+  en el buscador recién después de la primera corrida en un PR.
+- ☑ **Block force pushes**.
+- *Bypass list*: el dueño del `RELEASE_TOKEN` (rol *Repository admin*). Es lo que deja pasar el
+  commit `chore(release): …` de la CI. ⚠ El bypass es de la persona, no del workflow: el dueño
+  también puede pushear directo a `main` desde su máquina, y ahí la regla lo frena solo por
+  disciplina. La versión sin ese agujero es una GitHub App con el token acuñado por corrida
+  (`actions/create-github-app-token`) y la App en la lista de bypass — vale hacerlo el día que haya
+  más de una persona con permisos.
+
+**Ruleset de nombres de rama** (opcional; es lo único que hace que una rama mal llamada **no se
+pueda crear** — `ci-quality` solo impide que se mergee):
+
+- *New branch ruleset* → *Target branches* → **Include: all branches**; **Exclude**: `main`,
+  `dependabot/**` y un patrón por tipo: `feat/**`, `fix/**`, `hotfix/**`, `break/**`, `docs/**`,
+  `chore/**`, `ci/**`, `refactor/**`, `perf/**`, `test/**`, `style/**`, `build/**`.
+- ☑ **Restrict creations**. Efecto: todo lo que no está excluido no se puede crear. Si se agrega un
+  tipo en `scripts/version.py`, va también acá.
+
+**Actions → General → Workflow permissions**: dejar *Read repository contents and packages
+permissions*. Cada workflow declara arriba lo que necesita, y `ci-release` pide `contents: write`
+solo en su job.
+
+### 8.4 Operación
+
+- **Releasear a mano** (un merge que la CI no pudo clasificar, o un bump que se quiere forzar):
+  Actions → *CI · Release* → *Run workflow* → elegir el tipo. Después, *CI · Deploy* → *Run
+  workflow* para desplegarlo.
+- **Redesplegar la misma `main`** (Render reconstruye desde el repo, así que también es el rollback
+  después de un `git revert` mergeado): Actions → *CI · Deploy* → *Run workflow*.
+- **Dos merges seguidos**: `ci-build` los serializa. Actions encola una sola corrida pendiente por
+  grupo, así que con tres merges en un minuto la del medio se cancela y la última bumpea una vez por
+  los dos. Sigue valiendo "un deploy, un tag".
+- **Dependabot**: sus ramas `dependabot/**` están aceptadas en `ci-quality`; el tipo del release
+  sale del prefijo del commit (`chore:` → PARCHE, `ci:` → PARCHE), configurado en
+  `.github/dependabot.yml`. Sus PRs pasan por las mismas compuertas, incluida la construcción y el
+  escaneo de la imagen.
+- **Corridas diarias (08:00 ART)**: tests, seguridad y el escaneo de la imagen. No despliegan. Lo
+  que vale de ellas es enterarse de un CVE nuevo en `requirements.txt` o en el Debian base el mismo
+  día que se publica, no la próxima vez que alguien toque el repo.

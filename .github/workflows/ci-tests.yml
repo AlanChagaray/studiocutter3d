@@ -1,0 +1,82 @@
+# =============================================================================
+# CI · Tests — la suite de pytest, en Linux y con las versiones de producción.
+#
+# Corre la suite ENTERA, incluidos los `lento` que lanzan el motor en un proceso
+# hijo: son los únicos que prueban que los parámetros cruzan la frontera de
+# procesos, y un cambio que los rompa no lo ve ningún otro test.
+#
+# ⚠ SIN MATRIZ DE VERSIONES, como en tienda y al revés que en el api.
+#
+# Este proyecto embarca UNA imagen con UN Python (3.13, el del Dockerfile), y
+# esa imagen es idéntica en tu máquina, acá y en Render. Probar sobre un 3.14
+# que nunca se despliega no agrega información: agrega minutos y rojos que no
+# corresponden a ningún entorno real.
+#
+# ⚠ Y SÍ HAY ALGO QUE ACÁ SE PRUEBA Y EN WINDOWS NO: el techo de RAM del proceso
+# hijo (`RLIMIT_DATA`, app/tareas.py) es POSIX only. En la máquina de desarrollo
+# esa línea ni se ejecuta; en este runner sí, con el mismo kernel que el
+# contenedor. Es la razón concreta de que la suite corra en `ubuntu-latest` y
+# no se dé por buena con la corrida local.
+#
+# El `schedule` diario detecta lo que se rompe sin que nadie toque una línea:
+# una dependencia de desarrollo que cambió (ruff, pytest van por rango), una
+# imagen de runner nueva.
+# =============================================================================
+name: CI · Tests
+
+on:
+  pull_request:
+  schedule:
+    # Todos los días 08:00 en Argentina (UTC-3, sin horario de verano) = 11:00 UTC.
+    - cron: '0 11 * * *'
+  # Invocable desde otro workflow (lo usa ci-build.yml como compuerta).
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-ci-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: pytest (Python 3.13, Linux)
+    runs-on: ubuntu-latest
+    # La suite tarda ~76 s en una máquina de desarrollo; en el runner, con dos
+    # núcleos y sin caché caliente, hay que contar unos minutos. El margen es
+    # para el `pip install` del cierre completo (numpy, scipy, trimesh, skimage).
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Configurar Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+
+      # El MISMO cierre clavado que instala el Dockerfile, y encima pytest y
+      # httpx (para TestClient). Lo que se prueba acá es lo que se despliega,
+      # no lo último que pip encuentre.
+      - name: Instalar el cierre clavado y las herramientas de desarrollo
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --only-binary=:all: -r requirements.txt
+          python -m pip install -e ".[dev]"
+
+      # ⚠ Sin `-q`. pyproject.toml ya trae `addopts = "-q"`; un `-q` explícito lo
+      # vuelve `-qq` y pytest SUPRIME la línea `N passed`: la corrida termina en
+      # los warnings y parece que no dijo nada.
+      #
+      # La suite no toca `trabajo/` ni necesita `credenciales.json`: el directorio
+      # y el almacén se reemplazan por `tmp_path` y la contraseña de prueba se
+      # genera al vuelo (tests/conftest.py).
+      - name: Correr la suite completa
+        run: python -m pytest

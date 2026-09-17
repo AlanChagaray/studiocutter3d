@@ -1,0 +1,62 @@
+# =============================================================================
+# Dependabot — lo que hay que actualizar y nadie va a mirar todas las semanas.
+#
+# Tres ecosistemas, los tres con algo clavado a propósito en este repo:
+#
+#   github-actions  las acciones de terceros van pineadas por SHA en los
+#                   ci-*.yml; Dependabot mueve el hash Y el comentario de versión
+#   pip             requirements.txt es el cierre transitivo exacto de la imagen;
+#                   sin esto, un CVE en una transitiva se queda hasta que alguien
+#                   regenere el freeze a mano
+#   docker          la base del Dockerfile va por digest; Dependabot propone el
+#                   digest nuevo cuando python:3.13-slim-bookworm se reconstruye
+#
+# Cada PR que abre pasa por las mismas compuertas que un PR humano (ci-build
+# construye y escanea la imagen candidata). El nombre de rama `dependabot/...`
+# está aceptado explícitamente en ci-quality.yml; el tipo del release sale del
+# prefijo del commit configurado acá (`chore:` → sube PARCHE).
+# =============================================================================
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: America/Argentina/Buenos_Aires
+    commit-message:
+      prefix: ci
+    # Un solo PR con todas las acciones: son cambios de hash sin riesgo
+    # funcional, y revisar seis PRs de una línea es lo que hace que no se
+    # revise ninguno.
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: America/Argentina/Buenos_Aires
+    commit-message:
+      prefix: chore
+    open-pull-requests-limit: 5
+    # Parches y menores juntos; una mayor va sola, porque una mayor de numpy o
+    # de trimesh es una conversación, no un merge.
+    groups:
+      menores:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+      timezone: America/Argentina/Buenos_Aires
+    commit-message:
+      prefix: chore

@@ -1,0 +1,123 @@
+# =============================================================================
+# CI · Deploy — el deploy hook de Render, con las compuertas ya pasadas.
+#
+# Render sabe redesplegar solo con cada push a main. Ese Auto-Deploy está
+# APAGADO a propósito (DESPLIEGUE.md §8): si estuviera prendido, Render
+# construiría en paralelo con esta CI y el deploy saldría antes de que los
+# tests dijeran nada. Con esto, el deploy lo dispara `ci-build.yml` recién
+# después de calidad → tests → seguridad → build → release, y queda registrado
+# en Actions quién desplegó qué versión y cuándo.
+#
+# Mismo molde que api/ci-deploy.yml. Dos diferencias:
+#   - lo llama `ci-build.yml` en cada push a main (allá nadie lo llama todavía)
+#   - recibe la `version` que acaba de taggear `ci-release.yml`, para el resumen
+#
+# ⚠ Alcance real, sin adornos: el deploy hook le dice a Render "reconstruí
+#   desde el repo", NO "corré esta imagen". Render vuelve a construir el
+#   Dockerfile desde `main`, que en este punto ya lleva la versión nueva. La
+#   imagen que ci-build armó y escaneó es la prueba de que esa construcción va a
+#   andar, no el artefacto que se despliega.
+# =============================================================================
+name: CI · Deploy
+
+on:
+  workflow_call:
+    inputs:
+      entorno:
+        required: true
+        type: string
+      version:
+        description: 'Versión que se despliega (la del tag de ci-release)'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      RENDER_DEPLOY_HOOK_URL:
+        required: true
+
+  # Redeploy a mano: para volver a desplegar la misma `main` (Render reconstruye
+  # desde el repo, así que también sirve para un rollback tras revertir).
+  workflow_dispatch:
+    inputs:
+      entorno:
+        description: 'Entorno destino'
+        required: true
+        type: choice
+        options:
+          - production
+        default: production
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-deploy-${{ inputs.entorno }}
+  # Nunca cancelar un deploy a mitad: dejaría el servicio en un estado
+  # indeterminado.
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Desplegar en Render
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # `environment` es lo que habilita required reviewers (aprobación manual
+    # antes de correr, si algún día se quiere), secrets acotados a ese entorno, y
+    # la traza de despliegues en la pestaña Environments del repo.
+    environment:
+      name: ${{ inputs.entorno }}
+
+    steps:
+      - name: Disparar el deploy hook de Render
+        env:
+          # Los secrets se inyectan por `env:` a nivel del step que los necesita,
+          # nunca interpolados dentro del `run:` ni expuestos a nivel workflow.
+          DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+          ENTORNO: ${{ inputs.entorno }}
+        run: |
+          set -euo pipefail
+          # Un secret puede estar CARGADO Y VACÍO (`gh secret set` con stdin no
+          # interactivo guarda una cadena vacía sin quejarse). Se mira el
+          # contenido, no la existencia.
+          if [ -z "${DEPLOY_HOOK}" ]; then
+            echo "::error::Falta el secret RENDER_DEPLOY_HOOK_URL. Render → el servicio → Settings → Deploy Hook → copiar la URL; GitHub → Settings → Secrets and variables → Actions → New repository secret."
+            exit 1
+          fi
+
+          # -o /dev/null: la URL del hook lleva una clave embebida. Nunca se
+          # imprime la URL ni el cuerpo de la respuesta; sólo el código HTTP.
+          codigo=$(curl --silent --show-error --location \
+                        --output /dev/null \
+                        --write-out '%{http_code}' \
+                        --request POST \
+                        --max-time 30 \
+                        "${DEPLOY_HOOK}")
+
+          echo "Render respondió HTTP ${codigo}"
+
+          case "${codigo}" in
+            2*) echo "Deploy encolado en '${ENTORNO}'." ;;
+            *)  echo "::error::Render rechazó el deploy (HTTP ${codigo}). Si es 404 o 401, el hook fue regenerado en el panel y el secret quedó viejo."; exit 1 ;;
+          esac
+
+      - name: Resumen del despliegue
+        env:
+          ENTORNO: ${{ inputs.entorno }}
+          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          {
+            echo "### Deploy encolado en Render"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Entorno | \`${ENTORNO}\` |"
+            echo "| Versión | \`${VERSION:-la de main}\` |"
+            echo "| Commit que pasó las compuertas | \`${COMMIT}\` |"
+            echo
+            echo "> Render **reconstruye desde el Dockerfile** sobre \`main\`, que ya lleva"
+            echo "> la versión nueva. El hook sólo encola el deploy: el progreso real"
+            echo "> está en el panel de Render, y la versión desplegada se lee debajo"
+            echo "> del logo cuando termina."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -196,15 +196,25 @@ docker compose up --build      # → http://127.0.0.1:8000
 Las credenciales **no viajan en la imagen**: se montan desde `credenciales.json` (o llegan
 por `STUDIOCUTTER_CREDENCIALES_JSON`). Son las mismas que se usan en local.
 
+El deploy a Render **no lo dispara el push**: lo dispara la CI, después de calidad, tests,
+seguridad y la construcción de la imagen (DESPLIEGUE.md §8).
+
 ## Desarrollo
 
 ```bash
-.venv/Scripts/python -m pytest -q          # suite completa
-.venv/Scripts/python -m ruff check .       # lint + complejidad
-.venv/Scripts/python -m ruff format --check .
+.venv/Scripts/python -m pytest             # suite completa (sin -q: pyproject ya lo trae)
+.venv/Scripts/python -m ruff check app cutter3d tests scripts   # lint + complejidad
+.venv/Scripts/python -m ruff format --check app cutter3d tests scripts
 .venv/Scripts/python -m mypy               # tipos, strict
-.venv/Scripts/python -m bandit -r cutter3d -q
+.venv/Scripts/python -m bandit -c pyproject.toml -r app cutter3d
+.venv/Scripts/python scripts/version.py verificar   # las tres copias de la versión coinciden
 ```
+
+Los mismos gates corren en GitHub Actions (`.github/workflows/ci-*.yml`) en cada pull request y,
+al mergear a `main`, encadenan la construcción de la imagen, el bump de versión con su tag
+`vX.Y.Z` y el deploy. Las ramas se llaman `tipo/descripcion` (`feat/…`, `fix/…`, `hotfix/…`,
+`docs/…`): el tipo decide qué número de la versión sube. La versión **no se edita a mano** — la
+sube la CI, y se lee debajo del logo. El detalle está en [DESPLIEGUE.md §8](DESPLIEGUE.md).
 
 La red de regresión es `tests/test_fidelidad.py`: sus asserts numéricos **son** el golden
 master. No se versionan `.3mf` binarios, que cambiarían con cada versión de manifold3d sin

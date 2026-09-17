@@ -22,6 +22,7 @@ from fastapi import Depends, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from . import __version__
 from .almacen import AlmacenEnMemoria, AlmacenTrabajos
 from .config import Ajustes, cargar_ajustes
 from .errores import ErrorApi, RedireccionALogin
@@ -31,6 +32,17 @@ _almacen: AlmacenTrabajos = AlmacenEnMemoria()
 
 DIR_PLANTILLAS = _ajustes.raiz / "app" / "templates"
 plantillas = Jinja2Templates(directory=str(DIR_PLANTILLAS))
+
+plantillas.env.globals["version"] = __version__
+"""La version desplegada, visible en toda plantilla sin pasarla por cada handler.
+
+Es la misma `__version__` que `main.py` le da a FastAPI y la que el workflow
+`ci-release.yml` bumpea en cada merge a `main` (`scripts/version.py`): una sola
+fuente. Va como global de Jinja y no en el contexto de `_pantalla` por lo mismo
+que `modulos` vive en una constante: una pantalla nueva no tiene que acordarse
+de pasarla. Se muestra debajo del logo (`macros.marca`) y SOLO con sesion — el
+login no la lleva, por la misma razon que `/salud` no dice la version: a quien
+no entro no se le cuenta que corre."""
 
 CLAVE_USUARIO = "usuario"
 """Lo unico que se guarda en la sesion.

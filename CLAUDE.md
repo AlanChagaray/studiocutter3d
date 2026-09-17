@@ -57,10 +57,11 @@ El marcador `lento` es el que lanza el motor de verdad en un proceso hijo (segun
 Sin baseline: el proyecto nació con la deuda en cero y cualquier hallazgo es del ciclo que lo produjo.
 
 ```bash
-.venv/Scripts/python -m mypy                                  # strict, files=["cutter3d","app"]
-.venv/Scripts/python -m ruff check app cutter3d tests         # lint + complejidad (C901 <= 10)
-.venv/Scripts/python -m ruff format --check app cutter3d tests
+.venv/Scripts/python -m mypy                                  # strict, files=["cutter3d","app","scripts"]
+.venv/Scripts/python -m ruff check app cutter3d tests scripts # lint + complejidad (C901 <= 10)
+.venv/Scripts/python -m ruff format --check app cutter3d tests scripts
 .venv/Scripts/python -m bandit -c pyproject.toml -r app cutter3d
+.venv/Scripts/python scripts/version.py verificar             # las 3 copias de la versión coinciden
 .venv/Scripts/python -m pip_audit                             # CVEs del venv
 node --check app/static/js/app.js                             # único gate que mira el JS
 gitleaks dir app && gitleaks dir cutter3d && gitleaks dir tests && gitleaks git .
@@ -74,6 +75,36 @@ gitleaks dir app && gitleaks dir cutter3d && gitleaks dir tests && gitleaks git 
 - **`node --check` no es un linter**: solo valida que el JS parsee. No hay eslint ni stylelint, y
   **ningún gate mira el CSS** — es el bloque menos verificable del proyecto, y ya costó dos bugs que
   encontró una lectura, no una herramienta.
+
+### CI, versión y deploy (GitHub Actions)
+
+Los mismos gates corren en `.github/workflows/ci-*.yml`, con la nomenclatura y la estructura de
+`api`/`admin`/`tienda` (compuertas reusables por `workflow_call`, acciones de terceros pineadas por
+SHA, todo lo que viene del evento pasa por `env:`): **`ci-quality`** (rama `tipo/…`, coherencia de
+versión y de Python 3.13, sintaxis py/js/Jinja, ruff, mypy, **frontera motor ↔ web**, actionlint) ·
+**`ci-tests`** · **`ci-security`** (gitleaks sobre el historial, pip-audit sobre `requirements.txt`,
+bandit, trivy) · **`ci-build`**, el orquestador: compuertas → imagen + `/salud` + trivy →
+`ci-release` → `ci-deploy`. Tests, seguridad y el escaneo de la imagen corren además todos los días
+a las 08:00 ART. El detalle operativo (qué se configura a mano en GitHub y en Render) está en
+`DESPLIEGUE.md` §8.
+
+- **La versión tiene UNA fuente, `app/__init__.py:__version__`**, espejada en `pyproject.toml` y
+  `cutter3d/__init__.py` (es la única que viaja en la imagen: el Dockerfile no instala el paquete).
+  `scripts/version.py verificar` falla si difieren, y **no se edita a mano**: la sube `ci-release`
+  en cada merge a `main` según el tipo de la rama —`feat/` → MENOR, `break/` → MAYOR, el resto →
+  PARCHE; MENOR y PARCHE van de 0 a 99 y acarrean—, commitea `chore(release): … [skip ci]`, taggea
+  `vX.Y.Z` y **recién entonces** dispara el deploy hook. El número se ve debajo del logo
+  (`macros.marca`, global de Jinja `version` en `dependencias.py`) **solo con sesión**: el login no
+  lo muestra, por la misma razón que `/salud` no dice la versión.
+- **Las ramas se llaman `tipo/descripcion`**, con los tipos de `scripts/version.py tipos` (la
+  misma lista que decide el bump: agregar un tipo es tocar un solo dict). `main` recibe solo merges
+  por PR con la CI en verde (ruleset de GitHub), y el **Auto-Deploy de Render está apagado**:
+  despliega la CI, no el push.
+- ⚠ Sin el secret `RELEASE_TOKEN`, `ci-release` pushea con el `GITHUB_TOKEN`, que deja de poder
+  apenas `main` quede protegida. El mensaje de error del push dice cuál de los dos falta.
+- **`arquitectura` en `ci-quality` es la frontera de abajo, ejecutada en cada PR**: `cutter3d/` no
+  importa la web, `app/` no importa las librerías del motor, `import cutter3d` no carga trimesh
+  (ciclo 6) e `import app.main` tampoco, y el JS no escribe HTML desde strings.
 
 ## Arquitectura
 

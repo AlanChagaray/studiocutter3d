@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "studiocutter3d"
-version = "0.2.0"
+version = "1.0.0"
 description = "Convierte line art en cortantes de galletitas imprimibles (.3mf / .stl), sin alterar el dibujo."
 requires-python = ">=3.13"
 dependencies = [
@@ -81,7 +81,7 @@ max-complexity = 10
 
 [tool.mypy]
 strict = true
-files = ["cutter3d", "app"]
+files = ["cutter3d", "app", "scripts"]
 python_version = "3.13"
 
 # Unica perilla de `strict` que se afloja, y por una razon concreta: skimage y

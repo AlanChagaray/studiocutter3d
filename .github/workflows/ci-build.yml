@@ -1,0 +1,238 @@
+# =============================================================================
+# CI · Build — el orquestador: compuertas → build → release → deploy.
+#
+# Es el workflow que convierte un merge a `main` en un deploy con nombre. La
+# secuencia importa y es lineal a propósito:
+#
+#   calidad ─┐
+#   tests ───┼─► build (imagen + humo + escaneo) ─► release (versión + tag) ─► deploy
+#   seguridad┘
+#
+# Ninguna etapa arranca si la anterior falló. Es lo único que cumple
+# literalmente "evitar errores en cada deploy a main": el deploy no lo dispara
+# Render al ver el push (eso está apagado, ver DESPLIEGUE.md §8), lo dispara
+# este archivo, y recién cuando todo lo de arriba está en verde.
+#
+# ⚠ A DIFERENCIA DE api/admin/tienda, ACÁ NO SE PUBLICA IMAGEN.
+#
+#   Aquellos publican en GHCR y Argo CD despliega ese artefacto por digest. Este
+#   proyecto corre en Render, y Render RECONSTRUYE desde el Dockerfile al recibir
+#   el deploy hook: la imagen que se arma acá no es la que termina corriendo —
+#   es la prueba de que el Dockerfile construye, la app arranca y el Debian base
+#   no trae CVEs con parche. Publicarla es agregar un `push: true` y un login
+#   a GHCR (copiar de tienda/ci-build.yml) el día que esto vaya a GitOps.
+#
+# ⚠ EL RELEASE VA ADENTRO Y NO ENCADENADO CON workflow_run, al revés que allá.
+#
+#   La familia encadena `ci-release` por `workflow_run` para que un release roto
+#   no ensucie el CI del código — y eso tiene sentido cuando el release escribe
+#   en OTRO repo. Acá el release ES la precondición del deploy: sin la versión
+#   nueva en `main`, Render desplegaría el número viejo debajo del logo. Y
+#   `workflow_run` matchea por el `name:` exacto del otro workflow, que si
+#   alguien renombra deja de disparar EN SILENCIO. Un `needs:` no tiene ese
+#   modo de fallo.
+# =============================================================================
+name: CI · Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Todos los días 08:00 en Argentina (UTC-3) = 11:00 UTC. Lo que vale de una
+    # corrida diaria sin cambios es el ESCANEO de la imagen: la base está clavada
+    # por digest y requirements.txt por versión, así que la imagen de hoy es la
+    # de ayer byte a byte — pero la base de CVEs de Trivy no. Un parche de Debian
+    # publicado el martes aparece acá el miércoles a las 8, no cuando alguien
+    # vuelva a tocar el repo. No despliega: sólo el push a main llega a `deploy`.
+    - cron: '0 11 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-build-${{ github.ref }}
+  # ⚠ false, al revés que en los workflows de verificación. Cancelar esto a
+  # mitad puede dejar un release con el commit hecho y el tag sin pushear, o un
+  # deploy hook disparado y sin registrar. Una publicación se deja terminar.
+  #
+  # Efecto conocido: Actions encola UNA sola corrida pendiente por grupo. Si
+  # entran tres merges en un minuto, la del medio se cancela y la última bumpea
+  # la versión una vez por los dos. Sigue valiendo "un deploy, un tag".
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Las tres compuertas.
+  #
+  # `uses:` a nivel de JOB (no de step) invoca un workflow reusable completo. No
+  # llevan `runs-on` ni `steps`: el archivo llamado aporta los suyos. Los
+  # permisos se declaran acá, en el job que llama — un workflow invocado no
+  # puede tener más permisos que los que le concede su llamador.
+  #
+  # ⚠ El `if:` evita que en un pull request cada compuerta corra DOS VECES: los
+  # tres workflows ya tienen su propio trigger `pull_request:` y corren solos.
+  # Invocarlos además desde acá duplicaría cada corrida sin agregar información.
+  # En un push a main, en cambio, son la única barrera antes de construir.
+  # ---------------------------------------------------------------------------
+  calidad:
+    name: Compuerta · calidad
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      checks: write
+    uses: ./.github/workflows/ci-quality.yml
+
+  tests:
+    name: Compuerta · tests
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-tests.yml
+
+  seguridad:
+    name: Compuerta · seguridad
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-security.yml
+
+  # ---------------------------------------------------------------------------
+  # Build: la imagen construye, arranca y no trae CVEs con parche.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Construir, arrancar y escanear la imagen
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # Las tres compuertas corren EN PARALELO entre sí; este job espera a las tres.
+    needs: [calidad, tests, seguridad]
+
+    # -------------------------------------------------------------------------
+    # ⚠ Sin este `if:`, en un pull request este job NO CORRERÍA NUNCA.
+    #
+    # Regla de Actions que sorprende a todo el mundo: si un job de `needs:` queda
+    # SALTADO, los que dependen de él se saltan también. Como en un PR las tres
+    # compuertas están saltadas por su propio `if:`, el build heredaría el salto.
+    #
+    #   !cancelled()                              → deja pasar los `skipped`
+    #   !contains(needs.*.result, 'failure')      → pero NO un fallo real
+    #
+    # O sea: en PR se construye igual (y se entera ANTES de mergear si el
+    # Dockerfile se rompió), y en push a main basta con que una compuerta falle
+    # para que no se construya nada.
+    # -------------------------------------------------------------------------
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') }}
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Buildx habilita el caché de capas entre corridas (`type=gha`). Es lo que
+      # evita volver a bajar los ~400 MB de wheels en cada push: la capa del
+      # `pip install` sólo se rehace cuando cambia requirements.txt.
+      - name: Configurar Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      # `load: true` deja la imagen en el daemon local del runner para poder
+      # arrancarla y escanearla. No se publica (ver la cabecera).
+      - name: Construir la imagen candidata
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          load: true
+          tags: studiocutter3d:candidata
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Es el chequeo de DESPLIEGUE.md §6 ("verificar que la imagen sigue sana"),
+      # corriendo solo. Falla acá si una dependencia sin wheel para linux/cp313
+      # se coló, o si un import del motor quedó fuera del venv de la imagen.
+      - name: La imagen importa el motor y la capa web
+        run: docker run --rm studiocutter3d:candidata python -c "import cutter3d, app.main; print('ok')"
+
+      # Arranca el servidor de verdad —tini, arranque.sh, uvicorn— y le pide el
+      # latido. Es lo que Render va a hacer con el health check: si esto falla,
+      # el deploy fallaría igual, pero diez minutos después y en producción.
+      #
+      # `/salud` no exige sesión ni credenciales, así que no hace falta montar
+      # nada. El secreto se genera al vuelo y muere con el contenedor.
+      - name: El servidor arranca y responde /salud
+        run: |
+          set -euo pipefail
+          SECRETO="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+          docker run --detach --name candidata \
+            --publish 8000:8000 \
+            --env STUDIOCUTTER_SECRET="$SECRETO" \
+            studiocutter3d:candidata
+
+          for _ in $(seq 1 30); do
+            if RESPUESTA=$(curl --fail --silent --show-error http://127.0.0.1:8000/salud 2>/dev/null); then
+              echo "  ok   /salud → ${RESPUESTA}"
+              docker rm --force candidata >/dev/null
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "::error::/salud no respondió en 30 s. Log del contenedor:"
+          docker logs candidata
+          docker rm --force candidata >/dev/null
+          exit 1
+
+      # Acá se escanea lo que realmente corre: el Debian base, sus paquetes apt y
+      # el venv adentro de la imagen. Es una superficie distinta de la que ve
+      # `trivy fs` sobre el repo en ci-security.yml.
+      #
+      # Corre también en los PR: el objetivo es enterarse antes de mergear, no
+      # después. Si se pone rojo por el Debian base, la salida es bumpear el
+      # digest del Dockerfile (Dependabot abre ese PR solo, ver dependabot.yml).
+      - name: Escanear la imagen candidata (trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: studiocutter3d:candidata
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          ignore-unfixed: true
+
+  # ---------------------------------------------------------------------------
+  # Release: la versión sube según el tipo de la rama mergeada y queda taggeada.
+  #
+  # Sólo en un push a main —o sea, después de un merge—. En PR, schedule y
+  # dispatch no hay nada que releasear. Necesita escritura sobre el repo para el
+  # commit y el tag, y lectura de PRs para saber de qué rama vino el merge.
+  # ---------------------------------------------------------------------------
+  release:
+    name: Versión y tag
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      pull-requests: read
+    uses: ./.github/workflows/ci-release.yml
+    # `RELEASE_TOKEN` (opcional, ver ci-release.yml) viaja por acá.
+    secrets: inherit
+
+  # ---------------------------------------------------------------------------
+  # Deploy: recién ahora, y sólo si el release dejó una versión nueva.
+  #
+  # `needs.release.outputs.version` queda vacío cuando el release decidió no
+  # hacer nada (el commit ya era un release): en ese caso el deploy ya salió en
+  # la corrida anterior y no hay que repetirlo.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy a Render
+    needs: release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.release.outputs.version != ''
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-deploy.yml
+    with:
+      entorno: production
+      version: ${{ needs.release.outputs.version }}
+    secrets: inherit

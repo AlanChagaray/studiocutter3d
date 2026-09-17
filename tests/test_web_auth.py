@@ -18,6 +18,7 @@ import pytest
 from conftest import CLAVE, USUARIO
 from fastapi.testclient import TestClient
 
+from app import __version__
 from app.archivos import SUFIJO_DESCARGA, ClaveArchivo
 from app.config import Ajustes
 from app.routers.cortante import COLORES, COLORES_FONDO
@@ -70,6 +71,26 @@ def test_api_protegida_sin_sesion_responde_401_json(cliente: TestClient) -> None
 def test_con_sesion_las_paginas_abren(sesion: TestClient, ruta: str) -> None:
     r = sesion.get(ruta, follow_redirects=True)
     assert r.status_code == 200
+
+
+@pytest.mark.parametrize("ruta", PROTEGIDAS)
+def test_la_version_desplegada_se_ve_debajo_del_logo(sesion: TestClient, ruta: str) -> None:
+    """La misma `__version__` que taggea `ci-release`, en todas las pantallas.
+
+    Se busca el elemento y no solo el texto: `v0.2.0` suelto podria venir de
+    cualquier lado (un comentario, three.js). Y una sola vez, porque la marca se
+    dibuja una sola vez.
+    """
+    html = sesion.get(ruta, follow_redirects=True).text
+    etiquetas = re.findall(r'<span class="marca__version"[^>]*>v([^<]+)</span>', html)
+    assert etiquetas == [__version__]
+
+
+def test_el_login_no_dice_que_version_corre(cliente: TestClient) -> None:
+    """A quien no entro no se le cuenta que corre — la misma regla que `/salud`."""
+    html = cliente.get("/login").text
+    assert "marca__version" not in html
+    assert f"v{__version__}" not in html
 
 
 def test_logout_invalida_la_sesion(sesion: TestClient) -> None:

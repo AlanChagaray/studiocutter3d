@@ -82,6 +82,9 @@
   <span>
     <span class="marca__nombre">studio<span>Cutter</span>3D</span><br>
     <span class="marca__bajada">{{ bajada }}</span>
+    {#- La version desplegada, la misma que taggea `ci-release`. Es un global de
+        Jinja (`dependencias.py`): no viene del handler. -#}
+    <span class="marca__version" title="Version desplegada">v{{ version }}</span>
   </span>
 </div>
 {%- endmacro %}
