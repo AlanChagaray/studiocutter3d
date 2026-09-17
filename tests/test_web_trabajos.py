@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from app.almacen import (
     TIPOS_CON_VISTA,
@@ -47,6 +48,7 @@ from app.archivos import (
 )
 from app.config import Ajustes
 from app.errores import ErrorApi
+from app.routers.cortante import COLORES
 from app.trabajos import cancelar, lanzar, lanzar_serie, proceso_de, vivos
 
 RAIZ_PROYECTO = Path(__file__).resolve().parent.parent
@@ -1254,7 +1256,7 @@ def test_la_foto_de_un_diseno_exige_que_ese_diseno_exista(
 
     for indice in (0, 4, 99):
         r = sesion.put(
-            f"/api/trabajos/{trabajo.id}/diseno/{indice}/imagen",
+            f"/api/trabajos/{trabajo.id}/diseno/{indice}/imagen/jpg_vista",
             files={"archivo": ("v.jpg", jpg_minimo, "image/jpeg")},
         )
         assert r.status_code == 404, indice
@@ -1279,7 +1281,7 @@ def test_el_set_se_arma_con_las_fotos_que_hay(
     almacen.actualizar(trabajo.id, disenos=3)
     for indice in (1, 3):  # el 2 no tiene foto
         subida = sesion.put(
-            f"/api/trabajos/{trabajo.id}/diseno/{indice}/imagen",
+            f"/api/trabajos/{trabajo.id}/diseno/{indice}/imagen/jpg_set",
             files={"archivo": ("v.jpg", jpg_minimo, "image/jpeg")},
         )
         assert subida.status_code == 200, subida.text
@@ -1291,16 +1293,167 @@ def test_el_set_se_arma_con_las_fotos_que_hay(
     assert (ajustes.dir_trabajo / trabajo.id / "set.jpg").is_file()
 
 
+def _subir_fotos(
+    sesion: TestClient,
+    trabajo_id: str,
+    cuantas: int,
+    jpg: bytes,
+    claves: tuple[str, ...] = ("jpg_vista", "jpg_set"),
+) -> None:
+    """Las fotos de `cuantas` diseños. Por default las DOS de cada uno.
+
+    Son dos y no una porque el navegador rinde cada pieza dos veces: la foto
+    suelta con los colores del diseño y la celda con los del set. Lo que entra
+    al set es la celda; quien quiera probar que entra esa y no la otra, pasa
+    `claves` y sube una sola.
+    """
+    for indice in range(1, cuantas + 1):
+        for clave in claves:
+            r = sesion.put(
+                f"/api/trabajos/{trabajo_id}/diseno/{indice}/imagen/{clave}",
+                files={"archivo": ("v.jpg", jpg, "image/jpeg")},
+            )
+            assert r.status_code == 200, r.text
+
+
+def test_el_set_usa_el_fondo_que_se_le_pide_y_no_el_de_las_fotos(
+    sesion: TestClient, almacen: AlmacenEnMemoria, ajustes: Ajustes, jpg_minimo: bytes
+) -> None:
+    """El fondo del set es SUYO: no se deduce de las fotos ni se puede.
+
+    El set tiene su propia combinacion de pieza y fondo, y cada celda se rinde
+    con ella; lo que llega aca es el mismo color con el que se rindieron, para
+    los huecos. Deducirlo de un pixel de la primera celda volveria a atar dos
+    cosas que el usuario eligio por separado.
+
+    El caso esta armado para que no pueda pasar por casualidad: `jpg_minimo`
+    tiene fondo **blanco** y el set se pide **violeta**. Si alguien volviera a
+    leerlo de la primera foto, el pixel saldria blanco.
+
+    ⚠ Se mira (1, 1) y eso vale **porque son dos diseños**: dos fotos van en una
+    sola fila (`distribucion` = `(2,)`), la lamina es cuadrada igual y entonces
+    arriba y abajo queda margen. Con cuatro, el reparto `2-2` llena el cuadro y
+    la esquina seria la primera celda — que es justo el error que tuvo la
+    primera version de este test.
+    """
+    trabajo = _post_listo(almacen, ajustes)
+    almacen.actualizar(trabajo.id, disenos=2)
+    _subir_fotos(sesion, trabajo.id, 2, jpg_minimo)
+
+    elegido = next(c for c in COLORES if c.nombre == "Violeta")
+    r = sesion.post(f"/api/trabajos/{trabajo.id}/set", data={"fondo": elegido.hex})
+    assert r.status_code == 200, r.text
+    assert r.json()["distribucion"] == [2], "el reparto cambio y (1, 1) ya no es margen"
+
+    with Image.open(ajustes.dir_trabajo / trabajo.id / "set.jpg") as imagen:
+        esquina = imagen.convert("RGB").getpixel((1, 1))
+    assert all(abs(a - b) <= 3 for a, b in zip(esquina, elegido.rgb, strict=True)), (
+        f"el margen del set no tiene el color pedido: {esquina}"
+    )
+
+
+def test_el_set_se_arma_con_las_celdas_y_no_con_las_fotos_sueltas(
+    sesion: TestClient, almacen: AlmacenEnMemoria, ajustes: Ajustes, jpg_minimo: bytes
+) -> None:
+    """Las dos fotos por diseño existen justamente para esto.
+
+    La suelta lleva los colores de su diseño y la celda los del set. Si el set
+    se compusiera con las sueltas, los colores del set no podrian ser distintos
+    de los de cada foto — que es todo el punto de que sean dos.
+
+    Se prueba por la unica via que no depende de mirar pixeles: subiendo **solo**
+    las sueltas. Si el set las usara, se armaria igual; como usa las celdas,
+    responde que no hay ninguna. La otra mitad —que con las celdas si se arma—
+    la cubre `test_el_set_se_arma_con_las_fotos_que_hay`.
+    """
+    trabajo = _post_listo(almacen, ajustes)
+    almacen.actualizar(trabajo.id, disenos=2)
+    _subir_fotos(sesion, trabajo.id, 2, jpg_minimo, claves=("jpg_vista",))
+
+    r = sesion.post(f"/api/trabajos/{trabajo.id}/set")
+    assert r.status_code == 409, r.text
+    assert r.json()["error"]["codigo"] == "sin_fotos"
+    assert not (ajustes.dir_trabajo / trabajo.id / "set.jpg").exists(), (
+        "el set se armo con las fotos sueltas, que llevan el color de cada diseño"
+    )
+
+
+def test_el_glb_de_un_diseno_no_se_puede_subir(
+    sesion: TestClient, almacen: AlmacenEnMemoria, ajustes: Ajustes, jpg_minimo: bytes
+) -> None:
+    """La clave viaja en la URL, asi que hay que decir cuales se aceptan.
+
+    `ClaveDiseno` tiene tres miembros y uno —el `.glb`— lo produce el servidor
+    al convertir el archivo que subio el usuario. Dejar que entre por la ruta de
+    la foto seria aceptar una malla que nadie verifico, y encima pisar la que si
+    se verifico. Es la misma razon por la que `CLAVES_DISENO_INTERNAS` existe.
+    """
+    trabajo = _post_listo(almacen, ajustes)
+    almacen.actualizar(trabajo.id, disenos=1)
+
+    r = sesion.put(
+        f"/api/trabajos/{trabajo.id}/diseno/1/imagen/glb",
+        files={"archivo": ("v.jpg", jpg_minimo, "image/jpeg")},
+    )
+    assert r.status_code == 422, r.text
+    assert r.json()["error"]["codigo"] == "clave_no_subible"
+
+    # Y una clave que no esta en el enum la para FastAPI antes de entrar.
+    inventada = sesion.put(
+        f"/api/trabajos/{trabajo.id}/diseno/1/imagen/jpg_lo_que_sea",
+        files={"archivo": ("v.jpg", jpg_minimo, "image/jpeg")},
+    )
+    assert inventada.status_code == 422, inventada.text
+
+
+def test_un_fondo_de_set_fuera_de_la_paleta_se_rechaza(
+    sesion: TestClient, almacen: AlmacenEnMemoria, ajustes: Ajustes, jpg_minimo: bytes
+) -> None:
+    """El cliente elige de una lista cerrada, como en todo el resto de la API.
+
+    No es que un hex cualquiera rompa la composicion —Pillow pinta cualquier
+    terna— sino que la paleta tiene un solo dueño. Aceptar un color que no esta
+    en `COLORES` seria dejar que el front invente uno, que es la misma puerta
+    que este proyecto cierra con los nombres de archivo.
+    """
+    trabajo = _post_listo(almacen, ajustes)
+    almacen.actualizar(trabajo.id, disenos=1)
+    _subir_fotos(sesion, trabajo.id, 1, jpg_minimo)
+
+    r = sesion.post(f"/api/trabajos/{trabajo.id}/set", data={"fondo": "#123456"})
+    assert r.status_code == 422, r.text
+    assert r.json()["error"]["codigo"] == "fondo_invalido"
+    assert not (ajustes.dir_trabajo / trabajo.id / "set.jpg").exists(), (
+        "se escribio el set con un fondo que se rechazo"
+    )
+
+
+def test_el_set_sin_fondo_explicito_usa_el_primero_de_la_paleta(
+    sesion: TestClient, almacen: AlmacenEnMemoria, ajustes: Ajustes, jpg_minimo: bytes
+) -> None:
+    """El default del endpoint y el que marca el template salen de `COLORES[0]`.
+
+    La pantalla manda siempre el campo; esto cubre a quien no lo manda —un
+    trabajo viejo, un test— y sobre todo fija que el default no sea un color
+    escrito aparte, que es como se desincronizan dos verdades.
+    """
+    trabajo = _post_listo(almacen, ajustes)
+    almacen.actualizar(trabajo.id, disenos=2)
+    _subir_fotos(sesion, trabajo.id, 2, jpg_minimo)
+
+    assert sesion.post(f"/api/trabajos/{trabajo.id}/set").status_code == 200
+    with Image.open(ajustes.dir_trabajo / trabajo.id / "set.jpg") as imagen:
+        esquina = imagen.convert("RGB").getpixel((1, 1))
+    assert all(abs(a - b) <= 3 for a, b in zip(esquina, COLORES[0].rgb, strict=True)), esquina
+
+
 def test_armar_el_set_no_refresca_el_ttl(
     sesion: TestClient, almacen: AlmacenEnMemoria, ajustes: Ajustes, jpg_minimo: bytes
 ) -> None:
     """Mismo motivo que subir la foto: describe el trabajo, no es usarlo."""
     trabajo = _post_listo(almacen, ajustes)
     almacen.actualizar(trabajo.id, disenos=1)
-    sesion.put(
-        f"/api/trabajos/{trabajo.id}/diseno/1/imagen",
-        files={"archivo": ("v.jpg", jpg_minimo, "image/jpeg")},
-    )
+    _subir_fotos(sesion, trabajo.id, 1, jpg_minimo)
     guardado = almacen.obtener(trabajo.id, "tester")
     assert guardado is not None
     antes = guardado.actualizado_en
@@ -1318,11 +1471,7 @@ def test_el_zip_de_un_post_trae_las_fotos_y_el_set(
     existe para evitar."""
     trabajo = _post_listo(almacen, ajustes)
     almacen.actualizar(trabajo.id, disenos=2, reporte={"nombres": ["kitty-bruja", "murcielago"]})
-    for indice in (1, 2):
-        sesion.put(
-            f"/api/trabajos/{trabajo.id}/diseno/{indice}/imagen",
-            files={"archivo": ("v.jpg", jpg_minimo, "image/jpeg")},
-        )
+    _subir_fotos(sesion, trabajo.id, 2, jpg_minimo)
     sesion.post(f"/api/trabajos/{trabajo.id}/set")
 
     r = sesion.get(f"/api/trabajos/{trabajo.id}/zip")
@@ -1332,6 +1481,10 @@ def test_el_zip_de_un_post_trae_las_fotos_y_el_set(
     assert "kitty-bruja-01-vista.jpg" in nombres
     assert "murcielago-02-vista.jpg" in nombres
     assert any(n.endswith("-set.jpg") for n in nombres), nombres
+    # ⚠ Y NO las celdas, aunque sean JPG por diseño que estan en disco: la
+    # celda existe para armar la lamina, que ya va entera. Bajar las dos fotos
+    # de cada pieza obliga a adivinar cual de las dos es la que se pidio.
+    assert not any("-celda" in n for n in nombres), nombres
 
 
 def test_dos_disenos_homonimos_no_se_pisan_en_el_zip(
@@ -1341,11 +1494,7 @@ def test_dos_disenos_homonimos_no_se_pisan_en_el_zip(
     y el usuario se lleva una foto menos creyendo que las tiene todas."""
     trabajo = _post_listo(almacen, ajustes)
     almacen.actualizar(trabajo.id, disenos=2, reporte={"nombres": ["gato", "gato"]})
-    for indice in (1, 2):
-        sesion.put(
-            f"/api/trabajos/{trabajo.id}/diseno/{indice}/imagen",
-            files={"archivo": ("v.jpg", jpg_minimo, "image/jpeg")},
-        )
+    _subir_fotos(sesion, trabajo.id, 2, jpg_minimo)
 
     r = sesion.get(f"/api/trabajos/{trabajo.id}/zip")
     with zipfile.ZipFile(BytesIO(r.content)) as zip_:

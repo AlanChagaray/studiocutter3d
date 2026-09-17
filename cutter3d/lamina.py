@@ -1,6 +1,6 @@
 """La lamina del set: las fotos de varios diseños pegadas en una sola imagen.
 
-El navegador rinde una foto por diseño —cada una es el mismo JPG cenital de
+El navegador rinde una celda por diseño —cada una es el mismo JPG cenital de
 siempre, con su estudio de luces y su encuadre— y este modulo las pega en una
 grilla. **No rinde nada en 3D**: compone imagenes ya hechas, que es justo lo que
 permite que el set exista sin una segunda pila grafica.
@@ -12,13 +12,32 @@ proyecto, asi que mover aca lo que se puede medir es ganar red de regresion.
 
 ## Las dos decisiones que no se deducen leyendo el codigo
 
-1. **El color de los huecos se SACA de las fotos, no se recibe como parametro.**
-   Cada foto ya trae su fondo pegado de borde a borde —lo eligio el usuario en la
-   paleta— asi que el color esta ahi. Pedirlo aparte crearia dos verdades sobre
-   el mismo color y un set con los huecos de otro tono que las celdas, que es
-   exactamente el defecto que se nota. Se lee el pixel de una esquina: el
-   encuadre de `preview3d.js` garantiza margen alrededor de la pieza (`MARGEN_JPG`
-   mas el lugar de la sombra), asi que ahi siempre hay fondo.
+1. **El color de los huecos es un PARAMETRO, y lo era al reves.**
+
+   Durante un ciclo se leia de la esquina de la primera foto, con un argumento
+   que era correcto mientras duro: las fotos traen su fondo pegado de borde a
+   borde, asi que el color ya estaba ahi y pedirlo aparte creaba dos verdades
+   sobre el mismo color.
+
+   Dejo de valer cuando **cada diseño paso a elegir su propio fondo**. Con
+   fondos mezclados no hay "el fondo de las fotos" que leer: hay hasta
+   veinticinco, y tomar el de la primera es elegir uno por sorteo y pintar con
+   el los huecos de las otras veinticuatro. Deja de haber una verdad que
+   descubrir y pasa a haber una decision que tomar, asi que la toma el usuario
+   —el set tiene su propia muestra— y llega hasta aca como argumento.
+
+   Sigue sin haber dos verdades: ahora hay **una sola y esta afuera**. Este
+   modulo no inventa un color por las suyas, y por eso `fondo` es obligatorio y
+   no tiene default; el default de la pantalla vive en la paleta, que es donde
+   el usuario lo ve.
+
+   ⚠ Las fotos que entran aca **no son las que el usuario se baja sueltas**.
+   Cada diseño se rinde dos veces: una con los colores que se le eligieron a el
+   y otra con los del set, y esta segunda (`ClaveDiseno.JPG_SET`) es la celda.
+   El `fondo` que llega es el mismo que el navegador uso de fondo al rendirla,
+   asi que el hueco entre celdas y el fondo de adentro de cada celda son el
+   mismo color y la lamina se lee como una imagen sola. Que este modulo no
+   sepa nada de eso es a proposito: recibe imagenes y un color, y las pega.
 
 2. **Las celdas se achican al abrir, no despues.** `Image.draft()` le pide al
    decodificador JPEG la imagen ya reducida a 1/2, 1/4 u 1/8; abrir 25 fotos de
@@ -161,10 +180,10 @@ def _medidas(celdas: int) -> _Medidas:
     entra** (el lado sale de la dimension mas apretada, `max(columnas, filas)`) y
     se centra.
 
-    Lo que sobra arriba y abajo **no se ve como banda**: se pinta del mismo color
-    que el fondo de las fotos, que es el mismo que el de los huecos entre celdas
-    (ver el punto 1 del docstring del modulo). Queda como mas aire alrededor del
-    set, no como un margen pegado.
+    Lo que sobra arriba y abajo **no se ve como banda**: se pinta del mismo
+    color que los huecos entre celdas —el `fondo` que recibe `componer`, ver el
+    punto 1 del docstring del modulo—. Queda como mas aire alrededor del set, no
+    como un margen pegado.
 
     La separacion va solo ENTRE celdas: con `n` columnas hay `n - 1`
     separaciones, no `n + 1`. En la dimension que llena, las celdas llegan al
@@ -189,22 +208,6 @@ def _medidas(celdas: int) -> _Medidas:
         lienzo=lienzo,
         y0=(lienzo - alto_bloque) // 2,
     )
-
-
-def _fondo_de(primera: Path) -> tuple[int, int, int]:
-    """El color de los huecos, leido de la esquina de la primera foto.
-
-    Ver el punto 1 del docstring del modulo: sale de la foto justamente para que
-    no pueda discrepar con ella.
-    """
-    try:
-        with Image.open(primera) as imagen:
-            pixel = imagen.convert("RGB").getpixel((0, 0))
-    except OSError as exc:
-        raise ImagenInvalida(str(primera), "no se pudo leer la foto del diseño") from exc
-    # `getpixel` sobre RGB devuelve una tupla de tres; el tipado de Pillow es mas
-    # ancho que eso y mypy no lo sabe.
-    return (int(pixel[0]), int(pixel[1]), int(pixel[2]))  # type: ignore[index]
 
 
 def _celda(ruta: Path, lado: int) -> Image.Image:
@@ -249,11 +252,17 @@ def _origen(indice: int, m: _Medidas) -> tuple[int, int]:
     raise ImagenInvalida("(lamina)", f"la celda {indice} no entra en el reparto")
 
 
-def componer(fotos: Sequence[Path], destino: Path) -> ReporteLamina:
+def componer(fotos: Sequence[Path], destino: Path, fondo: tuple[int, int, int]) -> ReporteLamina:
     """Pega las fotos en una grilla y escribe el JPG. Devuelve lo que se midio.
 
     Las fotos van **en el orden en que llegan**, que es el orden de los diseños
     en la pantalla: el usuario ve el set en el mismo orden en que armo la lista.
+
+    `fondo` pinta los huecos entre celdas y el sobrante de arriba y abajo, y es
+    **obligatorio a proposito**: ver el punto 1 del docstring del modulo. Puede
+    no coincidir con el fondo de ninguna de las fotos, y eso no es un defecto
+    sino el punto — con un fondo por diseño, "el fondo de las fotos" ya no
+    existe como cosa unica.
     """
     if not fotos:
         raise ImagenInvalida("(lamina)", "no hay ninguna foto para armar el set")
@@ -262,7 +271,7 @@ def componer(fotos: Sequence[Path], destino: Path) -> ReporteLamina:
         raise ImagenInvalida(str(faltan[0]), f"faltan {len(faltan)} fotos para armar el set")
 
     m = _medidas(len(fotos))
-    lamina = Image.new("RGB", (m.lienzo, m.lienzo), _fondo_de(fotos[0]))
+    lamina = Image.new("RGB", (m.lienzo, m.lienzo), fondo)
 
     for i, ruta in enumerate(fotos):
         celda = _celda(ruta, m.lado)

@@ -111,6 +111,22 @@ class ColorVista:
     nombre: str
     hex: str
 
+    @property
+    def rgb(self) -> tuple[int, int, int]:
+        """Los tres canales, para lo unico que se pinta del lado del servidor.
+
+        El color de la paleta es de PANTALLA y por eso casi nunca sale de aca: la
+        pieza la pinta el navegador y el archivo lleva los materiales del motor.
+        La excepcion es el fondo del set, que compone Pillow (`cutter3d.lamina`)
+        y necesita canales, no un `#rrggbb`.
+
+        Que la conversion viva en el dato y no en el router es lo que evita que
+        aparezca un segundo parser de hex la proxima vez que algo del servidor
+        tenga que pintar: la paleta sigue teniendo un solo dueño, y ahora
+        tambien sabe traducirse.
+        """
+        return (int(self.hex[1:3], 16), int(self.hex[3:5], 16), int(self.hex[5:7], 16))
+
     # Si el fondo es una mesa de fotos o no hay nada abajo de la pieza.
     #
     # Solo lo mira la paleta del FONDO —en la de la pieza siempre es el
@@ -124,18 +140,46 @@ class ColorVista:
 
 COLORES: tuple[ColorVista, ...] = (
     ColorVista("Blanco", "#f4f3f0"),
-    ColorVista("Gris", "#8c9298"),
-    ColorVista("Rojo", "#c9302c"),
-    ColorVista("Amarillo", "#eec12a"),
-    ColorVista("Azul", "#2a63c4"),
-    ColorVista("Verde", "#2f9c55"),
-    ColorVista("Rosa", "#ef78a8"),
-    ColorVista("Violeta", "#7d51c4"),
+    ColorVista("Gris", "#9da3aa"),
+    ColorVista("Rojo", "#e26562"),
+    ColorVista("Amarillo", "#dbbd5b"),
+    ColorVista("Azul", "#5c8ad7"),
+    ColorVista("Verde", "#4ab36f"),
+    ColorVista("Rosa", "#e28caf"),
+    ColorVista("Violeta", "#9c78d6"),
 )
 """El primero es el default: blanco, que es como sale el PLA mas comun.
 
 Ninguno es blanco puro (`#ffffff`) ni negro puro a proposito — el visor usa
 tone mapping ACES, y un blanco saturado se quema y deja la pieza sin relieve.
+
+⚠ **Los ocho salen de una construccion, no de elegir hexes a ojo**, y eso
+es lo que sostiene que sean una familia y no ocho decisiones sueltas:
+
+1. **El tono es el de siempre.** No se toca ninguno: se lee del color original
+   y se vuelve a usar tal cual. Medido, la deriva es de 0,29 grados o menos en
+   los seis cromaticos (`Violeta` 0,02; `Amarillo` 0,29). `Gris` deriva 2,3
+   grados, que a 4,4 de croma no significa nada. `Blanco` no cambia.
+2. **La luminosidad es la propia de cada tono**, no una sola para todos: a
+   igual croma, un amarillo con el L* de un azul deja de parecer amarillo. Van
+   entre 57 y 78 de L*, que es la banda en la que cada uno se llama como se
+   llama.
+3. **El croma es la misma FRACCION de lo que cada tono puede dar** a esa
+   luminosidad — el 65% del borde del gamut sRGB —, y no un numero absoluto
+   comun. Un absoluto comun deja al amarillo apagado y al azul contra su techo,
+   porque el amarillo llega mucho mas lejos en sRGB: los topes a estas
+   luminosidades son 81 para el amarillo y 69 para el azul.
+
+El resultado queda en el medio de las dos paletas que hubo antes. Croma medio:
+**43,1**, contra 54,7 de la original —demasiado fuerte, el color se comia su
+propio relieve: el filo, el pie y el grabado se distinguen por pocos niveles de
+luminancia y sobre un color muy saturado esas diferencias caen en la parte
+comprimida de la curva ACES— y 28,0 de la pasada pastel, que corrigio eso pero
+se llevo puesta la vitalidad.
+
+Y recupera la separacion, que es lo que el pastel habia perdido: el par mas
+cercano vuelve a 26,3 de dE76 (`Azul`/`Violeta`), practicamente los 26,5 de la
+paleta original, contra los 18,0 del pastel.
 """
 
 

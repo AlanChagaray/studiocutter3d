@@ -127,3 +127,23 @@
   {%- endif %}
 </div>
 {%- endmacro %}
+
+{#
+  El velo de "cargando" de la vista previa, con su rueda.
+
+  Tapa el panel entero y no una de las dos vistas: el `.glb` se carga UNA vez
+  para las dos (`cuandoCargue` reparte clones), asi que mientras esta en vuelo
+  ninguna de las dos tiene nada que mostrar. Lo prende `iniciarVistaPrevia3D` al
+  anunciar el modelo y lo apaga el aviso de que termino de cargar.
+
+  Va en un macro porque las dos pantallas con visor lo dibujan igual, por lo
+  mismo que comparten el bloque entero: lo que se ve en una tiene que verse en
+  la otra. El `aria-live` lo anuncia sin robar el foco; `aria-hidden` en la
+  rueda, que es decoracion pura y no tiene nada que leer.
+#}
+{% macro cargando(texto='Cargando la vista previa…') -%}
+<div class="cargando oculto" id="cargando" role="status" aria-live="polite">
+  <span class="cargando__rueda" aria-hidden="true"></span>
+  <span>{{ texto }}</span>
+</div>
+{%- endmacro %}

@@ -108,6 +108,10 @@
       <span class="lista__meta oculto" id="pista-imagen">cenital &middot; fondo liso &middot; JPG de 2048 px</span>
     </div>
 
+    {# Mismo velo que en post: el modelo tarda en llegar y sin esto el panel
+       queda vacio sin decir que esta pasando. Ver el macro. #}
+    {{ m.cargando() }}
+
     <div class="visor" id="visor">
       <div class="visor__pista">arrastrar para girar &middot; rueda para acercar</div>
       {# La paleta ocupa el lugar de la vieja leyenda cortador/marcador: con

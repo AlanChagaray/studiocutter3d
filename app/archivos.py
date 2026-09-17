@@ -325,20 +325,38 @@ class ClaveDiseno(StrEnum):
 
     GLB = "glb"
     JPG_VISTA = "jpg_vista"
+    JPG_SET = "jpg_set"
+    """La MISMA pieza, fotografiada con los colores del set y no con los suyos.
+
+    Son dos fotos por diseño y no una porque son dos entregables distintos: la
+    foto suelta lleva el color de pieza y de fondo que se le eligio a ese
+    diseño, y el set lleva **su propia** combinacion, una sola para las
+    veinticinco celdas. Componer el set con las fotos sueltas obligaria a que
+    todas compartan color, que es justo lo que se pidio que no pase.
+    """
 
 
 PLANTILLA_DISENO: dict[ClaveDiseno, str] = {
     ClaveDiseno.GLB: "salida-{:02d}.glb",
     ClaveDiseno.JPG_VISTA: "vista-{:02d}.jpg",
+    ClaveDiseno.JPG_SET: "set-{:02d}.jpg",
 }
 
 MEDIO_DISENO: dict[ClaveDiseno, str] = {
     ClaveDiseno.GLB: "model/gltf-binary",
     ClaveDiseno.JPG_VISTA: "image/jpeg",
+    ClaveDiseno.JPG_SET: "image/jpeg",
 }
 
-CLAVES_DISENO_INTERNAS: frozenset[ClaveDiseno] = frozenset({ClaveDiseno.GLB})
-"""El `.glb` por diseño existe para el visor, igual que el de F3: no va al ZIP."""
+CLAVES_DISENO_INTERNAS: frozenset[ClaveDiseno] = frozenset({ClaveDiseno.GLB, ClaveDiseno.JPG_SET})
+"""Lo que existe para producir otra cosa y no se entrega: el `.glb` por diseño
+es para el visor, igual que el de F3, y la foto para el set es una celda de la
+lamina. Ninguno va al ZIP — el set va entero, y una celda suelta no es nada."""
+
+FOTOS_DE_DISENO: frozenset[ClaveDiseno] = frozenset({ClaveDiseno.JPG_VISTA, ClaveDiseno.JPG_SET})
+"""Lo unico que el cliente puede SUBIR por diseño. El `.glb` lo produce el
+servidor: recibir uno del navegador seria dejar entrar una malla que nadie
+verifico, con la ruta de la foto como puerta."""
 
 
 def validar_indice(indice: int) -> int:
@@ -705,6 +723,7 @@ def nombre_de_descarga(id_: str, clave: ClaveArchivo, base: str | None = None) -
 
 SUFIJO_DISENO: dict[ClaveDiseno, str] = {
     ClaveDiseno.JPG_VISTA: "-vista.jpg",
+    ClaveDiseno.JPG_SET: "-celda.jpg",
     ClaveDiseno.GLB: ".glb",
 }
 

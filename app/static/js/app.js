@@ -147,6 +147,11 @@ const MS_ESPERA_FOTO = 30000;
 // lugares distintos, y un typo en uno solo rompe la entrada en silencio.
 const CLAVE_FOTO = 'jpg_vista';
 
+// La otra foto de la MISMA pieza: la que entra al set, con los colores del set
+// y no con los del diseño. Las dos claves son las de `app.archivos.ClaveDiseno`
+// y viajan en la URL de subida.
+const CLAVE_CELDA = 'jpg_set';
+
 // El mismo tope que `app.archivos.MAX_DISENOS`. Se repite aca —y hay un test
 // que lo exige— porque el front tiene que poder avisar ANTES de subir 50 MB
 // para que el servidor conteste 422. La verdad sigue siendo la del servidor:
@@ -768,6 +773,16 @@ function iniciarLineas() {
  *   de los colores, que se pueden cambiar hasta el ultimo segundo—. En post no:
  *   las fotos ya se subieron todas al armar el lote, y volver a rendir al bajar
  *   subiria la del diseño que quedo en el visor encima de la del que se pidio.
+ * @param {(color: string) => void} [opciones.alElegirPieza]  Se llama cuando el
+ *   usuario aprieta una muestra de la paleta de la PIEZA, y solo en los clics.
+ * @param {(color: string, sinPiso: boolean) => void} [opciones.alElegirFondo]
+ *   Lo mismo para la del fondo.
+ *
+ *   Las dos existen por post, donde estas paletas dejaron de ser "el color" y
+ *   pasaron a ser "el color de TODOS los diseños": el color de verdad vive en
+ *   cada fila de la lista, y estas son el atajo para pintarlas todas de una.
+ *   Cortante no las pasa y ahi las paletas siguen significando lo de siempre —
+ *   hay una sola pieza, asi que no hay a quien propagar.
  */
 function iniciarVistaPrevia3D({
   obtenerTrabajoId,
@@ -775,6 +790,8 @@ function iniciarVistaPrevia3D({
   alCambiarVista,
   urlFoto = (id) => `/api/trabajos/${encodeURIComponent(id)}/imagen`,
   subirAlDescargar = true,
+  alElegirPieza = null,
+  alElegirFondo = null,
 }) {
   // El default es `3d` y se valida contra la lista: un valor raro en
   // `sessionStorage` no puede dejar la pantalla sin ninguna vista visible.
@@ -786,9 +803,33 @@ function iniciarVistaPrevia3D({
 
   // El visor solo cambia el texto de la pista. Que no haya podido pintar no
   // deja a nadie sin poder bajar un archivo que esta perfecto.
-  document.addEventListener('cortante:preview', (e) =>
-    texto($('#pista-descargas'), e.detail.ok ? PISTA_CON_PREVIEW : PISTA_SIN_PREVIEW)
-  );
+  document.addEventListener('cortante:preview', (e) => {
+    texto($('#pista-descargas'), e.detail.ok ? PISTA_CON_PREVIEW : PISTA_SIN_PREVIEW);
+    cargando(false);
+  });
+
+  /* ── El velo mientras el modelo viaja ──────────────────────────────────── */
+
+  let relojDelVelo = null;
+
+  /**
+   * Prende o apaga el velo de carga. Tapa las DOS vistas, que es lo correcto:
+   * el `.glb` se carga una sola vez y lo comparten (`cuandoCargue` reparte
+   * clones), asi que mientras esta en vuelo ninguna tiene nada que mostrar.
+   *
+   * ⚠ **Se apaga solo.** Lo normal es que lo apague el aviso de que el modelo
+   * cargo, pero ese aviso puede no llegar nunca: sin WebGL no hay nadie que lo
+   * emita, y un `.glb` que no baja tampoco lo produce. Un velo pegado tapa una
+   * pantalla que por lo demas anda —las descargas no dependen del visor— asi
+   * que hay un tope, el mismo del handshake de la foto.
+   */
+  function cargando(encendido) {
+    mostrar($('#cargando'), encendido);
+    clearTimeout(relojDelVelo);
+    if (encendido) {
+      relojDelVelo = setTimeout(() => mostrar($('#cargando'), false), MS_ESPERA_FOTO);
+    }
+  }
 
   /* ── Exportar la foto: pedirsela al visor y recien despues bajar ────────── */
 
@@ -909,6 +950,7 @@ function iniciarVistaPrevia3D({
   // desaparece al tocarlo y solo vuelve regenerando el cortante.
   document.addEventListener('cortante:imagen', (e) => {
     if (e.detail.motivo !== 'carga') return;
+    cargando(false);
     hayFoto = e.detail.ok;
     if (!subirAlDescargar) return;
     const id = obtenerTrabajoId();
@@ -936,15 +978,17 @@ function iniciarVistaPrevia3D({
   // verdades se desincronizaron — el HTML servido marcaba blanco y la pantalla
   // mostraba gris, porque `aplicar()` reescribe `aria-pressed` al arrancar y el
   // JS siempre gana. El detalle completo esta en `iniciarPaleta`.
-  iniciarPaleta({
+  const paletaPieza = iniciarPaleta({
     selectores: ['#paleta', '#paleta-pieza'],
     clave: 'color-visor',
     evento: 'cortante:color',
+    ademas: alElegirPieza,
   });
-  iniciarPaleta({
+  const paletaFondo = iniciarPaleta({
     selectores: ['#paleta-fondo'],
     clave: 'color-fondo',
     evento: 'cortante:fondo',
+    ademas: alElegirFondo,
   });
 
   /**
@@ -1013,7 +1057,35 @@ function iniciarVistaPrevia3D({
 
     /** Le avisa al visor que hay un `.glb` nuevo para cargar. */
     anunciar(url) {
+      cargando(true);
       document.dispatchEvent(new CustomEvent('cortante:listo', { detail: { url } }));
+    },
+
+    /**
+     * Pinta el visor sin tocar las paletas: un color de paso, no una eleccion.
+     *
+     * Es lo que hace falta para la foto del set, que sale de la MISMA pieza con
+     * otros colores. Marcar las paletas ahi seria mentir dos veces: esos
+     * colores no son los del diseño, y encima el usuario no los eligio en esa
+     * paleta sino en la del set.
+     */
+    pintar({ pieza, fondo, sinPiso }) {
+      document.dispatchEvent(new CustomEvent('cortante:color', { detail: { color: pieza } }));
+      document.dispatchEvent(
+        new CustomEvent('cortante:fondo', { detail: { color: fondo, sinPiso: Boolean(sinPiso) } })
+      );
+    },
+
+    /**
+     * Lo que el usuario tiene elegido para lo que esta mirando: pinta Y marca.
+     *
+     * No recibe `sinPiso` a proposito. Lo trae la muestra del fondo, que es
+     * quien lo declara (`data-sin-piso`, puesto por el router): deducirlo aca
+     * seria la segunda verdad que `iniciarPaleta` existe para no tener.
+     */
+    mostrarColores({ pieza, fondo }) {
+      paletaPieza.marcar(pieza);
+      paletaFondo.marcar(fondo);
     },
 
     /**
@@ -1025,6 +1097,7 @@ function iniciarVistaPrevia3D({
      * sin WebGL, con `ok:false`— asi que esta promesa siempre asienta.
      */
     cargar(url) {
+      cargando(true);
       return new Promise((resolver) => {
         let listo = false;
         const contestar = (ok) => {
@@ -1073,9 +1146,12 @@ function iniciarVistaPrevia3D({
  * falta para eso, y es lo que evita tener que mantener dos paletas en
  * sincronia a mano.
  */
-function iniciarPaleta({ selectores, clave, evento }) {
+function iniciarPaleta({ selectores, clave, evento, ademas = null }) {
   const muestras = selectores.flatMap((sel) => $$(`${sel} .paleta__color`));
-  if (!muestras.length) return;
+  // Un objeto y no `undefined`: quien la use no tiene por que saber si la
+  // pantalla dibujo esa paleta. Sin esto, una pantalla sin paleta de fondo
+  // revienta al marcarla en vez de simplemente no tener nada que marcar.
+  if (!muestras.length) return { marcar: () => {} };
 
   let guardado = null;
   try {
@@ -1093,6 +1169,11 @@ function iniciarPaleta({ selectores, clave, evento }) {
     const elegida = muestras.find((o) => o.dataset.color === color);
     const sinPiso = Boolean(elegida) && elegida.dataset.sinPiso === '1';
     document.dispatchEvent(new CustomEvent(evento, { detail: { color, sinPiso } }));
+    // `ademas` solo corre en los CLICS, nunca en la aplicacion inicial. Post lo
+    // usa para propagar el color a los 25 diseños, y propagar al arrancar seria
+    // pisar con el default lo que el usuario ya eligio por fila. `recordar` es
+    // `true` exactamente cuando el usuario apreto una muestra.
+    if (ademas && recordar) ademas(color, sinPiso);
     if (!recordar) return;
     try {
       localStorage.setItem(clave, color);
@@ -1117,6 +1198,60 @@ function iniciarPaleta({ selectores, clave, evento }) {
   const disponibles = muestras.map((b) => b.dataset.color);
   const inicial = disponibles.includes(guardado) ? guardado : disponibles[0];
   aplicar(inicial, false);
+
+  return {
+    /**
+     * Marca una muestra y la aplica, **sin** avisarle a `ademas` ni recordarla.
+     *
+     * Es "mostra lo que este diseño tiene elegido", no "el usuario eligio
+     * esto": avisar seria volver a propagar el color que se acaba de leer, y
+     * recordarlo convertiria pasar de un diseño a otro en cambiar el default.
+     * Es exactamente la aplicacion inicial, con otro color.
+     */
+    marcar: (color) => aplicar(color, false),
+  };
+}
+
+/**
+ * El color marcado en una paleta de pagina, o `null` si no hay ninguna.
+ *
+ * Se lee del DOM y no de una variable porque **la paleta es la fuente**: los
+ * codigos los dibuja el template desde `COLORES` del router y este archivo no
+ * tiene ni puede tener una lista propia (hay un test que lo prohibe). Devuelve
+ * tambien `sinPiso`, que viaja pegado al color por el mismo motivo: lo declara
+ * la muestra, no lo deduce el front.
+ *
+ * `preview3d.js` hace esta misma consulta para lo suyo. Que este dos veces no
+ * es duplicar una lista: es que los dos archivos son modulos distintos que no
+ * se pueden importar, y lo que comparten es el DOM.
+ */
+function colorMarcado(selector) {
+  const b = $(`${selector} .paleta__color[aria-pressed="true"]`);
+  return b ? { color: b.dataset.color, sinPiso: b.dataset.sinPiso === '1' } : null;
+}
+
+/**
+ * Conecta una paleta suelta: marca la elegida y avisa. Sin persistencia.
+ *
+ * Es la version chica de `iniciarPaleta`, y son dos funciones a proposito. Las
+ * de la vista previa hablan con el visor por el bus de eventos, se recuerdan en
+ * `localStorage` y sincronizan varios contenedores con un solo valor. Las del
+ * SET no hacen nada de eso: no le hablan al visor —sus colores se usan recien
+ * cuando le toca rendir una celda— y su valor no es de la pantalla sino del
+ * set. Meterlas en la misma funcion pedia tres parametros que la otra mitad de
+ * las llamadas no usa.
+ */
+function conectarMuestras(caja, inicial, alElegir) {
+  const muestras = $$('.paleta__color', caja);
+  const marcar = (color) =>
+    muestras.forEach((o) => o.setAttribute('aria-pressed', String(o.dataset.color === color)));
+  marcar(inicial);
+  muestras.forEach((b) =>
+    b.addEventListener('click', () => {
+      marcar(b.dataset.color);
+      alElegir(b.dataset.color, b.dataset.sinPiso === '1');
+    })
+  );
 }
 
 function iniciarCortante() {
@@ -1495,15 +1630,71 @@ function iniciarPost() {
   let disenos = [];
   let trabajoId = recordado.trabajo || null;
   let vista = recordado.vista === 'imagen' ? 'imagen' : '3d';
-  let mirando = 1;
   let trabajando = false;
+
+  /* El diseño que se esta mirando, o 0 si no hay ninguno.
+     Es el que reciben las paletas de la vista previa, y por eso la fila se
+     marca y los rotulos lo nombran: son un control que le pega a UNA de hasta
+     veinticinco fotos, y cual es tiene que estar a la vista. Con 0 —antes del
+     lote, cuando todavia no hay nada que mirar— las paletas pintan todos, que
+     es lo unico que puede significar ahi. */
+  let mirando = 0;
+
+  /* Cual `.glb` esta cargado en el visor ahora mismo. No es lo mismo que
+     `mirando`: la cola carga modelos para rendir fotos sin que el usuario haya
+     pedido mirarlos. Existe para no volver a bajar un modelo que ya esta
+     puesto, que es lo mas caro de esta pantalla. */
+  let enElVisor = 0;
+
+  /* Los indices (1..n) que YA tienen fotos subidas. Es lo que separa "cambiar
+     un color antes de procesar" —no hay nada que rehacer— de "cambiarlo
+     despues", donde hay una foto vieja en el servidor que deja de coincidir con
+     lo que la pantalla dice. Sin esto el segundo caso pasa desapercibido: la
+     pantalla se ve del color nuevo y el JPG que se baja sigue siendo el de
+     antes. */
+  const conFoto = new Set();
+
+  /* Las dos colas de fotos por rehacer, y si hay alguien rehaciendolas.
+     Son dos porque son dos fotos distintas de la misma pieza: la suelta, con
+     los colores del diseño, y la celda del set, con los del set. Cambiar el
+     color de un diseño toca solo la primera; cambiar el del set, la segunda de
+     todos. Que sean colas y no un `await` suelto es porque los clics llegan mas
+     rapido que un render de 2048 px: hay UN canvas, y sin cola tres clics
+     seguidos largan tres renders encima del mismo. */
+  const pendientesVista = new Set();
+  const pendientesSet = new Set();
+  let rehaciendo = false;
+
+  /* Si la lamina quedo vieja. Va aparte de `pendientesSet` porque hay un caso
+     con celdas por rehacer y otro sin: cambiar el fondo del set con una sola
+     celda en vuelo tiene que recomponer igual. */
+  let setSucio = false;
+
+  /* Sube con cada foto rehecha y viaja en la URL de descarga. Ver `urlVista`. */
+  let versionFotos = 0;
+
+  /* Los colores del SET, que no son los de ninguna foto suelta.
+     El set es un entregable aparte —una lamina para publicar— y lo que se pidio
+     de el es que se lea como una pieza sola: todas las piezas del mismo color
+     sobre un fondo parejo, sin importar de que color quedo cada foto por
+     separado. Por eso cada diseño se rinde DOS veces. Arrancan en lo que marco
+     el template, leido del DOM: aca no hay ningun codigo de color escrito. */
+  const colorSet = {
+    pieza: (colorMarcado('#paleta-set-pieza') || {}).color || null,
+    fondo: (colorMarcado('#paleta-set-fondo') || {}).color || null,
+    sinPiso: Boolean((colorMarcado('#paleta-set-fondo') || {}).sinPiso),
+  };
 
   const recordar = () => guardarEstado('post', { trabajo: trabajoId, vista });
 
   const urlGlb = (n) => `/api/trabajos/${encodeURIComponent(trabajoId)}/diseno/${n}/archivo/glb`;
+  // ⚠ Con `?v=`: rehacer una foto escribe el MISMO archivo en el servidor, asi
+  // que sin cambiar la URL el navegador sirve la que ya tenia en cache y el
+  // usuario se baja la del color anterior. El contador sube en cada rehacer.
   const urlVista = (n) =>
-    `/api/trabajos/${encodeURIComponent(trabajoId)}/diseno/${n}/archivo/jpg_vista`;
-  const urlSubida = (n) => `/api/trabajos/${encodeURIComponent(trabajoId)}/diseno/${n}/imagen`;
+    `/api/trabajos/${encodeURIComponent(trabajoId)}/diseno/${n}/archivo/jpg_vista?v=${versionFotos}`;
+  const urlSubida = (n, clave) =>
+    `/api/trabajos/${encodeURIComponent(trabajoId)}/diseno/${n}/imagen/${clave}`;
 
   const previa = iniciarVistaPrevia3D({
     obtenerTrabajoId: () => trabajoId,
@@ -1512,10 +1703,12 @@ function iniciarPost() {
       vista = elegida;
       recordar();
     },
-    urlFoto: () => urlSubida(mirando),
+    urlFoto: () => urlSubida(mirando, CLAVE_FOTO),
     // Las fotos ya se subieron todas al armar el lote. Volver a rendir al bajar
     // subiria la del diseño que quedo en el visor encima de la del que se pidio.
     subirAlDescargar: false,
+    alElegirPieza: (color) => elegirColor({ pieza: color }),
+    alElegirFondo: (color, sinPiso) => elegirColor({ fondo: color, sinPiso }),
   });
 
   /* ── Elegir archivos y armar los diseños ───────────────────────────────── */
@@ -1524,15 +1717,72 @@ function iniciarPost() {
     $('#zona'),
     $('#entrada'),
     (archivos) => {
-      disenos = agruparArchivos(Array.from(archivos));
+      disenos = agruparArchivos(Array.from(archivos)).map((d) => ({
+        ...d,
+        ...coloresPorDefecto(),
+      }));
+      olvidarLasFotos();
       pintarLista();
       recordar();
     },
     () => {
       disenos = [];
+      olvidarLasFotos();
       pintarLista();
     }
   );
+
+  /**
+   * Con que colores nace un diseño: los que la vista previa tenga puestos.
+   *
+   * Se leen del DOM en el momento y no se guardan en una variable porque las
+   * paletas ya son el estado: `iniciarPaleta` marca la muestra elegida y la
+   * recuerda en `localStorage`. Una copia aca seria una segunda verdad que hay
+   * que mantener sincronizada con la primera.
+   */
+  function coloresPorDefecto() {
+    const pieza = colorMarcado('#paleta-pieza');
+    const fondo = colorMarcado('#paleta-fondo');
+    return {
+      pieza: pieza ? pieza.color : null,
+      fondo: fondo ? fondo.color : null,
+      sinPiso: Boolean(fondo && fondo.sinPiso),
+    };
+  }
+
+  /**
+   * Las fotos de antes dejan de contar: la lista cambio y los indices corren.
+   *
+   * Lo llaman el alta de archivos y los botones de separar y unir. Un diseño
+   * que estaba en la posicion 3 puede quedar en la 4, y rehacer "la foto 3"
+   * seria rehacer la de otra pieza.
+   */
+  function olvidarLasFotos() {
+    conFoto.clear();
+    pendientesVista.clear();
+    pendientesSet.clear();
+    setSucio = false;
+    enElVisor = 0;
+    fijarMirado(0);
+  }
+
+  /**
+   * Un color elegido en la vista previa. **Le pega a lo que se esta mirando.**
+   *
+   * Y a todos si no se esta mirando ninguno, que es el caso de antes del lote:
+   * ahi no hay foto que mirar y lo unico que la paleta puede querer decir es
+   * "con este color van a salir". Los dos casos estan escritos en el rotulo
+   * (`rotularPaletas`), porque un control que a veces pega en uno y a veces en
+   * todos y no lo dice es una trampa.
+   */
+  function elegirColor(cambios) {
+    if (!disenos.length) return;
+    const destino = mirando ? [disenos[mirando - 1]] : disenos;
+    destino.forEach((d) => Object.assign(d, cambios));
+    // Solo las fotos sueltas: el set tiene sus propios colores y no se entera
+    // de esto, que es justamente lo que se pidio.
+    encolarVistas(mirando ? [mirando] : [...conFoto]);
+  }
 
   /**
    * La lista de diseños, con los botones para corregir el emparejado.
@@ -1546,9 +1796,34 @@ function iniciarPost() {
     disenos.forEach((d, i) => lista.appendChild(filaDeDiseno(d, i)));
     mostrar($('#panel-disenos'), disenos.length > 0);
     texto($('#cuenta-disenos'), textoDeCuenta());
-    const exceso = disenos.length > MAX_DISENOS;
-    mostrar($('#aviso-exceso'), exceso);
-    procesar.disabled = trabajando || disenos.length === 0 || exceso;
+    mostrar($('#aviso-exceso'), disenos.length > MAX_DISENOS);
+    actualizarControles();
+  }
+
+  /**
+   * Prende o apaga lo que no se puede tocar con el canvas ocupado.
+   *
+   * **Sin repintar la lista.** Existe aparte de `pintarLista` porque rehacer una
+   * foto tiene que apagar los controles y no tiene por que reconstruir las
+   * filas: `pintarLista` rearma las 25, y hacerlo en cada clic saca el foco del
+   * boton que el usuario acaba de apretar. Y esta la condicion de "ocupado" una
+   * sola vez, que es lo que evita que las copias se separen.
+   *
+   * ⚠ **Las paletas se bloquean, y no es cosmetico.** Hay UN canvas: un color
+   * elegido mientras se esta rindiendo una foto le llega al visor en el acto
+   * —`iniciarPaleta` despacha al visor antes de avisarle a la pantalla— y la
+   * exportacion en vuelo puede salir con ese color. Es angosto (el render de
+   * 2048 px arranca en el mismo bloque sincronico que la pintada) pero real: la
+   * escalera de calidades de `aJpg` tiene `await` en el medio, y ahi si entra un
+   * clic. Bloquearlas mientras dura la cola cierra la ventana, y de paso dice
+   * que la maquina esta ocupada en vez de aceptar un clic que no va a cumplir.
+   */
+  function actualizarControles() {
+    const ocupado = trabajando || rehaciendo;
+    procesar.disabled = ocupado || disenos.length === 0 || disenos.length > MAX_DISENOS;
+    $$('.paleta__color').forEach((b) => {
+      b.disabled = ocupado;
+    });
   }
 
   function textoDeCuenta() {
@@ -1560,6 +1835,7 @@ function iniciarPost() {
   function filaDeDiseno(d, i) {
     const fila = document.createElement('div');
     fila.className = 'diseno';
+    if (mirando === i + 1) fila.classList.add('diseno--mirando');
 
     const cuerpo = document.createElement('div');
     cuerpo.className = 'diseno__cuerpo';
@@ -1573,6 +1849,15 @@ function iniciarPost() {
 
     const acciones = document.createElement('div');
     acciones.className = 'diseno__acciones';
+    // Solo con la foto hecha: antes del lote el `.glb` de este diseño no existe
+    // en el servidor —lo produce el lote— asi que no hay nada que mostrar.
+    if (conFoto.has(i + 1)) {
+      acciones.appendChild(
+        boton('Ver', 'Traerlo a la vista previa para cambiarle el color', () =>
+          mostrarDiseno(i + 1)
+        )
+      );
+    }
     if (d.partes.length === 2) {
       acciones.appendChild(
         boton('Separar', 'Tratarlos como dos diseños distintos', () => separar(i))
@@ -1598,8 +1883,16 @@ function iniciarPost() {
 
   /** Parte un diseño de dos archivos en dos diseños de uno. */
   function separar(i) {
+    // Los dos heredan el color del que se partio: era una pieza y ahora son
+    // dos, pero nadie pidio cambiarles el color al separarlas.
+    const { pieza, fondo, sinPiso } = disenos[i];
     const partes = disenos[i].partes.map((p) => ({ ...p, rol: 'unico' }));
-    disenos.splice(i, 1, ...partes.map((p) => ({ base: p.base, partes: [p] })));
+    disenos.splice(
+      i,
+      1,
+      ...partes.map((p) => ({ base: p.base, partes: [p], pieza, fondo, sinPiso }))
+    );
+    olvidarLasFotos();
     pintarLista();
   }
 
@@ -1617,23 +1910,101 @@ function iniciarPost() {
     const leidoB = leerNombre(otro.archivo.name);
     const invertido = leidoA.rol === 'marcador' || leidoB.rol === 'cortador';
     const [cortador, marcador] = invertido ? [otro, uno] : [uno, otro];
+    // El color del de arriba, que es el que manda en todo lo demas del par.
+    const { pieza, fondo, sinPiso } = disenos[i];
     disenos.splice(i, 2, {
       base: leerNombre(cortador.archivo.name).base,
       partes: [
         { ...cortador, rol: 'cortador' },
         { ...marcador, rol: 'marcador' },
       ],
+      pieza,
+      fondo,
+      sinPiso,
     });
+    olvidarLasFotos();
     pintarLista();
+  }
+
+  /* ── Que se esta mirando ───────────────────────────────────────────────── */
+
+  /** Anota el diseño mirado y lo dice en pantalla. **No toca el visor.** */
+  function fijarMirado(indice) {
+    mirando = indice;
+    $$('.diseno', lista).forEach((f, i) => {
+      f.classList.toggle('diseno--mirando', mirando === i + 1);
+    });
+    rotularPaletas();
+  }
+
+  /** Los rotulos dicen a quien le pegan las paletas: a uno, o a todos. */
+  function rotularPaletas() {
+    const a = mirando ? `diseño ${mirando}` : 'todos';
+    texto($('#rotulo-pieza'), `Pieza · ${a}`);
+    texto($('#rotulo-fondo'), `Fondo · ${a}`);
+    texto($('#paleta .paleta__nota'), mirando ? a : 'aplica a todos');
+  }
+
+  /**
+   * Trae un diseño a la vista previa, que es donde se le cambia el color.
+   *
+   * ⚠ **Con el canvas ocupado se anota y no se toca nada.** Hay un solo visor:
+   * pintar o cargar un modelo mientras la cola esta rindiendo una foto es
+   * cambiarle el color a la foto que se esta sacando. Lo que queda anotado en
+   * `mirando` lo levanta `devolverElVisor` cuando la cola termina, asi que el
+   * clic no se pierde — solo se atiende un momento despues.
+   */
+  async function mostrarDiseno(indice) {
+    fijarMirado(indice);
+    if (rehaciendo || trabajando) return;
+    await traerAlVisor(indice);
+  }
+
+  /** Pone en el visor el diseño `indice` con SUS colores. Sin guardas. */
+  async function traerAlVisor(indice) {
+    const d = disenos[indice - 1];
+    if (!d) return;
+    // Los colores ANTES de cargar: `preview3d.js` pinta la pieza al terminar de
+    // cargarla, con el color que tenga puesto en ese momento. Al reves, el
+    // modelo aparece un frame con el color del diseño anterior.
+    previa.mostrarColores(d);
+    if (enElVisor === indice) return;
+    enElVisor = indice;
+    if (!(await previa.cargar(urlGlb(indice)))) {
+      enElVisor = 0;
+      avisar(estado, 'error', `No se pudo cargar el diseño ${indice}.`);
+    }
+  }
+
+  /* ── Las paletas del set ───────────────────────────────────────────────── */
+
+  /* Los colores del set no le hablan al visor cuando se eligen: se guardan, y
+     se usan cuando le toca rendir cada celda. Por eso son `conectarMuestras` y
+     no `iniciarPaleta` —que despacha al visor y persiste en `localStorage`—:
+     lo que se elige aca es del set, no de la pantalla. */
+  const muestrasSetPieza = $('#paleta-set-pieza');
+  const muestrasSetFondo = $('#paleta-set-fondo');
+  if (muestrasSetPieza) {
+    conectarMuestras(muestrasSetPieza, colorSet.pieza, (color) => {
+      colorSet.pieza = color;
+      encolarElSet();
+    });
+  }
+  if (muestrasSetFondo) {
+    conectarMuestras(muestrasSetFondo, colorSet.fondo, (color, sinPiso) => {
+      colorSet.fondo = color;
+      colorSet.sinPiso = sinPiso;
+      encolarElSet();
+    });
   }
 
   /* ── Mandar el lote y sacar las fotos ──────────────────────────────────── */
 
   procesar.addEventListener('click', async () => {
     trabajando = true;
-    procesar.disabled = true;
+    actualizarControles();
     mostrar($('#panel-descargas'), false);
-    mostrar($('#panel-set'), false);
+    mostrar($('#resultado-set'), false);
     try {
       const trabajo = await enviarLote();
       await sacarLasFotos(trabajo);
@@ -1642,6 +2013,9 @@ function iniciarPost() {
     } finally {
       trabajando = false;
       pintarLista();
+      // Lo que se haya elegido mientras corria el lote quedo anotado y no se
+      // pudo atender: el canvas estaba ocupado. Ahora si.
+      arrancarLaCola();
     }
   });
 
@@ -1679,13 +2053,12 @@ function iniciarPost() {
   }
 
   /**
-   * Recorre los diseños de a uno: cargar el modelo, rendir la foto, subirla.
+   * Recorre los diseños de a uno: cargar el modelo y sacarle sus DOS fotos.
    *
    * **En serie y no en paralelo**, igual que la conversion del lado del
    * servidor, pero por otro motivo: hay UN solo visor y UN solo canvas, asi que
-   * sacar dos fotos a la vez es sacar dos veces la misma. `previa.cargar` espera
-   * a que el modelo este puesto antes de disparar la foto — sin esa espera, la
-   * foto del diseño 2 seria la del 1.
+   * sacar dos fotos a la vez es sacar dos veces la misma. Las dos fotos del
+   * mismo diseño salen de una sola carga del modelo, que es lo caro.
    */
   async function sacarLasFotos(trabajo) {
     const ok = [];
@@ -1695,28 +2068,181 @@ function iniciarPost() {
         sin.push(d);
         continue;
       }
-      mirando = d.indice;
       avisar(estado, 'info', `Sacando la foto ${ok.length + 1} de ${trabajo.disenos}…`);
-      if (!(await previa.cargar(urlGlb(d.indice)))) {
-        sin.push({ ...d, error: { mensaje: 'no se pudo cargar el modelo' } });
+      try {
+        await rendirDiseno(d.indice, { vista: true, celda: true });
+      } catch (e) {
+        sin.push({ ...d, error: { mensaje: e.message } });
         continue;
       }
-      const r = await previa.exportar(urlSubida(d.indice));
-      if (r.ok) ok.push(d);
-      else sin.push({ ...d, error: { mensaje: r.error } });
+      ok.push(d);
+      conFoto.add(d.indice);
     }
 
     pintarDescargas(trabajo, ok, sin);
     if (ok.length) await armarSet();
+    // El visor quedo con la ultima celda puesta, que va con los colores del set
+    // y no con los de nadie. Se lo devuelve al ultimo diseño que salio bien,
+    // que es el que la pantalla va a estar mostrando.
+    if (ok.length) {
+      fijarMirado(ok[ok.length - 1].indice);
+      await traerAlVisor(mirando);
+    }
     mostrar(estado, false);
   }
 
-  /** Le pide al servidor que pegue las fotos en una sola imagen. */
+  /**
+   * Las fotos de UN diseño, con el modelo cargado una sola vez.
+   *
+   * ⚠ **Los colores van antes de CADA exportacion, no solo antes de la carga.**
+   * Las dos fotos salen de la misma pieza con colores distintos, asi que
+   * pintarla una vez al cargarla no alcanza: lo que decide el color del JPG es
+   * lo que el visor tiene puesto en el momento de rendirlo. Antes de cargar se
+   * pinta igual, y eso es otra cosa: que el modelo no aparezca un frame con el
+   * color del diseño anterior.
+   */
+  async function rendirDiseno(indice, { vista: conVista, celda: conCelda }) {
+    const d = disenos[indice - 1];
+    const pasos = [];
+    if (conVista && d) pasos.push({ colores: d, clave: CLAVE_FOTO });
+    if (conCelda) pasos.push({ colores: colorSet, clave: CLAVE_CELDA });
+    if (!pasos.length) return;
+
+    previa.pintar(pasos[0].colores);
+    if (enElVisor !== indice) {
+      enElVisor = indice;
+      if (!(await previa.cargar(urlGlb(indice)))) {
+        enElVisor = 0;
+        throw new Error(`no se pudo cargar el diseño ${indice}`);
+      }
+    }
+
+    for (const paso of pasos) {
+      previa.pintar(paso.colores);
+      const r = await previa.exportar(urlSubida(indice, paso.clave));
+      if (!r.ok) throw new Error(r.error || `no se pudo sacar la foto ${indice}`);
+      if (paso.clave === CLAVE_FOTO) versionFotos += 1;
+    }
+  }
+
+  /* ── Rehacer lo que quedo viejo ────────────────────────────────────────── */
+
+  /**
+   * Anota las fotos sueltas de estos diseños para rehacerlas.
+   *
+   * Es lo que evita el unico desfasaje que el color por diseño puede
+   * introducir: la pantalla diciendo un color mientras el JPG del servidor —el
+   * que se baja— sigue siendo el de antes. Solo entra el que YA tiene foto
+   * (`conFoto`): antes del lote no hay nada que rehacer.
+   */
+  function encolarVistas(indices) {
+    indices.filter((i) => conFoto.has(i)).forEach((i) => pendientesVista.add(i));
+    arrancarLaCola();
+  }
+
+  /**
+   * Anota TODAS las celdas: el set cambio de color y sus fotos son suyas.
+   *
+   * Son fotos aparte de las sueltas, asi que esto no toca ninguna descarga por
+   * diseño — cambiar el color del set no le cambia el color a nada de lo que se
+   * baja por separado, que es lo que se pidio.
+   */
+  function encolarElSet() {
+    conFoto.forEach((i) => pendientesSet.add(i));
+    setSucio = conFoto.size > 0;
+    arrancarLaCola();
+  }
+
+  function arrancarLaCola() {
+    if (rehaciendo || trabajando) return;
+    if (!pendientesVista.size && !pendientesSet.size && !setSucio) return;
+    correrPendientes();
+  }
+
+  async function correrPendientes() {
+    rehaciendo = true;
+    actualizarControles();
+    try {
+      // ⚠ Dos bucles y no uno. El de adentro rinde todo lo que hay anotado; el
+      // de afuera vuelve a mirar las colas DESPUES de recomponer el set y de
+      // devolver el visor. Sin el de afuera, un color elegido durante esos dos
+      // `await` se anotaba y se quedaba ahi: el bucle de adentro ya habia
+      // salido y `rehaciendo` seguia en `true`, asi que nadie lo atendia hasta
+      // el clic siguiente —y mientras tanto la pantalla mostraba un color que
+      // el JPG no tenia.
+      while (pendientesVista.size || pendientesSet.size || setSucio) {
+        while (pendientesVista.size || pendientesSet.size) {
+          // El mas chico primero: se rehacen en el orden en que se ven, no en
+          // el orden en que se toco cada muestra.
+          const indice = Math.min(...pendientesVista, ...pendientesSet);
+          const conVista = pendientesVista.delete(indice);
+          const conCelda = pendientesSet.delete(indice);
+          avisar(estado, 'info', `Rehaciendo la foto ${indice}…`);
+          await rendirDiseno(indice, { vista: conVista, celda: conCelda });
+        }
+        refrescarDescargas();
+        if (setSucio) {
+          setSucio = false;
+          await armarSet();
+        }
+        await devolverElVisor();
+      }
+      mostrar(estado, false);
+    } catch (e) {
+      // Lo que quedaba encolado se descarta: seguir rehaciendo despues de un
+      // error deja al usuario mirando una cadena de avisos sin saber cual fallo.
+      pendientesVista.clear();
+      pendientesSet.clear();
+      setSucio = false;
+      avisar(estado, 'error', e.message);
+    } finally {
+      rehaciendo = false;
+      actualizarControles();
+    }
+  }
+
+  /**
+   * Devuelve el visor a lo que el usuario esta mirando.
+   *
+   * La cola deja puesto lo ultimo que rindio, que puede ser la celda de otro
+   * diseño con los colores del set. Sin esto, cambiar el color del set dejaba
+   * la pantalla mostrando la ultima pieza del lote pintada de set — y las
+   * paletas diciendo otra cosa.
+   *
+   * Va DENTRO del bucle de `correrPendientes` y no despues, para que lo que se
+   * elija mientras el modelo vuelve lo agarre el mismo bucle.
+   */
+  async function devolverElVisor() {
+    if (pendientesVista.size || pendientesSet.size) return;
+    if (mirando) await traerAlVisor(mirando);
+  }
+
+  /** Reapunta las descargas de foto a la version nueva. Ver `urlVista`. */
+  function refrescarDescargas() {
+    $$('#botones-descarga a[data-indice]').forEach((a) => {
+      a.href = urlVista(Number(a.dataset.indice));
+    });
+  }
+
+  /**
+   * Le pide al servidor que pegue las celdas en una sola imagen.
+   *
+   * El fondo va como parametro y es el MISMO con el que se rindio cada celda:
+   * aca pinta los huecos entre ellas y el sobrante de arriba y abajo, que es lo
+   * que hace que la lamina se vea de una pieza. Se manda en vez de leerse de un
+   * pixel de la primera foto —como se hacia— porque asi se elige de una lista
+   * cerrada y se valida. Ver el docstring de `componer_set`.
+   */
   async function armarSet() {
     avisar(estado, 'info', 'Armando el set…');
+    const cuerpo = new FormData();
+    // Solo si hay muestra marcada: sin el campo, el servidor pone el mismo
+    // default que el template marca, y los dos salen de `COLORES[0]`.
+    if (colorSet.fondo) cuerpo.append('fondo', colorSet.fondo);
     try {
       const r = await pedirJson(`/api/trabajos/${encodeURIComponent(trabajoId)}/set`, {
         method: 'POST',
+        body: cuerpo,
       });
       $('#img-set').src = `/api/trabajos/${encodeURIComponent(trabajoId)}/archivo/set?t=${Date.now()}`;
       $('#bajar-set').href = `/api/trabajos/${encodeURIComponent(trabajoId)}/archivo/set`;
@@ -1726,12 +2252,12 @@ function iniciarPost() {
         $('#pista-set'),
         `${r.celdas} diseños · ${r.distribucion.join('-')} · ${r.tamano_px.join('×')} px`
       );
-      mostrar($('#panel-set'), true);
+      mostrar($('#resultado-set'), true);
     } catch (e) {
       // El set es lo ultimo: que falle no invalida las fotos sueltas, que ya
       // estan arriba y se pueden bajar. Se dice y se sigue.
       texto($('#pista-set'), `No se pudo armar el set: ${e.message}`);
-      mostrar($('#panel-set'), true);
+      mostrar($('#resultado-set'), true);
     }
   }
 
@@ -1742,16 +2268,18 @@ function iniciarPost() {
     ok.forEach((d) => {
       const a = document.createElement('a');
       a.className = 'boton boton--secundario';
-      a.dataset.clave = 'jpg_vista';
+      a.dataset.clave = CLAVE_FOTO;
+      // El indice queda en el DOM para poder reapuntar la descarga cuando la
+      // foto se rehace, sin volver a dibujar el grupo entero.
+      a.dataset.indice = String(d.indice);
       a.download = '';
       a.href = urlVista(d.indice);
       a.textContent = `Foto ${d.indice}`;
-      a.addEventListener('click', () => {
-        // Mirar el que se baja: el visor queda en el ultimo del lote y ver una
-        // pieza mientras se baja otra es exactamente lo que confunde.
-        mirando = d.indice;
-        previa.cargar(urlGlb(d.indice));
-      });
+      // Mirar el que se baja: el visor queda en el ultimo del lote y ver una
+      // pieza mientras se baja otra es exactamente lo que confunde. Y de paso
+      // es lo que hay que hacer para cambiarle el color, asi que el clic sirve
+      // para las dos cosas.
+      a.addEventListener('click', () => mostrarDiseno(d.indice));
       grupo.appendChild(a);
     });
     const zip = document.createElement('a');
@@ -1772,6 +2300,8 @@ function iniciarPost() {
     mostrar($('#panel-descargas'), true);
     texto($('#pista-visor'), 'la geometria de los archivos que subiste');
   }
+
+  rotularPaletas();
 }
 
 /* ── Reporte de fidelidad ────────────────────────────────────────────────── */

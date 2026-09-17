@@ -12,10 +12,10 @@
  * pinta en la otra sin una sola linea de sincronizacion. El color de la pieza
  * es uno, no dos — lo que separa a las vistas es la camara y la luz.
  *
- * La fidelidad del aspecto sale de tres cosas:
+ * La fidelidad del aspecto sale de cuatro cosas:
  *
  * 1. **El acabado viene en el archivo.** El motor le asigna PBR a cada objeto
- *    (metallic 0, roughness 0,62 — PLA mate) y eso no se toca. Lo unico que
+ *    (metallic 0, roughness 0,78 — PLA mate) y eso no se toca. Lo unico que
  *    se pisa es el **color**, que lo elige la paleta de la pantalla: la pieza
  *    se imprime en un filamento, asi que el celeste y el gris que trae el
  *    archivo son una convencion del motor, no una propiedad de la pieza.
@@ -25,6 +25,9 @@
  *    reflejos suaves del plastico sin vendorizar ningun HDRI.
  * 3. **Tone mapping ACES y espacio sRGB**, mas una luz principal con sombra
  *    apoyada en el piso, que es lo que da la nocion de volumen y de apoyo.
+ * 4. **La textura de impresion**, que no viene en el archivo y no puede venir:
+ *    la malla es la geometria del modelo, no la del objeto impreso. Las capas
+ *    de la boquilla se dibujan en el sombreador — ver `TEXTURA_IMPRESION`.
  *
  * El GLB de trimesh viene en Z arriba (se comprobo: el nodo no trae
  * transformacion), asi que el modelo se rota -90 grados en X al cargarlo. Un
@@ -85,8 +88,30 @@ const FOV_JPG = 32;
  * despues esta en zona muerta temporal. Una funcion se hubiera hoisteado; un
  * `const` no.
  */
-const DIR_PRINCIPAL = [70, 130, 90];
+const DIR_PRINCIPAL = [70, 260, 90];
 const SOMBRA_POR_MM = Math.hypot(DIR_PRINCIPAL[0], DIR_PRINCIPAL[2]) / DIR_PRINCIPAL[1];
+
+/* ⚠ Lo que se movio de ese vector es SOLO la altura: 130 -> 260, mismo azimut.
+ *
+ * `SOMBRA_POR_MM` cae de 0,877 a 0,438 — **la mancha de sombra pasa a medir la
+ * mitad**, que es exactamente el pedido ("no deben ser tan amplias, por lo
+ * menos la mitad"). El azimut (70, 90) no se toca porque es lo que decide de
+ * que lado cae, y eso no estaba en discusion.
+ *
+ * Tres consecuencias, ninguna accidental:
+ *
+ * 1. **La pieza sale mas grande en el JPG.** El encuadre reserva lugar para la
+ *    sombra, asi que reservar la mitad le devuelve el resto al cortante: en
+ *    una pieza de 90 mm y 14 mm de alto, el semicuadro pasa de 60,7 a 54,2 mm
+ *    y el radio de la pieza de ocupar el 74% del semicuadro al 83%.
+ * 2. **El grabado se lee mejor, no peor.** El contraste del surco es justo la
+ *    parte que la sombra propia le saca, y con la luz mas a plomo el `N·L` de
+ *    la cara de arriba sube de 0,752 a 0,916: la misma luz que se va al entrar
+ *    al surco ahora pesa un 22% mas.
+ * 3. **Las paredes del filo reciben menos clave** (su `N·L` cae de 0,66 a
+ *    0,40). Eso se compensa en el reparto de paneles de abajo, subiendo los
+ *    laterales — no volviendo a bajar la luz.
+ */
 
 /* Lugar maximo que se le cede a la sombra, en veces el radio de la pieza. No
    ata en ninguna proporcion normal —una pieza de 90 mm y 14 mm de alto pide
@@ -128,11 +153,26 @@ const MARGEN_JPG = 1.06;
  * salir 72 niveles por encima de su propio color, que era justamente lo que
  * la hacia ver lavada.
  *
- * `frio` y `calido` son los dos paneles laterales. El visor los tiene
- * tinteados a proposito (azul de un lado, ambar del otro: es lo que evita que
- * un plastico mate parezca plastilina mientras gira). La foto los pone
- * **blancos**: es un archivo que el usuario se lleva, y el color de la pieza
- * tiene que ser el que eligio, no el que le puso la caja de luces.
+ * ⚠ **Esa tabla mide el REPARTO ANTERIOR del visor** (cenital 3,2 · laterales
+ * 1,5 y 0,9) y se conserva porque es lo que justifica que existan dos
+ * repartos, que sigue siendo cierto. Lo que cambio despues es el reparto del
+ * visor, no la conclusion: el cenital bajo a 2,5 y los laterales subieron a
+ * 1,85 y 1,15, por dos motivos que van juntos. Uno, un plato a 221 sobre 255
+ * esta al borde del blanco y ahi el relieve deja de tener donde dibujarse —el
+ * mismo argumento por el que la paleta bajo el croma, aplicado a la luz—. Dos,
+ * la luz principal quedo mas a plomo (ver `DIR_PRINCIPAL`) y las paredes
+ * del filo perdieron clave: lo que las recupera son los laterales, que es luz de
+ * relleno y no de foco. La foto no se toco: su reparto ya era neutro y bajo.
+ *
+ * `frio` y `calido` son los dos paneles laterales. El visor los conserva
+ * **apenas** tinteados —un lado hacia el azul, el otro hacia el ambar, pero
+ * casi neutros (`0xeef3f8` / `0xf8f4ec`)— y eso tambien se ajusto: con el
+ * tinte fuerte de antes el brillo que devolvia la pieza tenia color propio y
+ * se sumaba al del filamento, que es lo que empastaba el detalle. Queda lo
+ * justo para que las dos caras no se confundan mientras la pieza gira, que
+ * era el motivo original del tinte. La foto los pone **blancos**: es un
+ * archivo que el usuario se lleva, y el color de la pieza tiene que ser el
+ * que eligio, no el que le puso la caja de luces.
  *
  * ⚠ Viven ACA ARRIBA y no al lado de `crearEntorno`, que seria su lugar
  * natural: `crearEntorno` toma uno como valor por defecto de un parametro, y
@@ -143,7 +183,7 @@ const MARGEN_JPG = 1.06;
  * Una funcion se hubiera hoisteado; un `const` no.
  */
 const ESTUDIO_ORBITA = {
-  cenital: 3.2, lateral: 1.5, contra: 0.9, piso: 1.0, frio: 0xd8ecf7, calido: 0xfff0dd,
+  cenital: 2.5, lateral: 1.85, contra: 1.15, piso: 1.1, frio: 0xeef3f8, calido: 0xf8f4ec,
 };
 const ESTUDIO_FOTO = {
   cenital: 0.8, lateral: 1.3, contra: 1.3, piso: 0.5, frio: 0xffffff, calido: 0xffffff,
@@ -165,6 +205,41 @@ const AMBIENTE_FOTO = { hemisferico: 0.35, relleno: 0.45 };
  * asi que no sirve para recuperar el relieve —eso lo hace el reparto de
  * paneles— y si sirve para que las dos vistas no se separen sin querer. */
 const EXPOSICION_VISOR = 1.05;
+
+/* La textura de impresion: lo unico del aspecto que NO puede venir en el archivo.
+ *
+ * El `.glb` trae la geometria del MODELO, y el modelo es liso. La pieza que
+ * sale de la impresora no: se construye apilando hilos de plastico, y eso deja
+ * dos marcas que cualquiera que haya visto una impresa reconoce en el acto —y
+ * cuya ausencia es lo que hace que un render se vea como un render—.
+ *
+ * - `paso_capa` / `relieve_capa`: **las lineas de capa de las paredes**. Cada
+ *   0,2 mm de altura hay una junta entre dos hilos, y la normal de la pared se
+ *   mece alrededor de ella. Es la marca inequivoca: toda pieza FDM la tiene,
+ *   en toda pared vertical, la haya laminado quien la haya laminado.
+ * - `paso_linea` / `relieve_linea`: **el grano de la cara de arriba**, el ancho
+ *   de extrusion. Va mucho mas suave (0,045 contra 0,12) y a proposito: la
+ *   boquilla no barre la tapa en diagonal recta sino siguiendo el contorno de
+ *   la pieza, y el contorno no existe adentro del sombreador. Un patron
+ *   diagonal fuerte seria una afirmacion falsa sobre el recorrido; flojo es lo
+ *   que de verdad es, un grano direccional que le saca el plano perfecto sin
+ *   inventar un trazado.
+ *
+ * Se dibuja en el sombreador y no como mapa porque **la malla no trae UVs**:
+ * sale de extruir poligonos con `manifold`, que no genera coordenadas de
+ * textura. Un patron derivado de la posicion en el mundo no las necesita.
+ *
+ * Los dos se apagan solos cuando el pixel es mas grande que el patron (ver
+ * `vivoCapa` / `vivoLinea` en el sombreador): en el visor chico las capas de
+ * 0,2 mm no llegan a un pixel y lo unico que dibujarian es moire. Aparecen al
+ * acercarse, y estan siempre en el JPG de 2048 px, que es donde se miran.
+ */
+const TEXTURA_IMPRESION = {
+  paso_capa: 0.2,
+  relieve_capa: 0.12,
+  paso_linea: 0.42,
+  relieve_linea: 0.045,
+};
 
 
 /* ── Ganchos de la pantalla ──────────────────────────────────────────────── */
@@ -320,6 +395,11 @@ document.addEventListener('cortante:listo', (e) => {
     (gltf) => {
       const anterior = cargado;
       cargado = gltf.scene;
+      // Antes de repartir los clones: comparten material con la raiz, asi que
+      // texturar la raiz textura las dos vistas — la misma razon por la que
+      // `pintarPieza` pinta las dos. Y antes del primer render, porque lo que
+      // esto cambia es el codigo del sombreador y eso se compila una sola vez.
+      texturarComoImpresion(cargado);
       oyentes.forEach((o) => o.alListo(cargado.clone()));
       // Recien aca, y no antes: los suscriptores ya cambiaron de modelo, asi
       // que nadie referencia mas las geometrias de la generacion anterior.
@@ -895,13 +975,110 @@ function iniciarImagen(host) {
   }
 }
 
+/* ── Textura de impresion ────────────────────────────────────────────────── */
+
+/**
+ * Le pone a la pieza las marcas de la impresora. Ver `TEXTURA_IMPRESION`.
+ *
+ * Toca el material y no la geometria: modelar las capas seria multiplicar por
+ * cientos los triangulos de una malla que ademas **no es la que se descarga**
+ * —el `.3mf` lleva el modelo liso, que es lo correcto: las capas las pone la
+ * impresora, no el archivo—. Perturbar la normal deja las dos cosas en su
+ * lugar: el archivo sigue siendo el modelo y la pantalla muestra la pieza.
+ *
+ * ⚠ `customProgramCacheKey` no es opcional. three cachea programas por las
+ * propiedades del material, y dos materiales identicos —el cortador y el
+ * marcador lo son salvo el color— comparten el compilado. Sin una clave que
+ * diga "este material lleva capas", un material texturado podria recibir el
+ * programa de uno que no lo esta, o al reves, segun el orden de carga. Con la
+ * clave, todos los de la pieza caen en el mismo programa y es el correcto.
+ */
+function texturarComoImpresion(raiz) {
+  raiz.traverse((o) => {
+    if (!o.isMesh) return;
+    const materiales = Array.isArray(o.material) ? o.material : [o.material];
+    materiales.forEach((m) => {
+      if (!m || m.userData.impreso) return;
+      m.userData.impreso = true;
+      m.onBeforeCompile = inyectarTexturaImpresion;
+      m.customProgramCacheKey = () => 'cutter3d:impreso';
+      m.needsUpdate = true;
+    });
+  });
+}
+
+/**
+ * Inyecta el patron en el sombreador estandar de three, sin reemplazarlo.
+ *
+ * Se engancha en `normal_fragment_begin`, que es el punto donde `normal` ya
+ * existe y todavia no la uso nadie. Lo que queda antes —`nonPerturbedNormal`,
+ * que ese chunk deja asignada en su ultima linea— sigue siendo la normal
+ * geometrica de verdad, y eso importa: three la usa para el `normalBias` de la
+ * sombra y para la rugosidad derivada de la curvatura. Si el patron se colara
+ * ahi, cada linea de capa se leeria como geometria arrugada y la pieza se
+ * llenaria de acne de sombra.
+ *
+ * `vPosPieza` se calcula despues de `project_vertex`, que es donde `transformed`
+ * ya quedo definitivo. En espacio de MUNDO y no de objeto porque el modelo
+ * entra rotado -90 en X: en objeto el eje de apilado es Z y no Y, y el patron
+ * saldria barriendo la direccion equivocada.
+ */
+function inyectarTexturaImpresion(sombreador) {
+  const t = TEXTURA_IMPRESION;
+  sombreador.vertexShader = sombreador.vertexShader
+    .replace('#include <common>', '#include <common>\nvarying vec3 vPosPieza;')
+    .replace(
+      '#include <project_vertex>',
+      '#include <project_vertex>\n\tvPosPieza = ( modelMatrix * vec4( transformed, 1.0 ) ).xyz;'
+    );
+
+  sombreador.fragmentShader = sombreador.fragmentShader
+    .replace('#include <common>', '#include <common>\nvarying vec3 vPosPieza;')
+    .replace(
+      '#include <normal_fragment_begin>',
+      `#include <normal_fragment_begin>
+  {
+    // Los dos ejes del patron, traidos al espacio de VISTA: ahi es donde vive
+    // \`normal\` en este punto del sombreador.
+    vec3 ejeCapas = normalize( ( viewMatrix * vec4( 0.0, 1.0, 0.0, 0.0 ) ).xyz );
+    vec3 ejeLineas = normalize( ( viewMatrix * vec4( 0.70711, 0.0, -0.70711, 0.0 ) ).xyz );
+
+    // Una cara es pared o es tapa segun cuanto mire hacia arriba, y cada una
+    // lleva su marca. La de abajo no lleva ninguna: no se ve nunca.
+    float haciaArriba = dot( normal, ejeCapas );
+    float pared = 1.0 - abs( haciaArriba );
+    float tapa = max( haciaArriba, 0.0 );
+
+    float fCapa = vPosPieza.y / ${t.paso_capa.toFixed(4)};
+    float fLinea = dot( vPosPieza, vec3( 0.70711, 0.0, -0.70711 ) ) / ${t.paso_linea.toFixed(4)};
+
+    // Si un pixel abarca medio periodo o mas, el patron ya no se puede dibujar
+    // y lo unico que queda de el es moire. Se apaga solo, con la derivada de
+    // pantalla: es la misma idea que un mipmap, sin textura.
+    float vivoCapa = 1.0 - smoothstep( 0.22, 0.5, fwidth( fCapa ) );
+    float vivoLinea = 1.0 - smoothstep( 0.22, 0.5, fwidth( fLinea ) );
+
+    float ondaCapa = sin( 6.2831853 * fCapa ) * ${t.relieve_capa.toFixed(4)} * pared;
+    float ondaLinea = sin( 6.2831853 * fLinea ) * ${t.relieve_linea.toFixed(4)} * tapa;
+
+    normal = normalize(
+      normal + ejeCapas * ondaCapa * vivoCapa + ejeLineas * ondaLinea * vivoLinea
+    );
+  }`
+    );
+}
+
 /* ── Entorno, luces y piso ───────────────────────────────────────────────── */
 
 /** Caja de paneles emisivos convertida a mapa de entorno. Sin archivos. */
 function crearEntorno(renderer, reparto = ESTUDIO_ORBITA) {
   const pmrem = new THREE.PMREMGenerator(renderer);
   const cuarto = new THREE.Scene();
-  cuarto.background = new THREE.Color(0x1c2126);
+  // Casi neutro, y no el azul de antes. Es el color que toman TODAS las
+  // direcciones que no dan contra un panel, o sea el grueso del hemisferio que
+  // ve una cara en sombra: con tinte, cada zona oscura de la pieza salia de
+  // otro color que el filamento elegido.
+  cuarto.background = new THREE.Color(0x1f2124);
 
   const panel = (color, intensidad, escala, pos, rot) => {
     const malla = new THREE.Mesh(
@@ -917,7 +1094,7 @@ function crearEntorno(renderer, reparto = ESTUDIO_ORBITA) {
   panel(0xffffff, reparto.cenital, [12, 8], [0, 7, 0], [Math.PI / 2, 0, 0]); // cenital
   panel(reparto.frio, reparto.lateral, [10, 8], [-7, 2, 2], [0, Math.PI / 2, 0]); // lateral
   panel(reparto.calido, reparto.contra, [10, 8], [7, 2, -2], [0, -Math.PI / 2, 0]); // contra
-  panel(0x2a3138, reparto.piso, [16, 16], [0, -3, 0], [-Math.PI / 2, 0, 0]); // piso
+  panel(0x33363a, reparto.piso, [16, 16], [0, -3, 0], [-Math.PI / 2, 0, 0]); // piso
 
   const objetivo = pmrem.fromScene(cuarto, 0.04);
   pmrem.dispose();
@@ -935,7 +1112,12 @@ function crearEntorno(renderer, reparto = ESTUDIO_ORBITA) {
  * que el frustum fijo de aca abajo no sirve para exportar.
  */
 function agregarLuces(escena) {
-  const cielo = new THREE.HemisphereLight(0xffffff, 0x9fb4c0, 0.55);
+  // El `groundColor` es el rebote de lo que la pieza tiene abajo. En el visor
+  // eso es el piso de la pagina, que no tiene color propio: gris neutro. Con
+  // el celeste de antes, la mitad de abajo de la pieza salia azulada pasara lo
+  // que pasara con el filamento. (La foto lo pisa con el color del fondo
+  // elegido — ver `aplicarFondo`: ahi SI hay algo abajo, y tiene color.)
+  const cielo = new THREE.HemisphereLight(0xffffff, 0xb9bdc0, 0.55);
   escena.add(cielo);
 
   const principal = new THREE.DirectionalLight(0xffffff, 2.1);
@@ -952,7 +1134,11 @@ function agregarLuces(escena) {
   c.far = 600;
   escena.add(principal);
 
-  const relleno = new THREE.DirectionalLight(0xdcf0fb, 0.7);
+  // Relleno casi neutro. Enfriaba la cara en sombra para que no se viera
+  // plana, y ese sigue siendo su trabajo — pero un relleno con color propio
+  // desplaza el tono de media pieza, que es justo lo que se pidio sacar. Queda
+  // el tinte minimo que separa la cara en sombra de la cara iluminada.
+  const relleno = new THREE.DirectionalLight(0xeef4f8, 0.7);
   relleno.position.set(-90, 50, -70);
   escena.add(relleno);
 
@@ -992,7 +1178,19 @@ function neutralizarAmbiente({ cielo, relleno }) {
 function agregarPiso(escena, { grilla: conGrilla = true } = {}) {
   const sombra = new THREE.Mesh(
     new THREE.PlaneGeometry(1, 1),
-    new THREE.ShadowMaterial({ opacity: 0.24 })
+    // ⚠ 0,14 y no el 0,24 de antes: "mas clara y no tan marcada".
+    //
+    // `ShadowMaterial` mezcla negro sobre el fondo con esta alfa, asi que el
+    // numero se lee directo: sobre el `Blanco` de la paleta (nivel 244) la
+    // mancha pasa de 185 a 212, o sea de 59 niveles de oscurecimiento a 32.
+    // Sigue leyendose como apoyo —es lo que evita que la pieza parezca un
+    // recorte pegado— y deja de competir con el dibujo.
+    //
+    // Va junto con `DIR_PRINCIPAL`, que ademas la achico a la mitad: son las
+    // dos mitades del mismo pedido y ninguna alcanza sola. Mas clara pero
+    // igual de larga sigue tapando; mas corta pero igual de oscura sigue
+    // siendo una mancha negra.
+    new THREE.ShadowMaterial({ opacity: 0.14 })
   );
   sombra.rotation.x = -Math.PI / 2;
   sombra.position.y = -0.01;
@@ -1033,7 +1231,9 @@ function pintarPiso(piso) {
     document.documentElement.dataset.tema === 'oscuro' ||
     (!document.documentElement.dataset.tema &&
       window.matchMedia('(prefers-color-scheme: dark)').matches);
-  piso.sombra.material.opacity = oscuro ? 0.4 : 0.24;
+  // La misma proporcion de siempre entre los dos temas (el fondo oscuro se
+  // come la sombra, asi que ahi va mas densa), sobre los valores nuevos.
+  piso.sombra.material.opacity = oscuro ? 0.24 : 0.14;
   if (piso.grilla) {
     piso.grilla.material.opacity = oscuro ? 0.1 : 0.16;
     piso.grilla.material.color.set(oscuro ? 0x4fc6ee : 0x8fa8b6);

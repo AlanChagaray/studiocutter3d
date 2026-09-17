@@ -186,7 +186,10 @@ defensiva.
   mismo `preview3d.js` sobre un `.glb` derivado. Existe para los cortantes viejos y para cuando la
   foto no se bajó, que es la única forma de recuperarla: el `.glb` de un trabajo se va con él a las
   6 h. No hay parámetros — la geometría ya viene decidida adentro del archivo — y lo único que se
-  elige son los colores, que son de pantalla.
+  elige son los colores, que son de pantalla. **El color se elige en la vista previa, sobre la
+  pieza**, y la paleta le pega al diseño que se esté mirando (`Ver` lo trae al visor); sin ninguno
+  a la vista, que es el estado de antes del lote, les pega a todos. Los rótulos lo dicen, porque un
+  control que a veces pega en uno y a veces en todos y no lo aclara es una trampa.
 - ⚠ **En F4 la unidad es el DISEÑO, no el archivo.** Un diseño puede venir en un `.3mf` combinado o
   en dos archivos sueltos (`<base>_cortador.stl` + `<base>_marcador.stl`), y las dos formas
   describen la misma pieza: fotografiar el cortador sin su marcador es fotografiar otra cosa.
@@ -210,11 +213,19 @@ defensiva.
   `Trabajo.disenos` es solo el contador; el detalle de cada uno viaja en `reporte`.
 - **El set lo compone el SERVIDOR con Pillow** (`cutter3d/lamina.py`), no el canvas, y la razón es
   que así es **medible**: el reparto, la separación, el centrado y el color de los huecos se afirman
-  desde la suite, y el comportamiento del JS no lo mira ningún gate. El color de los huecos **se
-  lee de la esquina de las propias fotos** en vez de recibirse como parámetro — pedirlo aparte
-  serían dos verdades sobre el mismo color y un set con los huecos de otro tono. Las celdas se
-  achican con `Image.draft()` al abrirlas: 25 fotos de 2048 px enteras serían 314 MB de pico contra
-  ~13 MB así, que es la misma lección del presupuesto de píxeles de F2.
+  desde la suite, y el comportamiento del JS no lo mira ningún gate. Las celdas se achican con
+  `Image.draft()` al abrirlas: 25 fotos de 2048 px enteras serían 314 MB de pico contra ~13 MB así,
+  que es la misma lección del presupuesto de píxeles de F2.
+- ⚠ **Cada diseño se fotografía DOS veces, y son dos entregables distintos.** La foto suelta
+  (`ClaveDiseno.JPG_VISTA`) lleva el color de pieza y de fondo que se le eligió a ese diseño; la
+  celda (`JPG_SET`) lleva los del **set**, que tiene su propia pareja pieza + fondo. Lo que entra a
+  la lámina son las celdas: componerla con las fotos sueltas obligaría a que las 25 compartan color,
+  que es justo lo que el set existe para no obligar. La celda es interna
+  (`CLAVES_DISENO_INTERNAS`) y no va al ZIP — el set va entero, y media lámina suelta no es nada.
+  El color de los huecos llega como **parámetro** de `componer` y es el mismo con el que se
+  rindieron las celdas: leerlo de la esquina de la primera foto —como se hizo un ciclo— dejó de
+  poder ser cuando cada diseño eligió su propio fondo, porque ahí "el fondo de las fotos" no es un
+  color sino hasta veinticinco.
 - ⚠ **El set NO es una grilla rectangular: las filas pueden tener cantidades distintas.** Es lo que
   llena el cuadro. Una grilla pareja obliga a que la última fila quede corta —7 fotos en 3 columnas
   son `3-3-1`, con dos huecos juntos abajo— y repartirlas en `3-2-2` deja tres filas equilibradas.

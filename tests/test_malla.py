@@ -6,7 +6,7 @@ afirmaciones medibles, y son las dos que cubren estos tests:
 
 1. El `.glb` derivado describe la misma geometria que el archivo de entrada.
 2. El `.glb` derivado lleva el acabado PLA del motor (`metallicFactor` 0,
-   `roughnessFactor` 0,62). Sin esto la malla sale sin array `materials` y el
+   `roughnessFactor` 0,78). Sin esto la malla sale sin array `materials` y el
    visor le aplica el default de la spec de glTF —metal rugoso—, porque el front
    solo pisa el color y nunca el acabado.
 
@@ -50,7 +50,7 @@ from cutter3d.solids import (
     construir_marcador_3d,
 )
 
-RUGOSIDAD_PLA = 0.62
+RUGOSIDAD_PLA = 0.78
 """El acabado que tiene que sobrevivir a la conversion. Ver `solids._RUGOSIDAD_PLA`."""
 
 

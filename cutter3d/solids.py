@@ -35,7 +35,21 @@ NOMBRE_CORTADOR = "cortador"
 # como un gris plano. `roughnessFactor` alto y `metallicFactor` 0: PLA mate.
 _COLOR_CORTADOR = (0.31, 0.72, 0.89, 1.0)
 _COLOR_MARCADOR = (0.80, 0.84, 0.86, 1.0)
-_RUGOSIDAD_PLA = 0.62
+
+# ⚠ 0,78 y no el 0,62 de antes: una pieza recien salida de una FDM no brilla.
+#
+# Con 0,62 el lobulo especular del panel cenital se concentra bastante como
+# para dejar una mancha clara sobre la cara de arriba, que es justo donde vive
+# el grabado del marcador — o sea que el brillo tapaba el detalle que la foto
+# existe para mostrar. Subir la rugosidad reparte ese mismo brillo sobre toda
+# la cara: el nivel medio casi no se mueve y el contraste local del relieve
+# deja de competir contra un reflejo.
+#
+# Es ademas lo fisicamente cierto para el PLA mate con lineas de capa: la
+# microgeometria de la superficie impresa dispersa mucho mas que un plastico
+# inyectado. El front la complementa con la textura de capas de `preview3d.js`,
+# que es la otra mitad de lo mismo — una dispersa, la otra dibuja.
+_RUGOSIDAD_PLA = 0.78
 
 
 def _material(nombre: str, color: tuple[float, float, float, float]) -> PBRMaterial:

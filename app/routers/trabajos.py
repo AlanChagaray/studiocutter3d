@@ -43,7 +43,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from cutter3d import lamina
@@ -51,7 +51,9 @@ from cutter3d.errors import Cutter3DError
 
 from ..almacen import TIPOS_CON_VISTA, EstadoTrabajo, TipoTrabajo, Trabajo
 from ..archivos import (
+    CLAVES_DISENO_INTERNAS,
     FORMATOS_VISTA,
+    FOTOS_DE_DISENO,
     LIMITE_VISTA_BYTES,
     MEDIO_DE,
     MEDIO_DISENO,
@@ -71,6 +73,7 @@ from ..archivos import (
 from ..dependencias import AjustesDep, AlmacenDep, UsuarioRequerido
 from ..errores import ErrorApi, traducir
 from ..trabajos import cancelar
+from .cortante import COLORES, COLORES_FONDO, ColorVista
 
 router = APIRouter(prefix="/api/trabajos", tags=["trabajos"])
 
@@ -505,7 +508,7 @@ def descargar_de_diseno(
     )
 
 
-@router.put("/{id_}/diseno/{indice}/imagen")
+@router.put("/{id_}/diseno/{indice}/imagen/{clave}")
 def subir_imagen_de_diseno(
     usuario: UsuarioRequerido,
     almacen: AlmacenDep,
@@ -513,17 +516,32 @@ def subir_imagen_de_diseno(
     *,
     id_: str,
     indice: int,
+    clave: ClaveDiseno,
     archivo: Annotated[UploadFile, File()],
 ) -> dict[str, object]:
-    """La foto cenital de UN diseño, rendida por el navegador.
+    """Una foto cenital de UN diseño, rendida por el navegador.
 
     Es el gemelo por indice de `subir_imagen`, con las mismas cuatro defensas en
     el mismo orden. Lo que **no** hace es tocar `archivos` del trabajo: los
     archivos por diseño no viven ahi (ver `Trabajo.disenos`), asi que no hay nada
     que actualizar y el TTL no se toca por construccion en vez de a mano.
+
+    `clave` dice CUAL de las dos fotos es —la suelta, con los colores del diseño,
+    o la celda del set, con los del set— y se acota a `FOTOS_DE_DISENO`: el enum
+    tambien tiene al `.glb`, y ese lo produce el servidor. Va en el path y no en
+    el cuerpo porque quien sube es `preview3d.js`, que recibe un destino y no
+    sabe que hay adentro; el que sabe cual foto esta sacando es `app.js`, y lo
+    dice en la URL.
     """
     trabajo = _exigir_post(almacen, id_, usuario)
     _exigir_diseno(trabajo, indice)
+    if clave not in FOTOS_DE_DISENO:
+        raise ErrorApi(
+            "clave_no_subible",
+            "Ese archivo lo produce el servidor, no se sube.",
+            estado=422,
+            detalle={"clave": clave.value},
+        )
     if trabajo.estado is not EstadoTrabajo.LISTO:
         raise ErrorApi(
             "trabajo_no_terminado",
@@ -540,14 +558,43 @@ def subir_imagen_de_diseno(
         destino,
         permitidos=FORMATOS_VISTA,
         limite_bytes=LIMITE_VISTA_BYTES,
-        destino_nombre=nombre_de_diseno(ClaveDiseno.JPG_VISTA, indice),
+        destino_nombre=nombre_de_diseno(clave, indice),
     )
-    return {"indice": indice, "ok": True}
+    return {"indice": indice, "clave": clave.value, "ok": True}
+
+
+FONDOS_SET: dict[str, ColorVista] = {c.hex: c for c in COLORES_FONDO}
+"""Los fondos que el set acepta, por su codigo. **Es la misma lista de siempre.**
+
+El cliente manda un `#rrggbb` y este dict decide si existe: un hex cualquiera no
+entra, igual que en el resto de la API no entra un nombre de archivo. La
+diferencia con los demas parametros del cliente —una palabra de una lista
+cerrada, un entero acotado— es solo la forma; el criterio es el mismo.
+
+Va `COLORES_FONDO` —la lista con `Sin fondo`— y no `COLORES`, porque el set
+tiene su propio render: cada celda es una foto que el navegador saca con este
+mismo color de fondo, con su piso y su sombra proyectada. `Sin fondo` quiere
+decir ahi exactamente lo que quiere decir en la foto suelta, "sacale el piso",
+y el color que llega es el blanco puro que esa muestra declara. Cuando el set
+no rendia nada y solo pintaba huecos, esta lista era `COLORES` y era correcto:
+ahi esa opcion no habria querido decir nada.
+"""
+
+DEFECTO_FONDO_SET = COLORES[0].hex
+"""El mismo default que la paleta del set marca en el template, y no por copia:
+`COLORES_FONDO` arranca con `COLORES` y el macro marca la primera, asi que los
+dos salen de `COLORES[0]`. Existe para que el endpoint se pueda llamar sin el
+parametro —el set de un trabajo viejo, un test— y no para elegir por el
+usuario."""
 
 
 @router.post("/{id_}/set")
 def componer_set(
-    id_: str, usuario: UsuarioRequerido, almacen: AlmacenDep, a: AjustesDep
+    id_: str,
+    usuario: UsuarioRequerido,
+    almacen: AlmacenDep,
+    a: AjustesDep,
+    fondo: Annotated[str, Form()] = DEFECTO_FONDO_SET,
 ) -> dict[str, object]:
     """Pega las fotos de todos los diseños en una sola imagen.
 
@@ -555,12 +602,26 @@ def componer_set(
     lado del servidor a proposito: asi la grilla, la separacion y el fondo de los
     huecos son cosas que la suite puede medir. Ver `cutter3d/lamina.py`.
 
+    ⚠ **Entran las celdas (`JPG_SET`), no las fotos sueltas.** El set tiene su
+    propia combinacion de pieza y fondo, distinta de la que cada diseño lleva en
+    su foto, asi que el navegador rinde cada pieza dos veces: una con sus
+    colores y otra con los del set. Componer con las sueltas seria obligar a
+    que todas compartan color, que es justo lo que se pidio que no pase. Y sin
+    celdas no hay set —**no** se cae a las fotos sueltas—: seria armar la lamina
+    con colores que el usuario no eligio para ella y no decirselo.
+
+    `fondo` es el mismo que el navegador uso de fondo en cada celda, y aca pinta
+    los huecos entre ellas y el sobrante de arriba y abajo: es lo que hace que
+    la lamina se vea de una sola pieza. Llega como parametro y no se lee de las
+    celdas por lo de siempre en este proyecto: se elige de una lista cerrada y
+    se valida, en vez de deducirse de un pixel.
+
     Corre **en el proceso web** y no en un hijo, como F1: el costo real es la
     lamina mas una celda viva a la vez —del orden de 13 MB— porque `Image.draft`
     baja cada foto al tamaño de su celda al abrirla. Mandarlo a un proceso nuevo
     costaria mas el `spawn` que la composicion.
 
-    Solo entran los diseños que **tienen** foto: si uno fallo al convertirse, el
+    Solo entran los diseños que **tienen** celda: si uno fallo al convertirse, el
     set sale con los que si salieron y se declara cuantos entraron. Negarse a
     armar el set por un diseño de veinticinco seria cambiar un problema chico por
     uno grande.
@@ -577,7 +638,7 @@ def componer_set(
     fotos = [
         ruta
         for indice in range(1, trabajo.disenos + 1)
-        if (ruta := ruta_de_diseno(a, id_, ClaveDiseno.JPG_VISTA, indice)) is not None
+        if (ruta := ruta_de_diseno(a, id_, ClaveDiseno.JPG_SET, indice)) is not None
     ]
     if not fotos:
         raise ErrorApi(
@@ -587,9 +648,18 @@ def componer_set(
             detalle={"disenos": trabajo.disenos},
         )
 
+    elegido = FONDOS_SET.get(fondo)
+    if elegido is None:
+        raise ErrorApi(
+            "fondo_invalido",
+            "Ese color de fondo no esta en la paleta.",
+            estado=422,
+            detalle={"campo": "fondo"},
+        )
+
     clave = ClaveArchivo.SET
     try:
-        reporte = lamina.componer(fotos, dir_de_trabajo(a, id_) / NOMBRE_DE[clave])
+        reporte = lamina.componer(fotos, dir_de_trabajo(a, id_) / NOMBRE_DE[clave], elegido.rgb)
     except Cutter3DError as exc:
         raise traducir(exc) from exc
 
@@ -613,20 +683,30 @@ def componer_set(
     }
 
 
-def _fotos_de_disenos(a: AjustesDep, trabajo: Trabajo) -> list[tuple[int, Path]]:
-    """Las fotos por diseño que estan en disco, con su indice. Vacia si no es post.
+def _fotos_de_disenos(a: AjustesDep, trabajo: Trabajo) -> list[tuple[int, ClaveDiseno, Path]]:
+    """Los archivos por diseño que se ENTREGAN y estan en disco. Vacia si no es post.
 
     Se listan mirando el disco y no `trabajo.disenos` a secas porque un diseño
     puede haber fallado, o su foto todavia no haberse subido: el ZIP lleva lo que
     hay, y lo que no hay se nota al abrirlo.
+
+    ⚠ **Cuales se entregan lo dice `CLAVES_DISENO_INTERNAS`, no esta funcion.**
+    De las tres claves por diseño, dos existen para producir otra cosa: el `.glb`
+    es del visor y la celda (`JPG_SET`) es un pedazo de la lamina, que ya va
+    entera. Meter las dos fotos de cada pieza en el ZIP obliga a adivinar cual de
+    las dos es la que se pidio. Derivarlo del enum menos las internas es lo que
+    hace que agregar una clave nueva sea una decision explicita: la que se suma
+    al ZIP es la que **no** se declara interna.
     """
     if trabajo.tipo is not TipoTrabajo.POST:
         return []
-    fotos: list[tuple[int, Path]] = []
+    entregables = [c for c in ClaveDiseno if c not in CLAVES_DISENO_INTERNAS]
+    fotos: list[tuple[int, ClaveDiseno, Path]] = []
     for indice in range(1, trabajo.disenos + 1):
-        ruta = ruta_de_diseno(a, trabajo.id, ClaveDiseno.JPG_VISTA, indice)
-        if ruta is not None:
-            fotos.append((indice, ruta))
+        for clave in entregables:
+            ruta = ruta_de_diseno(a, trabajo.id, clave, indice)
+            if ruta is not None:
+                fotos.append((indice, clave, ruta))
     return fotos
 
 
@@ -635,7 +715,7 @@ def _llenar_zip(
     a: AjustesDep,
     trabajo: Trabajo,
     claves: list[ClaveArchivo],
-    por_diseno: list[tuple[int, Path]],
+    por_diseno: list[tuple[int, ClaveDiseno, Path]],
 ) -> None:
     """Mete en el ZIP las claves del trabajo y las fotos por diseño.
 
@@ -656,11 +736,11 @@ def _llenar_zip(
         except OSError:
             log.warning("el archivo %s del trabajo %s no se pudo leer", clave.value, trabajo.id)
 
-    for indice, ruta in por_diseno:
+    for indice, clave_diseno, ruta in por_diseno:
         try:
             zip_.write(
                 ruta,
-                _nombre_de_diseno_para_bajar(trabajo, ClaveDiseno.JPG_VISTA, indice),
+                _nombre_de_diseno_para_bajar(trabajo, clave_diseno, indice),
                 # Ya es un JPEG: comprimirlo otra vez cuesta CPU y no baja nada.
                 # Mismo criterio que `COMPRESION_DE`.
                 compress_type=zipfile.ZIP_STORED,

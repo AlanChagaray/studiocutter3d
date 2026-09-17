@@ -20,6 +20,11 @@
   Renombrar cualquiera deja la vista previa muerta y sin un solo error a la
   vista. Es el mismo bloque que en cortante a proposito: las dos fotos tienen
   que salir iguales.
+
+  Las paletas del SET (`#paleta-set-pieza`, `#paleta-set-fondo`) no estan en esa
+  lista y no pueden estarlo: `preview3d.js` no las conoce. Son colores que
+  `app.js` le manda al visor por el bus cuando le toca rendir una celda, por los
+  mismos eventos `cortante:color` y `cortante:fondo` de siempre.
 #}
 {% block contenido %}
 <div class="banco">
@@ -67,6 +72,8 @@
         Un cortante y su marcador van juntos y salen en una sola foto. Si el
         emparejado no es el que queres, <strong>Separar</strong> los trata como
         diseños distintos y <strong>Unir</strong> junta uno con el de abajo.
+        Con las fotos ya hechas, <strong>Ver</strong> trae ese diseño a la vista
+        previa, que es donde se le cambia el color.
       </div>
     </div>
 
@@ -80,7 +87,7 @@
       <div class="lista__meta" style="line-height:1.45">
         Son los mismos JPG que salen de Crear Cortante: cenitales, 2048 px, fondo liso
         y el color que elijas aca. El color es de la vista y no del archivo. Tocar una
-        foto tambien la trae al visor.
+        foto tambien la trae a la vista previa.
       </div>
     </div>
   </aside>
@@ -105,9 +112,16 @@
       <span class="lista__meta oculto" id="pista-imagen">cenital &middot; fondo liso &middot; JPG de 2048 px</span>
     </div>
 
+    {# El spinner tapa el panel entero —las dos vistas— porque el modelo se
+       carga una vez para las dos. Lo prende y lo apaga `iniciarVistaPrevia3D`,
+       asi que no es un id que `preview3d.js` conozca. #}
+    {{ m.cargando() }}
+
     <div class="visor" id="visor">
       <div class="visor__pista">arrastrar para girar &middot; rueda para acercar</div>
-      {{ m.paleta(colores, 'paleta', 'Color de la vista previa', nota='solo la vista') }}
+      {# La nota la reescribe `app.js`: esta paleta pinta el diseño que se este
+         mirando, y todos cuando no se esta mirando ninguno. #}
+      {{ m.paleta(colores, 'paleta', 'Color de la pieza', nota='aplica a todos') }}
     </div>
 
     <div class="vista-imagen oculto" id="vista-imagen">
@@ -115,13 +129,18 @@
         <div class="lienzo" id="lienzo"></div>
       </div>
 
+      {# Aca se le cambia el color a lo que se esta mirando: es la misma barra
+         que en cortante y hace lo mismo, pintar la foto que se va a bajar. La
+         diferencia es que en post hay hasta veinticinco fotos, asi que el
+         rotulo dice a cual le esta pegando — y `todos` mientras no se este
+         mirando ninguna en particular. Los dos rotulos los reescribe `app.js`. #}
       <div class="imagen-controles">
         <div class="imagen-controles__grupo">
-          <span class="imagen-controles__rotulo">Pieza</span>
+          <span class="imagen-controles__rotulo" id="rotulo-pieza">Pieza · todos</span>
           {{ m.paleta(colores, 'paleta-pieza', 'Color del cortante', clase='muestras') }}
         </div>
         <div class="imagen-controles__grupo">
-          <span class="imagen-controles__rotulo">Fondo</span>
+          <span class="imagen-controles__rotulo" id="rotulo-fondo">Fondo · todos</span>
           {{ m.paleta(colores_fondo, 'paleta-fondo', 'Color del fondo', clase='muestras') }}
         </div>
       </div>
@@ -143,17 +162,49 @@
 
     {# El set: las fotos de todos los diseños en una imagen. Lo compone el
        SERVIDOR con Pillow y no el canvas (ver `cutter3d/lamina.py`), asi que la
-       grilla, la separacion y el fondo son cosas que la suite puede medir. #}
-    <div class="panel oculto" id="panel-set">
+       grilla, la separacion y el fondo son cosas que la suite puede medir.
+
+       ⚠ El panel arranca VISIBLE y lo que se esconde es su resultado. No es
+       cosmetico: sus dos colores son los que el navegador va a usar al rendir
+       cada celda durante el lote, asi que si aparecieran recien con el set
+       hecho, elegirlos costaria rendir las veinticinco piezas otra vez. Antes
+       del lote es una decision gratis; despues se paga. #}
+    <div class="panel" id="panel-set">
       <h2 class="panel__titulo">El set</h2>
-      <div class="lienzo"><img id="img-set" alt="Las fotos de todos los diseños juntas"></div>
-      <div class="lista__meta" id="pista-set"></div>
-      <a class="boton boton--secundario" id="bajar-set" download>
-        {{ m.icono('bajar', 16) }} Bajar el set
-      </a>
+      {# El set tiene SU pieza y SU fondo, aparte de los de cada foto. No es un
+         recorte de las fotos de arriba: cada diseño se vuelve a rendir con
+         estos dos colores, y esa segunda foto (`jpg_set`) es la que entra a la
+         lamina. Por eso el fondo va con `colores_fondo` igual que el de la
+         vista imagen — aca tambien hay un render con piso y con sombra que
+         `Sin fondo` puede sacar. #}
+      <div class="imagen-controles imagen-controles--sueltos">
+        <div class="imagen-controles__grupo">
+          <span class="imagen-controles__rotulo">Pieza</span>
+          {{ m.paleta(colores, 'paleta-set-pieza', 'Color de las piezas del set',
+                      clase='muestras') }}
+        </div>
+        <div class="imagen-controles__grupo">
+          <span class="imagen-controles__rotulo">Fondo</span>
+          {{ m.paleta(colores_fondo, 'paleta-set-fondo', 'Color de fondo del set',
+                      clase='muestras') }}
+        </div>
+      </div>
       <div class="lista__meta" style="line-height:1.45">
-        Los huecos toman el color de fondo de las propias fotos, asi que el set sale
-        parejo con lo que elegiste. No es un render 3D nuevo: son las mismas fotos.
+        El set va con estos dos colores, sin importar de que color quedo cada foto
+        suelta: todas las piezas iguales y un fondo parejo de borde a borde.
+        Elegilos <strong>antes</strong> de preparar las fotos: cambiarlos despues
+        vuelve a rendir todas las piezas, y con muchos diseños eso tarda.
+      </div>
+      {# Se esconde el RESULTADO, no el panel: las paletas de arriba siguen a la
+         vista. El apilado va inline como el del panel del reporte en cortante,
+         que es lo mismo y esta escrito igual — y `.oculto` le gana igual porque
+         es `!important`. #}
+      <div class="oculto" id="resultado-set" style="display:flex;flex-direction:column;gap:12px">
+        <div class="lienzo"><img id="img-set" alt="Las fotos de todos los diseños juntas"></div>
+        <div class="lista__meta" id="pista-set"></div>
+        <a class="boton boton--secundario" id="bajar-set" download>
+          {{ m.icono('bajar', 16) }} Bajar el set
+        </a>
       </div>
     </div>
 

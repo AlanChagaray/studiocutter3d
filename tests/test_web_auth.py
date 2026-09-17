@@ -865,6 +865,54 @@ def test_la_luz_de_la_foto_escala_con_la_pieza(sesion: TestClient) -> None:
     assert re.search(r"c\.far = radio \* [0-9.]+", js)
 
 
+def test_la_textura_de_impresion_engancha_en_chunks_que_existen(sesion: TestClient) -> None:
+    """Los `#include` que `preview3d.js` reemplaza tienen que estar en el three vendorizado.
+
+    `inyectarTexturaImpresion` no escribe un sombreador propio: le mete las
+    lineas de capa al sombreador estandar de three reemplazando el texto de
+    tres `#include`. Si upstream renombra o parte uno de esos chunks —pasa
+    entre revisiones— el `.replace()` **no falla**: devuelve la cadena igual,
+    el patron nunca entra y la pieza se ve exactamente como antes. Nadie se
+    entera nunca, que es el mismo modo de fallar del import que 404ea.
+
+    Se afirma sobre el TEXTO de `three.module.js` y no sobre un render porque
+    la suite no ejecuta JS ni tiene un contexto WebGL. Eso alcanza para lo
+    unico silencioso: que el punto de enganche exista. Que el patron se vea
+    bien es CV, y se mira con los ojos.
+    """
+    js = _sin_comentarios(sesion.get("/static/js/preview3d.js").text)
+    three = sesion.get("/static/vendor/three/three.module.js").text
+
+    enganches = re.findall(r"'(#include <[\w\d./]+>)'", js)
+    assert enganches, "la inyeccion de la textura dejo de reemplazar chunks de three"
+    for chunk in set(enganches):
+        nombre = chunk[len("#include <") : -1]
+        assert f'var {nombre} = "' in three or f"ShaderChunk.{nombre}" in three, (
+            f"`preview3d.js` reemplaza `{chunk}` y ese chunk ya no existe en el three vendorizado"
+        )
+
+    # La perturbacion tiene que quedar DESPUES de `normal_fragment_begin`: ese
+    # chunk termina asignando `nonPerturbedNormal`, que es la normal que three
+    # usa para el `normalBias` de la sombra y para la rugosidad por curvatura.
+    # Colarse antes llenaria la pieza de acne de sombra.
+    assert re.search(r"#include <normal_fragment_begin>\s*\n\s*\{", js), (
+        "el patron tiene que ir a continuacion del chunk, no en su lugar"
+    )
+
+    # Y el programa compilado tiene que distinguirse del de un material sin
+    # capas: dos materiales identicos salvo el color comparten el compilado de
+    # three, asi que sin clave propia el cortador podria recibir el programa
+    # del marcador sin inyectar, o al reves, segun el orden de carga.
+    assert "customProgramCacheKey" in js, "sin clave de cache el patron entra o no segun el orden"
+
+    # Se textura la RAIZ y no cada clon: los clones comparten material, que es
+    # lo mismo que hace que `pintarPieza` pinte las dos vistas de una.
+    assert "texturarComoImpresion(cargado);" in js
+    assert js.index("texturarComoImpresion(cargado);") < js.index("o.alListo(cargado.clone())"), (
+        "hay que texturar antes de repartir los clones y antes del primer render"
+    )
+
+
 def test_no_hay_ninguna_url_externa_en_lo_que_se_sirve(sesion: TestClient) -> None:
     """Cero pedidos a internet: es una herramienta que tiene que andar offline."""
     for ruta in ("/login", "/conversor", "/lineas", "/cortante", "/post"):
@@ -997,6 +1045,257 @@ def test_la_vista_previa_tiene_una_sola_implementacion(sesion: TestClient) -> No
         "cortante y post tienen que arrancar la MISMA vista previa"
     )
     assert "if (pagina === 'post') iniciarPost();" in codigo
+
+
+def test_el_color_de_un_diseno_se_elige_en_la_vista_previa(sesion: TestClient) -> None:
+    """La fila de la lista NO tiene muestras de color, y eso es el pedido.
+
+    Las tuvo un ciclo: una paleta de pieza y una de fondo por diseño, clonadas
+    de las de la pagina. Se fueron porque el color hay que verlo **sobre la
+    pieza** —veinticinco filas por dos paletas son cientos de pastillas para
+    elegir a ciegas— y porque la fila ya dice lo suyo, que es como quedaron
+    agrupados los archivos. El color se elige donde se ve: en la vista previa.
+
+    Lo que la fila gana a cambio es `Ver`, que trae ese diseño al visor. Sin eso
+    no habria forma de elegir a cual de las veinticinco le esta pegando la
+    paleta, y el control quedaria apuntando siempre al ultimo del lote.
+    """
+    js = _sin_comentarios(sesion.get("/static/js/app.js").text)
+
+    assert "clonarPaleta" not in js, "volvieron las copias de paleta por fila"
+    assert "cloneNode" not in js.split("function iniciarPost()")[1], (
+        "post vuelve a clonar algo para las filas"
+    )
+    assert "boton('Ver'" in js, "la fila no tiene como traer el diseño a la vista previa"
+    assert "mostrarDiseno" in js, "nadie trae un diseño al visor"
+
+
+def test_las_paletas_de_post_le_pegan_a_lo_que_se_esta_mirando(sesion: TestClient) -> None:
+    """Un control que a veces pega en uno y a veces en todos tiene que decirlo.
+
+    En post la misma paleta hace las dos cosas: con un diseño en el visor le
+    cambia el color a ese, y sin ninguno —antes del lote, cuando no hay foto que
+    mirar— a todos. Es lo unico que puede significar en cada caso, pero no se
+    adivina: por eso el rotulo se reescribe y nombra a quien le esta pegando.
+    """
+    html = sesion.get("/post").text
+    for ident in ("rotulo-pieza", "rotulo-fondo"):
+        assert f'id="{ident}"' in html, f"#{ident} es lo que dice a quien le pega la paleta"
+
+    js = _sin_comentarios(sesion.get("/static/js/app.js").text)
+    elegir = re.search(r"function elegirColor\(.*?\n  \}", js, re.DOTALL)
+    assert elegir is not None, "no existe `elegirColor`"
+    # ⚠ Sobre la LISTA que se escribe, no sobre un `mirando ?` suelto: el cuerpo
+    # tiene otro ternario con `mirando` —el que decide que fotos rehacer— y
+    # exigir solo el nombre dejaba pasar una version que le pegaba a los
+    # veinticinco. Es la misma trampa del `cloneNode` del ciclo anterior.
+    assert "[disenos[mirando - 1]] : disenos" in elegir.group(0), (
+        "la paleta le pega siempre a lo mismo: o al que se mira o a todos, pero no a los dos"
+    )
+    assert "rotularPaletas" in js, "el rotulo no dice a quien le pega la paleta"
+
+
+def test_la_foto_de_cada_diseno_se_rinde_con_sus_colores(sesion: TestClient) -> None:
+    """El orden importa: los colores van antes de CADA exportacion.
+
+    `preview3d.js` pinta la pieza cuando termina de cargarla, con el color que
+    tenga puesto en ese momento — pero lo que decide el color del JPG es lo que
+    el visor tiene puesto cuando se rinde. Y desde que cada pieza se fotografia
+    **dos veces** con colores distintos, pintar solo al cargar no alcanza: la
+    segunda foto saldria con los colores de la primera.
+
+    Se afirma sobre el orden en el CODIGO porque ningun test de este proyecto
+    ejecuta JS. Es lo mas cerca que la suite puede estar de "cada foto salio de
+    su color"; que se vea bien es CV y se mira con los ojos.
+    """
+    js = _sin_comentarios(sesion.get("/static/js/app.js").text)
+    rendir = re.search(r"async function rendirDiseno\(.*?\n  \}", js, re.DOTALL)
+    assert rendir is not None, "no existe `rendirDiseno`"
+    cuerpo = rendir.group(0)
+
+    assert cuerpo.index("previa.pintar") < cuerpo.index("previa.cargar"), (
+        "el modelo se carga antes de pintarlo: aparece un frame con el color del anterior"
+    )
+    bucle = cuerpo[cuerpo.index("for (const paso of pasos)") :]
+    assert bucle.index("previa.pintar") < bucle.index("previa.exportar"), (
+        "se exporta antes de pintar: la segunda foto sale con los colores de la primera"
+    )
+
+
+def test_cambiar_un_color_despues_del_lote_rehace_su_foto(sesion: TestClient) -> None:
+    """El desfasaje que este cambio podia introducir, y lo que lo cierra.
+
+    Despues del lote hay un JPG por diseño en el servidor. Cambiar el color de
+    uno y no rehacer su foto dejaria la pantalla diciendo un color y la descarga
+    con el anterior, sin un solo error a la vista: es exactamente el fallback
+    silencioso que este proyecto no se permite.
+
+    Y la URL de la descarga tiene que cambiar, porque el archivo del servidor se
+    llama igual: sin el `?v=` el navegador sirve la que ya tenia en cache.
+    """
+    js = _sin_comentarios(sesion.get("/static/js/app.js").text)
+    assert "encolarVistas" in js, "nadie rehace la foto de un diseño repintado"
+    assert "conFoto" in js, (
+        "hay que distinguir el diseño que ya tiene foto del que todavia no: "
+        "antes de procesar no hay nada que rehacer"
+    )
+    assert "?v=${versionFotos}" in js, "la descarga no invalida la foto cacheada"
+
+
+def test_el_set_tiene_su_propia_pieza_y_su_propio_fondo(sesion: TestClient) -> None:
+    """El set es un entregable aparte, con su combinacion de colores.
+
+    No es un recorte de las fotos sueltas: cada diseño se vuelve a rendir con
+    estos dos colores y esa segunda foto es la celda. Por eso son DOS paletas y
+    no una, y por eso la del fondo es `COLORES_FONDO` como la de la vista
+    imagen — aca tambien hay un render con piso y con sombra que `Sin fondo`
+    puede sacar. Cuando el set solo pegaba fotos ya hechas esa muestra no
+    habria querido decir nada, y por eso entonces no estaba.
+    """
+    html = sesion.get("/post").text
+    for ident, lista in (("paleta-set-pieza", COLORES), ("paleta-set-fondo", COLORES_FONDO)):
+        muestras = _paleta(html, ident)
+        assert len(muestras) == len(lista), f"#{ident} no dibuja las {len(lista)} muestras"
+        for etiqueta, color in zip(muestras, lista, strict=True):
+            assert _atributo(etiqueta, "data-color") == color.hex, ident
+
+    sin_piso = [e for e in _paleta(html, "paleta-set-fondo") if _atributo(e, "data-sin-piso")]
+    assert len(sin_piso) == 1, "el fondo del set tiene que ofrecer `Sin fondo`, como el de la foto"
+    assert not any(_atributo(e, "data-sin-piso") for e in _paleta(html, "paleta-set-pieza")), (
+        "ningun color de PIEZA apaga el piso"
+    )
+
+    # Son de post: cortante hace una sola foto, no hay set que armar.
+    cortante = sesion.get("/cortante").text
+    assert 'id="paleta-set-pieza"' not in cortante
+    assert 'id="paleta-set-fondo"' not in cortante
+
+
+def test_los_colores_del_set_se_pueden_elegir_antes_del_lote(sesion: TestClient) -> None:
+    """El panel del set arranca visible y lo que se esconde es su resultado.
+
+    No es una preferencia de layout: **es el costo**. Esos dos colores son los
+    que el navegador usa al rendir cada celda durante el lote, asi que si las
+    paletas aparecieran recien con el set hecho, elegirlas costaria rendir las
+    veinticinco piezas de nuevo. Antes del lote la eleccion es gratis.
+    """
+    html = sesion.get("/post").text
+    panel = re.search(r'<div class="([^"]*)" id="panel-set">', html)
+    assert panel is not None, "no existe el panel del set"
+    assert "oculto" not in panel.group(1), (
+        "el panel del set arranca escondido y sus colores se eligen cuando ya cuestan renders"
+    )
+    resultado = re.search(r'<div class="([^"]*)" id="resultado-set"', html)
+    assert resultado is not None, "no existe el bloque del resultado del set"
+    assert "oculto" in resultado.group(1), "la lamina se muestra antes de existir"
+
+    js = _sin_comentarios(sesion.get("/static/js/app.js").text)
+    assert "mostrar($('#panel-set')" not in js, "el JS esconde el panel entero, con sus paletas"
+    assert "mostrar($('#resultado-set'), true)" in js, "nadie muestra la lamina cuando esta lista"
+
+
+def test_el_set_se_rinde_aparte_y_no_toca_las_fotos_sueltas(sesion: TestClient) -> None:
+    """Las dos fotos de cada pieza, y que sus colores no se crucen.
+
+    La celda se sube con la otra clave (`jpg_set`), se rinde con `colorSet` y no
+    con los del diseño, y cambiar un color del set encola celdas — nunca fotos
+    sueltas. Si alguna de esas tres se cruzara, elegir el color del set le
+    cambiaria el color a lo que el usuario se baja por separado, que es
+    exactamente lo que se pidio que no pase.
+    """
+    js = _sin_comentarios(sesion.get("/static/js/app.js").text)
+
+    assert "CLAVE_CELDA = 'jpg_set'" in js, "no existe la clave de la foto del set"
+    assert "/imagen/${clave}" in js, "la subida no dice cual de las dos fotos es"
+
+    encolar = re.search(r"function encolarElSet\(.*?\n  \}", js, re.DOTALL)
+    assert encolar is not None, "no existe `encolarElSet`"
+    assert "pendientesSet" in encolar.group(0)
+    assert "pendientesVista" not in encolar.group(0), (
+        "cambiar el color del set rehace tambien las fotos sueltas"
+    )
+
+    rendir = re.search(r"async function rendirDiseno\(.*?\n  \}", js, re.DOTALL)
+    assert rendir is not None
+    assert "colores: colorSet, clave: CLAVE_CELDA" in rendir.group(0), (
+        "la celda no se rinde con los colores del set"
+    )
+    assert "append('fondo', colorSet.fondo)" in js, "el fondo del set no se manda al servidor"
+
+
+def test_las_paletas_no_aceptan_un_color_con_el_canvas_ocupado(sesion: TestClient) -> None:
+    """Hay UN canvas, asi que mientras rinde una foto no se le cambia el color.
+
+    `iniciarPaleta` le despacha el color al visor **en el acto**, antes de
+    avisarle a la pantalla, asi que un clic mientras corre la cola le llega a la
+    exportacion en vuelo: la foto se sube con un color que no es el que le toca,
+    y la cola no sabe que tiene que rehacerla. La ventana es angosta —el render
+    de 2048 px arranca en el mismo bloque sincronico que la pintada— pero la
+    escalera de calidades de `aJpg` tiene `await` en el medio.
+
+    Se apagan las muestras, no se ignoran los clics: un boton que acepta el clic
+    y no cumple es peor que uno apagado.
+    """
+    js = _sin_comentarios(sesion.get("/static/js/app.js").text)
+    controles = re.search(r"function actualizarControles\(.*?\n  \}", js, re.DOTALL)
+    assert controles is not None, "no existe `actualizarControles`"
+    cuerpo = controles.group(0)
+    assert "trabajando || rehaciendo" in cuerpo, "el `ocupado` no mira las dos cosas"
+    assert ".paleta__color" in cuerpo and "b.disabled = ocupado" in cuerpo, (
+        "las paletas siguen aceptando colores mientras se rinde una foto"
+    )
+    assert ":disabled" in sesion.get("/static/css/estilo.css").text
+
+
+def test_la_vista_previa_avisa_mientras_carga(sesion: TestClient) -> None:
+    """El velo de carga, en las DOS pantallas con visor.
+
+    Un `.glb` tarda, y mas en post, donde el lote carga uno por diseño. Sin
+    aviso el panel se queda quieto y no hay forma de distinguir "esta bajando"
+    de "se colgo".
+
+    Lo unico que la suite puede afirmar es que exista y que este atado a los dos
+    avisos que lo apagan. Que se vea girar es CV.
+    """
+    for pagina in CON_VISOR:
+        assert 'id="cargando"' in sesion.get(pagina).text, f"{pagina} no tiene velo de carga"
+
+    js = _sin_comentarios(sesion.get("/static/js/app.js").text)
+    velo = re.search(r"function cargando\(.*?\n  \}", js, re.DOTALL)
+    assert velo is not None, "no existe el interruptor del velo"
+    # ⚠ Se apaga solo. Sin WebGL no hay quien emita el aviso de carga, y un velo
+    # pegado tapa una pantalla que por lo demas anda.
+    assert "setTimeout" in velo.group(0), "el velo no se apaga solo si el aviso no llega"
+    assert "cargando(true)" in js and "cargando(false)" in js
+
+    css = sesion.get("/static/css/estilo.css").text
+    assert ".cargando" in css and "@keyframes girar" in css, "el velo no tiene rueda"
+
+
+def test_post_es_tan_ancho_como_cortante(sesion: TestClient) -> None:
+    """Las dos pantallas del banco de tres columnas necesitan el ancho grande.
+
+    Post se quedo afuera de esa regla un ciclo y el sintoma fue exacto: con los
+    900 px del default, las dos columnas fijas del banco (290 + 340 mas los
+    gaps) dejaban al visor unos 200 px en monitor, y en el telefono se veia
+    bien — abajo de 1200 px la grilla se apila y el visor se lleva el ancho
+    entero.
+
+    Es lo unico de este arreglo que se puede afirmar desde la suite: **ningun
+    gate de este proyecto mira el CSS**, y el ancho que termina midiendo el
+    visor depende del layout, que no hay como calcular sin navegador.
+    """
+    css = sesion.get("/static/css/estilo.css").text
+    regla = re.search(r"([^}]*)\{\s*--ancho-contenido:\s*1400px", css)
+    assert regla is not None, "se fue la regla del ancho grande"
+    for pagina in ("cortante", "post"):
+        assert f"data-pagina='{pagina}'" in regla.group(1), (
+            f"{pagina} no recibe el ancho del banco de tres columnas"
+        )
+
+    # Y las dos lo declaran en el `body`, que es a quien apunta el selector.
+    for pagina in CON_VISOR:
+        assert f'data-pagina="{pagina.lstrip("/")}"' in sesion.get(pagina).text
 
 
 def test_post_usa_los_mismos_eventos_que_cortante(sesion: TestClient) -> None:
