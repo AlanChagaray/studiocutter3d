@@ -368,6 +368,19 @@ entorno, ninguna obligatoria: `STUDIOCUTTER_SECRET`, `STUDIOCUTTER_COOKIE_SECURE
   (`geometry._puentear_colisiones`). Rellena una **copia** de la silueta, aguas arriba de los offsets,
   para que `o1`/`o2`/`o3` salgan todos de la misma. **El arte y el marcador no se tocan nunca**, y hay
   un test que lo fija.
+  ⚠ **Se puentea por regla, no por síntoma.** `base` es el cierre morfológico de la silueta con radio
+  `o2 + distancia/2` —o sea *todo* lo que el complemento tiene más angosto que `2·o2 + distancia`— y de
+  ahí se rellena lo que **entra en la banda del filo** (la zona que no queda contenida en `o1`); lo que
+  cae entero adentro de la luz se deja, porque el filo nunca lo pisa y rellenarlo solo inflaría el área
+  que el reporte declara como no cortada. Eso garantiza las dos cosas que el cortante necesita para
+  existir: **filo de `filo_ancho_mm` en todo su recorrido** y **una sola pieza**. Sembrar en cambio con
+  síntomas —bolsillos ciegos del filo + el material que agrega forzar la colisión, que es como estaba—
+  no cubre el caso más común, que es el de dos paredes de `o2` que **ya se tocan** sin encerrar nada: un
+  brazo que roza el cuerpo. Ahí el filo bajaba a la garganta con un alma de menos de 1 mm y, si `o1`
+  llegaba a cerrar la boca, dejaba además la cámara de adentro como un **cuerpo suelto** — un pedazo de
+  filo de 10 mm flotando, sin nada que lo sujete. Lo verifican `cuerpos_sueltos()` (guarda dura en
+  `construir_cortador_2d`, que levanta `CuerpoSueltoEnCortador`) y, en los tests,
+  `medir_ancho_trazo(c.filo)` contra los percentiles del `circulo`, que es el filo sano de referencia.
 - **Nada de fallbacks silenciosos.** Falla duro lo que produciría un archivo inválido (parámetro fuera
   de rango, SVG ilegible, escala que no converge, booleana que no cierra, malla no manifold) y no se
   escribe nada. **Advierte** en el reporte lo que produce un archivo válido pero difícil de imprimir.
@@ -453,6 +466,14 @@ probablemente vuelvan a morder:
     máscara vacía con la transformada cruda pintaba un cuarto de disco "macizo" en la esquina → un
     arquito de tinta inexistente → la caja de la tinta corrida → la escala equivocada. Costó seis
     tests. Por eso `_distancia_a` es el **único** que la llama, y devuelve infinito sin ningún True.
+11. **Un cortador partido en islas cumple su propio número de Euler.** `euler_esperado_de` se calcula
+    sobre la huella que se extruyó de verdad —y tiene que ser así, por las ventanas del pie—, así que
+    un pie de 3 piezas con 1 hueco espera 4 y la malla mide 4: watertight ✓, euler ✓, **VERIFICADO**,
+    con dos pedazos de filo de 10 mm flotando adentro. La verificación se validaba a sí misma. Es el
+    único punto ciego encontrado hasta ahora en esa batería y no se tapa con otro número topológico
+    —ninguno lo distingue—: lo tapa `cuerpos_sueltos()`, que pregunta otra cosa (¿esta pieza rodea
+    galletita?) y falla duro antes de extruir. La lección general: un invariante derivado de la
+    geometría que se quiere probar no prueba nada; el contraste tiene que venir de afuera.
 
 ## Red de regresión
 

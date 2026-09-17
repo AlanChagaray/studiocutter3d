@@ -184,9 +184,34 @@ def test_el_murcielago_cierra_en_anillo(tmp_path: Path) -> None:
     assert cortador.euler_number == 0
 
     r = resultado.reporte
-    assert r.colisiones_puenteadas == 2
+    assert r.colisiones_puenteadas == 3
     assert 150 < r.area_puenteada_mm2 < 250, r.area_puenteada_mm2
     assert any("puenteo" in aviso for aviso in r.advertencias), r.advertencias
+
+
+@pytest.mark.lento
+def test_el_cortador_del_sr_cara_papa_sale_de_una_pieza(tmp_path: Path) -> None:
+    """El cortador entero es UN cuerpo, contado sobre la malla releida del disco.
+
+    La contraparte 3D de `test_el_cortador_sale_en_una_sola_pieza`, y el unico
+    camino que prueba lo que le importa a quien imprime: `body_count` sale de la
+    malla exportada, no de los poligonos 2D que la generaron.
+
+    Este dibujo es el que destapo el agujero de la verificacion. Con las dos islas
+    el `.3mf` salia con **3 cuerpos** y aun asi VERIFICADO: watertight, y el euler
+    coincidia con el esperado porque el esperado se calcula sobre el mismo pie
+    defectuoso (3 piezas menos 1 hueco, por 2, da 4). El numero que no coincidia era
+    `body_count`, y no lo miraba nadie.
+    """
+    resultado = generar(FIXTURES / "sr-cara-papa.svg", Modo.CORTANTE, tmp_path / "papa.3mf")
+    cortador = releer_3mf(resultado.ruta_3mf)[NOMBRE_CORTADOR]
+    assert cortador.body_count == 1
+    assert cortador.is_watertight
+    assert cortador.euler_number == 0
+
+    r = resultado.reporte
+    assert r.colisiones_puenteadas == 8
+    assert r.area_puenteada_pct == pytest.approx(3.0, abs=0.5), r.area_puenteada_pct
 
 
 # ── ventanas del pie ───────────────────────────────────────────────────────

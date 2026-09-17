@@ -4,11 +4,28 @@
 > del proyecto entre sesiones: mientras esté vigente, `inspect` NO re-analiza el stack desde
 > cero. Se regenera con aprobación cuando cambian las señales de frescura de abajo.
 
-**Última actualización:** 2026-09-14
+**Última actualización:** 2026-09-17
 **Versión de plantilla:** 3
 
-> Actualizado al cerrar el **ciclo 5** (descargar todo en ZIP · la foto del cortante como archivo del
-> trabajo · rediseño del render de la foto). La capa web sumó **2 endpoints** y el contrato de archivos
+> Actualizado al cerrar el ciclo del **puenteo por regla** (fix del cortador): `_puentear_colisiones`
+> dejó de sembrar por síntomas y pasó a **una sola regla** — cierre morfológico de radio
+> `o2 + distancia/2`, y se puentea lo que **entra en la banda del filo**. Eso cierra los dos defectos
+> que el detector viejo no veía: **cuerpos sueltos** del cortador y **filo más fino o más grueso** que
+> `filo_ancho_mm` adentro de la colisión. Suma `cuerpos_sueltos()` como guarda dura
+> (`CuerpoSueltoEnCortador`), el fixture `tests/fixtures/sr-cara-papa.svg` y 4 tests. **550 tests**
+> (eran 303) y los **8 gates** en verde. El **marcador no se tocó** — restricción dura del ciclo.
+>
+> ⚠ **Este archivo está atrasado tres ciclos en todo lo que NO es el cortador.** El cuerpo todavía
+> describe el proyecto al cierre del ciclo 5: no menciona `cutter3d/lamina.py`, `cutter3d/malla.py`,
+> `cutter3d/paquete3mf.py`, la funcionalidad **F4 post** (foto del cortante desde el archivo, en lote
+> y con set), la **conversión 3MF ↔ STL** del conversor, ni los **imports perezosos** del ciclo 6
+> (`cutter3d/__init__.py` importa el motor adentro de `generar()`; subirlos al tope revierte ese
+> ciclo). El `CLAUDE.md` del repo sí tiene todo eso y hoy es la referencia más fresca. Para ponerlo
+> al día hace falta una corrida **completa** de `inspect`, no un delta: se declara en lugar de
+> disimularlo.
+>
+> Del **ciclo 5** vienen el ZIP de descarga completa, la foto del cortante como archivo del
+> trabajo y el rediseño del render de la foto. La capa web sumó **2 endpoints** y el contrato de archivos
 > una clave (`jpg_vista`); la vista imagen comparte con el visor las funciones, la exposición y la
 > sombra, pero lleva **su propio reparto de paneles, neutro y sin cenital fuerte**. **303 tests**
 > (eran 228) y los **8 gates** en verde.
@@ -133,12 +150,17 @@
    Para probar algo que lance trabajos, hay que escribir el script a un archivo.
 7. **Un radio de cierre grande NO es más caro: es más barato.** Se midió sobre el murciélago (arte
    real, 21 contornos) al evaluar si `distancia_colision_mm` podía ser un vector de agotamiento de
-   recursos: con radio 0,5 mm el puenteo tarda 0,046 s y pica 14,1 KB; con radio 500 mm tarda
-   **0,016 s** y pica **4,9 KB**, y el filo baja de 490 a 150 vértices. El motivo es que el cierre
+   recursos: con radio 0,5 mm el puenteo tarda **0,021 s** y pica **3,6 KB**; con radio 500 mm tarda
+   **0,010 s** y pica **3,3 KB**, y el filo baja de 494 a 150 vértices. El motivo es que el cierre
    funde la silueta en un blob con menos vértices, así que GEOS tiene *menos* trabajo, no más. La
    intuición dice lo contrario —"radio grande = offset auto-intersecante = noding caro"— y por eso
    conviene que quede escrito: **si algún día se sube `LIMITE_MAX_MM`, hay que volver a medirlo**, no
    es una propiedad garantizada para cualquier arte.
+   ⚠ **Los números son los del puenteo por regla** (ciclo del fix del cortador). El detector viejo,
+   que sembraba con bolsillos ciegos + el material de forzar la colisión, medía 0,046 s / 14,1 KB con
+   radio 0,5 mm y 0,016 s / 4,9 KB con radio 500: la regla nueva es **más del doble de rápida y ~4x
+   más barata en memoria** porque ya no calcula el filo ni une semillas. Lo que no cambió es la
+   propiedad — el radio grande sigue siendo el caso barato.
 8-bis. **Con tres decodificadores, el ORDEN en que se prueban decide si el resultado es correcto.**
    Ante un contenedor TIFF o ISO-BMFF va **LibRaw primero**, nunca Pillow. El motivo no es de
    performance: Pillow **abre** un `.NEF` sin fallar, pero devuelve el **preview JPEG embebido** en
@@ -299,7 +321,10 @@ el grupo de dimensiones tiene **10** flags: el décimo es `--distancia-colision`
 ## Red de regresión
 - **Estado:** `caracterización` (motor) + `unit`/integración (web, con `TestClient`)
 - **Ubicación:** `tests/test_fidelidad.py` (motor) y `tests/test_web_*.py` (web), con `tests/conftest.py`
-- **Cómo se corre:** `.venv/Scripts/python -m pytest` → 302 passed (~76 s)
+- **Cómo se corre:** `.venv/Scripts/python -m pytest` → 550 passed, 2 skipped (~150 s).
+  ⚠ **Nunca agregarle `-q`**: `pyproject.toml` ya trae `addopts = "-q"`, así que un `-q` explícito lo
+  vuelve `-qq` y pytest **suprime la línea `N passed`** — la corrida termina en los warnings y parece
+  que no dijo nada.
 - **Áreas cubiertas:**
   - *Motor:* el pipeline de geometría completo (`svg_io → geometry → solids → export`), verificado
     **releyendo el `.3mf` exportado**, no la malla en memoria. Los asserts numéricos SON el golden
@@ -308,6 +333,20 @@ el grupo de dimensiones tiene **10** flags: el décimo es `--distancia-colision`
     `dos_lobulos.svg` (sintético, 12 segmentos rectos — cámara de 14,4 mm detrás de un cuello de
     2,52 mm, la topología mínima que produce el bolsillo ciego) y `murcielago.svg` (arte vectorizado
     real, `@pytest.mark.lento`, criterio `euler_number == 0` releído del `.3mf`).
+  - *Cortador de una pieza y filo de ancho constante:* fixture **`sr-cara-papa.svg`** — line art real
+    con las dos manos rozando el cuerpo, que es el caso que destapó los dos defectos del detector por
+    semillas. Cuatro tests, y el par que más vale es el que **documenta el defecto crudo** al lado del
+    que lo arregla: `test_una_mano_pegada_al_cuerpo_deja_cuerpos_sueltos_sin_puentear` arma los
+    offsets a mano sobre la silueta **sin** puentear (`o1` con 2 huecos → 2 cuerpos sueltos de 0,21 y
+    2,21 mm²) y `test_el_cortador_sale_en_una_sola_pieza` pasa la misma silueta por
+    `construir_cortador_2d`. El ancho real del filo lo fija
+    `test_el_filo_no_baja_a_una_garganta_mas_angosta_que_sus_dos_paredes` con `medir_ancho_trazo` —la
+    misma herramienta del trazo del marcador—, comparando **contra los percentiles del `circulo`**, que
+    no tiene una sola colisión y por eso es el filo sano de referencia (p1 0,949 / p95 1,044): sin ese
+    patrón habría que elegir un umbral a dedo, y el piso del rasterizado a 20 px/mm se confundiría con
+    un defecto. La contraparte 3D es `test_el_cortador_del_sr_cara_papa_sale_de_una_pieza`
+    (`@pytest.mark.lento`), que cuenta **`body_count == 1` sobre la malla releída del disco** — el
+    único número que distinguía el cortador roto del sano, y el que no miraba nadie.
   - *Web:* login y no-enumeración de usuarios, autorización de las 4 páginas y de la API, open
     redirect, contenido de la sesión y flags de la cookie, detección de formato por contenido, límite
     de tamaño por las dos vías, nombres de archivo hostiles, path traversal en el id, claves fuera del
@@ -397,17 +436,57 @@ studiocutter3d/
   marcador no se tocan nunca** — el puenteo vive solo en `construir_cortador_2d`, y hay un test que lo
   fija. Se reporta con `colisiones_puenteadas` / `area_puenteada_mm2` / `area_puenteada_pct`: se mide
   y se declara, no se compensa.
+- ⚠ **Se puentea por REGLA, no por síntoma — y eso compra dos garantías del producto.** `base` es el
+  cierre morfológico de la silueta con radio `o2 + distancia/2`, o sea **exactamente** todo lo que el
+  complemento tiene más angosto que `2*o2 + distancia` (el cierre por disco de radio `r` deja intacto
+  lo que un disco de radio `r` puede recorrer: rellena las gargantas más angostas que `2r` y ninguna
+  otra). De ese material se puentea el que **entra en la banda del filo** — la zona que **no** queda
+  contenida en `o1` —, y se deja el que no: una zona adentro de la luz el filo nunca la pisa, así que
+  rellenarla no cambiaría el cortador y solo inflaría el área que el reporte declara como no cortada.
+  Las garantías son **filo de `filo_ancho_mm` en todo su recorrido** (ni más fino ni más grueso) y
+  **el cortador en una sola pieza**. `tapar_huecos(o2_forzado)` es **load-bearing**: mete la cámara
+  entera al puente; sin ese paso la cámara sobrevive como hueco de `o1` y vuelve el cuerpo suelto.
+  **Lo que NO alcanza**, y era lo que había: sembrar con bolsillos ciegos ya cerrados del filo + el
+  material que agrega forzar la colisión. Ninguna de las dos semillas cubre el caso más común —dos
+  paredes de `o2` que **ya se tocan** sin encerrar nada, un brazo rozando el cuerpo—, porque forzar la
+  colisión no agrega material donde ya estaba fusionado y sin cámara cerrada no hay bolsillo que
+  sembrar. Medido sobre `sr-cara-papa.svg`: **2 cuerpos sueltos** (0,21 y 2,21 mm²) y el filo con
+  **p1 0,283 mm** y p95 1,105; con la regla, 0 sueltos y p1 0,943 / p95 1,030 — el mismo rango que el
+  `circulo`, que no tiene una sola colisión (0,949 / 1,044).
+- **Un cuerpo suelto del cortador es archivo inválido, no advertencia.** `cuerpos_sueltos(anillo, o1)`
+  devuelve las piezas del pie que **no rodean galletita** (sin ningún hueco que interseque `o1`), y
+  `construir_cortador_2d` levanta `CuerpoSueltoEnCortador` **antes de extruir nada**. Son exactamente
+  los huecos de `o1`: cuando la boca de una muesca queda bajo `2*luz` y adentro se ensancha, `o1` se
+  cierra sobre ella y `o2 - o1` vale la cámara entera — un pedazo de filo de 10 mm flotando, que no se
+  puede usar ni pegar. La excepción **no** está en `_TRADUCCIONES` de `app/errores.py`: con el puenteo
+  por regla es inalcanzable, así que si aparece es un bug de este motor y sale como `interno` 500 con
+  traza, igual que `ConversionInfiel`. Un dibujo legítimamente en varias piezas **no** dispara nada:
+  cada anillo rodea su galletita (verificado con dos círculos disjuntos).
 - **El conteo de colisiones puenteadas NO es monótono.** Cuenta componentes conexas, así que al subir
   `distancia_colision_mm` dos zonas vecinas pueden fundirse y el número baja mientras el área sube.
-  **El área sí es monótona** y es la que hay que mirar para juzgar cuánto se puenteó.
-- **La verificación es circular respecto de `distancia_colision_mm`, y conviene saberlo.** El Euler
-  esperado del cortador es `0` fijo y un anillo vale 0 sin importar cuántas muescas se rellenaron; las
-  secciones comparan contra `o3.area − o1.area` derivada de los mismos offsets ya puenteados; la luz
-  mínima solo puede alejarse. O sea: **`todo_ok=True` es compatible con un cortante tan puenteado que
-  no corte el dibujo**. Lo que protege es el default de 1 mm y que el usuario lea el porcentaje de la
-  advertencia. Es deliberado —un cortante muy puenteado es un sólido válido, y el contrato manda
-  advertir eso, no fallar— pero no hay ninguna medición que distinga "puenteó lo justo" de "puenteó
-  de más".
+  **El área sí es monótona** y es la que hay que mirar para juzgar cuánto se puenteó. Con la regla
+  nueva la monotonía del área es **estructural** y no un parche: `base` crece con la distancia, cada
+  zona crece con `base`, y una zona que se salía de `o1` se sigue saliendo. El detector viejo
+  necesitaba dos fuentes de semilla justamente para no perderla.
+- ⚠ **El punto ciego que tenía la verificación, y con qué se tapó.** El Euler esperado del cortador no
+  es `0` fijo desde el ciclo del velocirapto: se calcula con `euler_esperado_de(cortador.pie)` sobre
+  la huella que se extruyó de verdad — y **tiene que ser así**, porque una ventana del pie es un
+  sólido válido de género 2. El costo es que **un cortador partido en islas cumple su propio número**:
+  3 piezas y 1 hueco esperan 4, y la malla mide 4. El `.3mf` de `sr-cara-papa` salía watertight, con
+  euler ✓, **VERIFICADO**, y con dos pedazos de filo sueltos adentro. La verificación se validaba a sí
+  misma. No se tapa con otro número topológico —ninguno los distingue— sino con `cuerpos_sueltos()`,
+  que pregunta otra cosa: *¿esta pieza rodea galletita?*. La lección general, y vale para toda la
+  batería: **un invariante derivado de la geometría que se quiere probar no prueba nada; el contraste
+  tiene que venir de afuera.** La otra mitad —que el filo mida lo pedido— se fija en los tests con
+  `medir_ancho_trazo(c.filo, a)` contra los percentiles del `circulo`, y **no** en `verify`: una
+  segunda pasada de `medial_axis` a 20 px/mm cuesta ~63 MB/megapixel y el techo de RAM del hijo de la
+  web (380 MB) no está para pagarla.
+- **Sigue en pie lo demás de la circularidad**: las secciones comparan contra `o3.area − o1.area`
+  derivada de los mismos offsets ya puenteados y la luz mínima solo puede alejarse, así que
+  **`todo_ok=True` sigue siendo compatible con un cortante muy puenteado**. Lo que protege es el
+  default de 1 mm y que el usuario lea el porcentaje de la advertencia. Es deliberado: un cortante muy
+  puenteado es un sólido válido y el contrato manda advertir eso, no fallar. Lo que cambió es que ya
+  **no** es compatible con un cortante *roto* — eso ahora falla duro.
 - **El contorneado de macizos vive SOLO en F2** (`raster.py`), viene encendido por default y
   **siempre declara** cuántas zonas tocó y qué área. F3 nunca altera el arte.
 - **La salida de F2 va en PNG, nunca en JPG**: la compresión volvería a meter grises en el borde.

@@ -13,10 +13,12 @@ from cutter3d.geometry import (
     construir_cortador_2d,
     construir_marcador_2d,
     construir_silueta_sola,
+    cuerpos_sueltos,
     lado_mayor,
     partes_de_silueta,
     tapar_huecos,
 )
+from cutter3d.measure import medir_ancho_trazo
 from cutter3d.params import AjustesMotor, CutterParams
 from cutter3d.svg_io import Arte, cargar_svg, como_multipoligono
 
@@ -189,6 +191,90 @@ def test_el_area_puenteada_no_decrece_con_la_distancia_de_colision() -> None:
     a005, a1, a5 = areas
     assert a005 <= a1 <= a5, f"el area puenteada decrece: {areas}"
     assert a005 < a5, f"la distancia de colision no tuvo ningun efecto: {areas}"
+
+
+def test_una_mano_pegada_al_cuerpo_deja_cuerpos_sueltos_sin_puentear() -> None:
+    """El segundo defecto del puenteo por semillas, fijado a mano igual que el primero.
+
+    Los offsets se arman aca mismo sobre la silueta CRUDA, sin pasar por
+    `construir_cortador_2d`, que es el unico que puentea. `sr-cara-papa` tiene las
+    dos manos rozando el cuerpo; donde esa boca queda por debajo de `2*luz`, `o1`
+    se cierra sobre ella y la camara de adentro sobrevive como hueco de `o1`. Ahi
+    `o1` no existe y `o2` si, asi que `o2 - o1` vale la camara entera: un pedazo
+    de filo de 10 mm de alto flotando adentro del cortante, sin nada que lo
+    sujete. Son dos, de 0,21 y 2,21 mm2.
+
+    Lo peor no es que pasaran: es que **no bajaban el veredicto**. El solido
+    cierra, es watertight, y `euler_esperado_de` los daba por buenos porque se
+    calcula sobre el pie ya defectuoso — 3 piezas y 1 hueco dan 4, que es
+    exactamente lo que la malla medía. El archivo salia VERIFICADO.
+    """
+    p, a = CutterParams(), AjustesMotor()
+    silueta = construir_silueta_sola(arte("sr-cara-papa"), p, a)
+    o1 = _offset(silueta, p.offset_o1_mm, a)
+    o3 = _offset(silueta, p.offset_o3_mm, a)
+    pie = como_multipoligono(o3.difference(o1))
+    assert sum(len(g.interiors) for g in o1.geoms) == 2, "o1 se cierra sobre las dos bocas"
+    sueltos = cuerpos_sueltos(pie, o1)
+    assert len(sueltos) == 2
+    assert sum(s.area for s in sueltos) == pytest.approx(2.42, abs=0.2)
+
+
+def test_el_cortador_sale_en_una_sola_pieza() -> None:
+    """La misma silueta por `construir_cortador_2d`: las dos bocas se rellenan antes.
+
+    Es la contraparte del test de arriba y el invariante duro del cortador: cada
+    pieza tiene que ser un anillo que rodea galletita. Sin huecos en `o1` no hay
+    de donde salga una isla, y el guard de `construir_cortador_2d` lo exige.
+    """
+    p, a = CutterParams(), AjustesMotor()
+    silueta = construir_silueta_sola(arte("sr-cara-papa"), p, a)
+    c = construir_cortador_2d(silueta, p, a)
+    assert sum(len(g.interiors) for g in c.o1.geoms) == 0
+    assert cuerpos_sueltos(c.pie, c.o1) == []
+    assert len(c.pie.geoms) == 1
+    assert len(c.filo.geoms) == 1
+
+
+def test_el_filo_no_baja_a_una_garganta_mas_angosta_que_sus_dos_paredes() -> None:
+    """El filo mide `filo_ancho_mm` en todo su recorrido, o no entra.
+
+    Se mide con `medir_ancho_trazo`, la misma herramienta con la que se mide el
+    trazo del marcador: eje medial + transformada de distancia, con la poda que
+    saca las ramas espurias de las esquinas. El `circulo` da la referencia de lo
+    que mide un filo sano — no tiene una sola colision, asi que sus percentiles
+    son el piso del rasterizado a 20 px/mm y no un defecto. `sr-cara-papa` tiene
+    que caer en ese mismo rango, y cae.
+
+    Sin puentear, el p1 del mismo dibujo se va a 0,28 mm: ahi el filo baja a la
+    garganta entre la mano y el cuerpo con las dos paredes ya fusionadas, o sea
+    con un alma de menos de un tercio de lo pedido. Es lo que se ve como "el filo
+    sigue el contorno adentro de la colision" — y el p95 de 1,11 es la otra mitad
+    del mismo defecto, la garganta apenas mas ancha donde el alma pasa de largo.
+
+    **No se mide en `verify`, y es deliberado**: `medial_axis` cuesta ~63 MB por
+    megapixel, y el filo entero a 20 px/mm es una pasada del tamaño de la del
+    arte. En el reporte seria una segunda pasada, y el techo de RAM del proceso
+    hijo de la web (380 MB) no esta para pagarla. Se fija aca, que es donde este
+    proyecto fija sus numeros.
+    """
+    p, a = CutterParams(), AjustesMotor()
+    sano = medir_ancho_trazo(
+        construir_cortador_2d(construir_silueta_sola(arte("circulo"), p, a), p, a).filo, a
+    )
+    assert sano.p1 >= 0.94 and sano.p95 <= 1.05, sano
+
+    silueta = construir_silueta_sola(arte("sr-cara-papa"), p, a)
+    o1 = _offset(silueta, p.offset_o1_mm, a)
+    o2 = _offset(silueta, p.offset_o2_mm, a)
+    crudo = medir_ancho_trazo(como_multipoligono(o2.difference(o1)), a)
+    assert crudo.p1 < 0.5, crudo
+    assert crudo.p95 > 1.1, crudo
+
+    puenteado = medir_ancho_trazo(construir_cortador_2d(silueta, p, a).filo, a)
+    assert puenteado.mediana == pytest.approx(p.filo_ancho_mm, abs=0.02)
+    assert puenteado.p1 >= sano.p1 - 0.01, puenteado
+    assert puenteado.p95 <= sano.p95 + 0.01, puenteado
 
 
 @pytest.mark.parametrize("fixture", ["circulo", "estrella", "lineart_ojos_llenos"])

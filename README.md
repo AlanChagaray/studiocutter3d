@@ -82,6 +82,12 @@ dibujo, con los defaults entra toda boca de `2 × o2 + distancia = 4,4 mm` o men
 dice cuántas colisiones se puentearon y cuánta área implica, en mm² y en porcentaje. Se
 reporta, no se compensa; el detalle está en el contrato.
 
+Eso compra dos garantías, y las dos son del producto y no del archivo: **el filo mide el ancho
+configurado en todo su recorrido** —nunca un alma fusionada más fina ni más gruesa— y **el
+cortador sale de una sola pieza**, sin fragmentos sueltos flotando adentro. Donde las dos cosas
+compiten con reproducir la muesca, gana el cortante: esa parte de la galletita queda sin cortar
+y el reporte lo dice con el número.
+
 ### Las otras tres etapas
 
 ```bash

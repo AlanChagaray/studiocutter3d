@@ -87,6 +87,33 @@ class MallaNoManifold(Cutter3DError):
         )
 
 
+class CuerpoSueltoEnCortador(Cutter3DError):
+    """El cortador quedo con una pieza que no rodea nada de galletita.
+
+    Una pieza del cortador es un anillo: rodea el pedazo de galletita que corta y
+    por ahi se sostiene. Una que no rodea nada sale de la impresora como un
+    fragmento de filo flotando adentro del cortante — no se puede usar y no se
+    puede pegar. Entra en la categoria de **archivo invalido**, no en la de
+    "dificil de imprimir": no hay nada que el usuario pueda hacer al imprimirlo.
+
+    Con el puenteo de `geometry._puentear_colisiones` esto es inalcanzable — los
+    cuerpos sueltos son exactamente los huecos de `o1`, y el puenteo los rellena
+    en la silueta antes de los offsets. Queda como guarda, por lo mismo que
+    `exigir_manifold` sigue chequeando el watertight de una malla que la booleana
+    ya deberia haber cerrado: si aparece, es un bug de este motor y no del dibujo.
+    Por eso **no** esta en `_TRADUCCIONES` de `app/errores.py` y sale como
+    `interno` 500 con traza, igual que `ConversionInfiel`.
+    """
+
+    def __init__(self, cuerpos: int, area_mm2: float) -> None:
+        self.cuerpos = cuerpos
+        self.area_mm2 = area_mm2
+        super().__init__(
+            f"el cortador quedo con {cuerpos} cuerpo(s) suelto(s) "
+            f"({area_mm2:.2f} mm2) que no rodean galletita"
+        )
+
+
 class ImagenInvalida(Cutter3DError):
     """La imagen de entrada no existe, esta vacia o su formato no esta soportado."""
 

@@ -81,10 +81,11 @@ _TRADUCCIONES: dict[type[Cutter3DError], Traduccion] = {
     MallaNoManifold: Traduccion("malla_invalida", 422),
     MallaIlegible: Traduccion("malla_ilegible", 422),
 }
-"""⚠ `ConversionInfiel` NO esta en esta tabla, y es a proposito: cae en el
-default `interno` 500 con `log.exception`. Las demas hablan de un archivo que el
-usuario puede cambiar; esa habla de un `.glb` que este motor derivo mal de una
-malla que ya habia leido bien, o sea de un bug nuestro."""
+"""⚠ `ConversionInfiel` y `CuerpoSueltoEnCortador` NO estan en esta tabla, y es a
+proposito: caen en el default `interno` 500 con `log.exception`. Las demas hablan
+de un archivo que el usuario puede cambiar; esas dos hablan de un bug nuestro —un
+`.glb` derivado mal de una malla que ya se habia leido bien, y un cortador con un
+pedazo suelto que el puenteo tendria que haber eliminado—."""
 
 
 def _mensaje_no_manifold(exc: MallaNoManifold) -> str:

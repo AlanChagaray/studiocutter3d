@@ -18,13 +18,31 @@ Cuatro cosas que el contrato marca explicitamente y que aca se respetan al pie:
    la silueta y los trazos por separado mueve cada uno hasta su tolerancia y se
    come la luz de 0,7 mm.
 4. **El cortador puentea las colisiones entre extremos.** Una muesca con la boca
-   mas angosta que 2*o2 el cortante nunca la pudo reproducir: hoy la resuelve como
-   un bolsillo ciego donde la masa se atasca. `distancia_colision_mm` ensancha ese
-   umbral a `2*o2 + distancia` (4,4 mm con los defaults), para que dos extremos que
-   quedan cerca sin llegar a tocarse tampoco dejen un filo demasiado fino. El
-   puenteo cambia COMO se resuelve, no cuanto se reproduce, y toca SOLO la silueta
-   que consume el cortador: el arte y el marcador quedan intactos, asi que la regla
-   de fidelidad sigue en pie.
+   mas angosta que 2*o2 el cortante nunca la pudo reproducir: sin puentear queda
+   como un bolsillo ciego donde la masa se atasca, o peor. `distancia_colision_mm`
+   ensancha ese umbral a `2*o2 + distancia` (4,4 mm con los defaults), para que dos
+   extremos que quedan cerca sin llegar a tocarse tampoco dejen un filo demasiado
+   fino. El puenteo cambia COMO se resuelve, no cuanto se reproduce, y toca SOLO la
+   silueta que consume el cortador: el arte y el marcador quedan intactos, asi que
+   la regla de fidelidad sigue en pie.
+
+**La garantia que da el puenteo, y por que es una sola regla.** El filo es
+`o2 - o1`, o sea la banda que queda entre dos dilataciones que se llevan
+`filo_ancho_mm`. Esa banda mide exactamente lo pedido mientras las dos paredes
+tengan lugar; en cuanto el complemento de la silueta se angosta, se degrada, y
+degrada de tres maneras que son la misma:
+
+| Boca de la muesca (`w`) | Que queda del filo ahi |
+|---|---|
+| `w > 2*o2 + distancia` | dos paredes enteras de `filo_ancho_mm`: sano |
+| `2*luz < w <= 2*o2` | un alma fusionada de `w - 2*luz`: **mas fina o mas gruesa** |
+| `w <= 2*luz` | `o1` cierra la boca; la camara de adentro queda **suelta** |
+
+Por eso se puentea **toda zona del cierre morfologico que entra en la banda del
+filo**, y no solo las que disparaba tal o cual sintoma. La contrapartida esta
+declarada: esa muesca deja de cortarse y queda como luz mas grande. Es el orden
+de prioridades que fija el contrato — antes un cortante funcional que una muesca
+reproducida con un filo que no se puede imprimir.
 
 En modo `cortante` (sin marcador) **no se mide ancho de trazo ni se dilata**: una
 silueta maciza no tiene trazos, y medirla solo produciria una advertencia sin
@@ -35,11 +53,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import shapely
 from shapely.affinity import affine_transform
 from shapely.geometry import MultiPolygon, Polygon
 from shapely.ops import unary_union
 
-from .errors import NoConvergeError
+from .errors import CuerpoSueltoEnCortador, NoConvergeError
 from .measure import MedidaTrazo, medir_ancho_trazo
 from .params import AjustesMotor, CutterParams
 from .svg_io import Arte, como_multipoligono, contar_contornos_y_huecos
@@ -266,9 +285,10 @@ def _huecos_ajenos_a_la_galletita(geom: MultiPolygon, o1: MultiPolygon) -> list[
     tangentes en un solo punto lo enganarian, pero eso no puede pasar con
     offsets separados por `filo_ancho_mm`.
 
-    Sirve a los dos anillos y el sentido cambia con cual se le pase: sobre el
-    FILO son bolsillos ciegos (hay que puentearlos), sobre el PIE son ventanas
-    del ala de apoyo (solo se advierten). Ver `Cortador2D.ventanas_del_pie`.
+    Se le pasa el PIE: son las ventanas del ala de apoyo, que solo se advierten
+    (ver `Cortador2D.ventanas_del_pie`). Sobre el filo ya no hace falta — con el
+    puenteo actual no quedan bolsillos ciegos que detectar, porque la garganta
+    que los produce se rellena antes de los offsets.
     """
     ajenos: list[Polygon] = []
     for parte in geom.geoms:
@@ -279,49 +299,86 @@ def _huecos_ajenos_a_la_galletita(geom: MultiPolygon, o1: MultiPolygon) -> list[
     return ajenos
 
 
-def _bolsillos_ciegos(filo: MultiPolygon, o1: MultiPolygon) -> list[Polygon]:
-    """Huecos del filo que NO son la galletita: los bolsillos ciegos.
+def cuerpos_sueltos(anillo: MultiPolygon, o1: MultiPolygon) -> list[Polygon]:
+    """Piezas de `anillo` que no sujetan galletita: los cuerpos sueltos.
 
-    Se llama como lo llama el contrato (`prompt_cortante.md`) y no "celdas
-    cerradas": en este modulo `_cerrar` ya significa otra cosa —el cierre
-    morfologico— y tener los dos sentidos a diez lineas de distancia se presta a
-    leer mal cual es cual.
+    Una pieza legitima del cortador es un ANILLO — tiene al menos un hueco que
+    interseca `o1`, y ese hueco es la galletita que esa pieza rodea y corta. Una
+    pieza sin ningun hueco asi no rodea nada: sale de la impresora como un pedazo
+    de filo flotando adentro del cortante, sin nada que lo sostenga.
+
+    **De donde salen.** Son exactamente los huecos de `o1`. Cuando una muesca
+    tiene la boca mas angosta que `2*luz` pero adentro se ensancha, `o1` se cierra
+    sobre la boca y esa camara queda como hueco de `o1`; ahi `o1` no existe, `o2`
+    y `o3` si, y `o2 - o1` vale toda la camara — una isla, desconectada del anillo
+    de afuera. `_puentear_colisiones` las elimina rellenando la muesca en la
+    silueta, que es la unica forma de sacarlas sin romper la coherencia de los
+    tres offsets.
+
+    Se mide sobre el PIE y no sobre el filo por lo mismo que el numero de Euler:
+    la huella del filo esta contenida en la del pie, asi que el solido se retrae
+    sobre el pie y es su conteo de piezas el que manda.
     """
-    return _huecos_ajenos_a_la_galletita(filo, o1)
+    return [
+        parte
+        for parte in anillo.geoms
+        if not any(Polygon(hueco).intersects(o1) for hueco in parte.interiors)
+    ]
 
 
 def _puentear_colisiones(silueta: MultiPolygon, p: CutterParams, a: AjustesMotor) -> _Puenteo:
-    """Puentea en la SILUETA las muescas que el filo no puede reproducir.
+    """Puentea en la SILUETA toda garganta que el filo no puede recorrer entera.
 
     Se hace aguas arriba de los offsets para que o1/o2/o3 salgan todos de la
     misma silueta puenteada: si se corrigiera despues, los tres offsets dejarian
     de ser coherentes entre si.
+
+    **La regla, en una linea:** `base` es el cierre morfologico de la silueta con
+    radio `o2 + distancia/2`, o sea *todo* lo que el complemento tiene mas
+    angosto que `2*o2 + distancia`; de ese material se puentea el que **entra en
+    la banda del filo**, y se deja el que no.
+
+    Las dos mitades importan:
+
+    - **Cerrar con ese radio no es una heuristica.** El cierre por disco de radio
+      `r` deja intacto exactamente lo que un disco de radio `r` puede recorrer,
+      asi que rellena todas las gargantas mas angostas que `2r` y **ninguna otra**.
+      Con `r = o2 + distancia/2` eso es, literalmente, el umbral del contrato
+      (4,4 mm con los defaults). Se calcula como `cerrar(o2, distancia/2)`
+      encogido `o2` —que da lo mismo, porque las erosiones se componen— para poder
+      tapar los huecos en el medio: una camara que quedo encerrada detras de una
+      boca angosta tiene que entrar al puente ENTERA, y es `tapar_huecos` el que
+      la mete. Sin ese paso la camara sobrevive como hueco de `o1` y vuelve el
+      cuerpo suelto que el puenteo existe para evitar.
+    - **El filtro es `o1` y no una semilla.** Una zona que queda contenida en `o1`
+      cae entera adentro de la luz: el filo nunca la pisa, asi que rellenarla no
+      cambiaria una linea del cortador y solo agrandaria el area que el reporte
+      declara como no cortada. Es lo que pasa en cada rincon concavo del dibujo,
+      que son cientos. Las que se salen de `o1` son las otras: ahi el filo entra,
+      y entra fusionado —mas fino o mas grueso que `filo_ancho_mm`— o rodeando una
+      camara que va a quedar suelta.
+
+    Antes esto se resolvia sembrando: bolsillos ya cerrados del filo mas el
+    material que agregaba forzar la colision. Las dos semillas juntas **no cubren
+    el caso mas comun**, que es el de dos paredes de `o2` que ya se tocan sin
+    encerrar nada —un brazo que roza el cuerpo, una mano contra una pierna—:
+    forzar la colision no agrega material donde ya estaba fusionado, y sin camara
+    cerrada no hay bolsillo que sembrar. El filo bajaba igual a la muesca, con un
+    alma de menos de 1 mm, y si `o1` alcanzaba a cerrar la boca dejaba ademas la
+    isla suelta. Medido sobre `sr-cara-papa`: 2 cuerpos sueltos y 9,2 mm2 de filo
+    mas fino que el ancho pedido, contra 0 y 0,2 mm2 con esta regla.
     """
     o1 = _offset(silueta, p.offset_o1_mm, a)
     o2 = _offset(silueta, p.offset_o2_mm, a)
-    filo = como_multipoligono(o2.difference(o1))
-
-    radio = p.distancia_colision_mm / 2.0
-    o2_forzado = _cerrar(o2, radio)
-    # DOS fuentes de semilla, y las dos hacen falta:
-    #  - las celdas ya cerradas NO dependen de la distancia de colision
-    #  - el material que agrega forzar la colision SI crece con ella
-    # Sin la primera el detector no es monotono: a ciertos valores de la
-    # distancia dejaria el bolsillo sin puentear.
-    semillas: list[Polygon] = _bolsillos_ciegos(filo, o1)
-    semillas.extend(como_multipoligono(o2_forzado.difference(o2)).geoms)
-    if not semillas:
-        return _Puenteo(silueta, 0, 0.0)
-
-    envolvente = tapar_huecos(o2_forzado)
+    envolvente = tapar_huecos(_cerrar(o2, p.distancia_colision_mm / 2.0))
     base = como_multipoligono(
         envolvente.buffer(-p.offset_o2_mm, quad_segs=QUAD_SEGS, join_style="round")
     )
-    sembrado = unary_union(semillas)
+    # `prepare` construye el indice espacial de `o1` una sola vez: sin el, cada
+    # `covers` lo rearma, y en un line art vectorizado las zonas son cientos.
+    shapely.prepare(o1)
     puentes = [
-        zona
-        for zona in como_multipoligono(base.difference(silueta)).geoms
-        if zona.intersects(sembrado)
+        zona for zona in como_multipoligono(base.difference(silueta)).geoms if not o1.covers(zona)
     ]
     if not puentes:
         return _Puenteo(silueta, 0, 0.0)
@@ -333,9 +390,10 @@ def _puentear_colisiones(silueta: MultiPolygon, p: CutterParams, a: AjustesMotor
 def construir_cortador_2d(silueta: MultiPolygon, p: CutterParams, a: AjustesMotor) -> Cortador2D:
     """Tres offsets `round` sobre la silueta; filo y pie salen de restarlos.
 
-    Antes de los offsets se puentean las colisiones entre extremos: una muesca
-    con la boca mas angosta que 2*o2 queda como bolsillo ciego donde la masa se
-    atasca, asi que se tapa en la silueta y los tres offsets se derivan de esa.
+    Antes de los offsets se puentean las colisiones entre extremos: una garganta
+    mas angosta que `2*o2 + distancia_colision_mm` no le deja lugar a las dos
+    paredes del filo, asi que se rellena en la silueta y los tres offsets se
+    derivan de esa.
     """
     puenteo = _puentear_colisiones(silueta, p, a)
     base = puenteo.silueta
@@ -346,6 +404,13 @@ def construir_cortador_2d(silueta: MultiPolygon, p: CutterParams, a: AjustesMoto
     o2 = _offset(base, p.offset_o2_mm, a)
     o3 = _offset(base, p.offset_o3_mm, a)
     pie = como_multipoligono(o3.difference(o1))
+    # Guarda, no rama esperada: con la silueta puenteada no queda ningun hueco de
+    # `o1`, que es lo unico que produce cuerpos sueltos. Esta aca por lo mismo que
+    # `exigir_manifold` — un pedazo de filo que no sujeta nada no se puede
+    # imprimir, y el contrato manda fallar duro antes que entregarlo.
+    sueltos = cuerpos_sueltos(pie, o1)
+    if sueltos:
+        raise CuerpoSueltoEnCortador(len(sueltos), float(sum(s.area for s in sueltos)))
     # Se miden DESPUES del puenteo y sobre el pie ya construido: lo que sobrevive
     # aca es exactamente lo que se va a extruir, que es lo que define la
     # topologia del solido (ver `euler_esperado_de`).
@@ -399,6 +464,13 @@ def euler_esperado_de(huella: MultiPolygon) -> int:
     contenida en la del pie (`o2` dentro de `o3`), asi que el solido se retrae
     sobre el pie y es su topologia la que manda. Vale igual en el caso
     degenerado en que el filo no se extruye por no ser mas alto que el pie.
+
+    ⚠ **Calcularlo sobre la huella real tiene un punto ciego, y no se tapa
+    aca.** Un cortador partido en islas cumple su propio numero de Euler: tres
+    piezas y un hueco dan 4, y la malla mide 4. La comprobacion pasa y el
+    archivo sale VERIFICADO con pedazos sueltos adentro. Lo que lo evita es
+    `cuerpos_sueltos`, que se exige en `construir_cortador_2d` antes de extruir
+    nada — este numero dice si el solido CERRO, no si es utilizable.
     """
     componentes = len(huella.geoms)
     huecos = sum(len(parte.interiors) for parte in huella.geoms)
