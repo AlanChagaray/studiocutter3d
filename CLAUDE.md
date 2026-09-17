@@ -190,6 +190,24 @@ defensiva.
   pieza**, y la paleta le pega al diseño que se esté mirando (`Ver` lo trae al visor); sin ninguno
   a la vista, que es el estado de antes del lote, les pega a todos. Los rótulos lo dicen, porque un
   control que a veces pega en uno y a veces en todos y no lo aclara es una trampa.
+- ⚠ **Mientras la cola maneja el visor, el visor se tapa.** Hay un solo canvas, así que rehacer las
+  celdas obliga a pintar cada pieza con los colores del **set** —que no son los de ningún diseño— y
+  a devolver después el visor a lo que se estaba mirando. En pantalla ese ida y vuelta se lee como
+  si el color del diseño se hubiera cambiado solo y vuelto atrás. El velo (`tapar`) es **sostenido**:
+  no lo apaga ningún aviso de carga, porque el lote carga un modelo por diseño y un velo normal
+  parpadearía una vez por diseño —y entre parpadeo y parpadeo se vería justo lo que se tapó—. Lo
+  suelta el `finally` de quien lo prendió, que es mejor garantía que un reloj. **Lo que NO se tapa**
+  es rehacer la foto del diseño que se está mirando: ahí el usuario acaba de elegir ese color y
+  taparlo sería esconderle lo que pidió (`laColaTapa`).
+- **El lote va en dos fases: primero todas las fotos sueltas, después todas las celdas y la lámina.**
+  Son dos entregables distintos —lo que se baja por diseño y la materia prima del set— y separarlos
+  deja las descargas listas sin esperar a la lámina; además, una celda que falla ya no marca al
+  diseño como fallido, porque su foto suelta está subida y bajable. ⚠ **Cuesta cargar cada modelo
+  dos veces**, una por fase, en vez de sacar las dos fotos de una sola carga: el `.glb` se sirve con
+  `FileResponse`, así que la segunda vez es una revalidación condicional y el archivo sale de la
+  caché — lo que se paga de verdad es parsearlo y volver a subir la geometría a la GPU. Al destapar,
+  el visor queda en el **primer** diseño: la lista se revisa desde arriba, y el último es donde
+  quedó la máquina, que no es una razón.
 - ⚠ **En F4 la unidad es el DISEÑO, no el archivo.** Un diseño puede venir en un `.3mf` combinado o
   en dos archivos sueltos (`<base>_cortador.stl` + `<base>_marcador.stl`), y las dos formas
   describen la misma pieza: fotografiar el cortador sin su marcador es fotografiar otra cosa.
@@ -245,6 +263,11 @@ defensiva.
   nada de nada —afuera no hay otra foto— y lo único que hace es achicar las piezas para dejar un
   margen que el visor de cualquier red social vuelve a recortar. En la dimensión que llena, las
   celdas llegan al filo del lienzo.
+- **El hueco entre filas es más chico que el de entre columnas** (`SEPARACION_FILAS_REL`, un 10%
+  menos: 37 px contra 41). No es geometría sino cómo se lee: con celdas cuadradas y piezas más
+  anchas que altas, entre dos filas hay el hueco **más** el fondo de arriba y de abajo de cada foto,
+  así que a igual cantidad de píxeles el aire vertical se ve mayor. La lámina sigue siendo cuadrada
+  y el bloque centrado — lo que el hueco más chico libera se reparte arriba y abajo.
 - **`app/tareas.py` es la otra orilla de la frontera entre procesos.** Funciones a nivel de módulo
   (en Windows el arranque es `spawn`), solo primitivos como argumentos, no devuelve nada, y **ninguna
   excepción escapa**. El resultado viaja por `estado.json` escrito de forma atómica: **su ausencia
@@ -295,6 +318,15 @@ defensiva.
   `preview3d.js` los resuelve una sola vez a nivel de módulo y no tiene namespace por pantalla.
   Renombrar cualquiera deja la vista previa muerta y sin un solo error a la vista. Ahí "cortante"
   nombra a la pieza que se está mirando, no a la pantalla que la pidió.
+- ⚠ **El mapa de sombra es VSM y NO se re-rinde solo (`shadow.autoUpdate = false`). Las dos cosas
+  van juntas.** VSM es lo que permite que el ancho de la penumbra sea un parámetro
+  (`PENUMBRA_REL`) en vez de una consecuencia del tamaño del texel — con filtrado PCF,
+  `shadow.radius` lo ignora el sombreador de three—, pero cuesta dos pasadas de desenfoque sobre
+  2048×2048. En el visor, que anima, eso corriendo por frame es impagable; y no hace falta, porque
+  la luz está fija y la pieza tampoco se mueve: lo que gira es la cámara. El re-render lo pide
+  `ajustarPenumbra`, que es el único lugar que lo hace y al que las dos vistas llaman al encuadrar.
+  **Volver a poner `autoUpdate = true` "porque la sombra se ve vieja" es tratar el síntoma
+  equivocado**: lo que falta en ese caso es un `needsUpdate` donde cambió la pieza.
 
 ### Datos
 

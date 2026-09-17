@@ -141,9 +141,22 @@
   la otra. El `aria-live` lo anuncia sin robar el foco; `aria-hidden` en la
   rueda, que es decoracion pura y no tiene nada que leer.
 #}
-{% macro cargando(texto='Cargando la vista previa…') -%}
-<div class="cargando oculto" id="cargando" role="status" aria-live="polite">
+{#
+  La rueda de "esto esta tardando". Nace escondida y la prende el JS.
+
+  El `id` es parametro porque hay dos esperas distintas en la misma pantalla: el
+  velo que TAPA el visor mientras la cola lo maneja, y el aviso que va EN EL
+  FLUJO del panel del set mientras se arma la lamina. Es el mismo aviso con dos
+  ubicaciones, no dos componentes.
+
+  El `<span>` del texto lleva id propio (`<id>-texto`) porque el velo del visor
+  dice a que esta esperando —cargar, sacar las fotos, rehacer el set— y eso lo
+  reescribe `app.js`. El texto de fabrica se lee de aca: no hay una copia en el
+  JS.
+#}
+{% macro cargando(texto='Cargando la vista previa…', id='cargando', clase='') -%}
+<div class="cargando{{ ' ' ~ clase if clase }} oculto" id="{{ id }}" role="status" aria-live="polite">
   <span class="cargando__rueda" aria-hidden="true"></span>
-  <span>{{ texto }}</span>
+  <span id="{{ id }}-texto">{{ texto }}</span>
 </div>
 {%- endmacro %}

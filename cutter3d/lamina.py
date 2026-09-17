@@ -71,6 +71,17 @@ SEPARACION_REL = 0.02
 Es una separacion y no un marco: lo que se pidio es que las piezas esten juntas
 en una imagen pero separadas entre si, no una grilla con bordes."""
 
+SEPARACION_FILAS_REL = SEPARACION_REL * 0.9
+"""Aire entre FILAS, un 10% menos que el de las columnas. 37 px sobre 2048.
+
+Eran una sola separacion y se partieron por como se lee la lamina, no por
+geometria: con celdas cuadradas y piezas mas anchas que altas, lo que separa dos
+filas es el hueco MAS el fondo de arriba y de abajo de cada foto, asi que a igual
+cantidad de pixeles el aire vertical se ve mayor que el horizontal. Bajarlo un
+10% lo compensa de a poco, sin que las filas se toquen.
+
+Es el unico numero que hay que mover si las filas siguen quedando lejos."""
+
 MAX_CELDAS = 25
 """El mismo techo que `app.archivos.MAX_DISENOS`. Existe aca ademas de alla
 porque este modulo tambien se puede llamar desde el CLI y desde un test, y un
@@ -102,7 +113,13 @@ class ReporteLamina:
 
     filas: int
     lado_celda_px: int
+
     separacion_px: int
+    """El hueco entre columnas. El de las filas es mas chico, ver
+    `SEPARACION_FILAS_REL`."""
+
+    separacion_filas_px: int
+
     tamano_px: tuple[int, int]
     """Alto y ancho de la lamina. **Siempre iguales**: ver `_medidas`."""
 
@@ -156,6 +173,7 @@ class _Medidas:
     filas: int
     lado: int
     separacion: int
+    separacion_filas: int
 
     lienzo: int
     """El lado de la lamina. **Es cuadrada siempre**: ver `_medidas`."""
@@ -193,18 +211,28 @@ def _medidas(celdas: int) -> _Medidas:
     columnas = max(distribucion)
     filas = len(distribucion)
     separacion = round(LADO_MAX * SEPARACION_REL)
-    # El lado sale de la dimension mas apretada: si se tomara solo el ancho, un
-    # reparto mas alto que ancho (una columna de tres) se saldria por abajo.
-    apretada = max(columnas, filas)
-    lado = (LADO_MAX - separacion * (apretada - 1)) // apretada
-    lienzo = apretada * lado + (apretada - 1) * separacion
-    alto_bloque = filas * lado + (filas - 1) * separacion
+    separacion_filas = round(LADO_MAX * SEPARACION_FILAS_REL)
+    # El lado sale de la dimension mas apretada, y cada eje se mide con SU
+    # separacion: si se tomara solo el ancho, un reparto mas alto que ancho (una
+    # columna de tres) se saldria por abajo.
+    lado = min(
+        (LADO_MAX - separacion * (columnas - 1)) // columnas,
+        (LADO_MAX - separacion_filas * (filas - 1)) // filas,
+    )
+    ancho_bloque = columnas * lado + (columnas - 1) * separacion
+    alto_bloque = filas * lado + (filas - 1) * separacion_filas
+    # El lienzo es cuadrado y lo fija el bloque mas grande de los dos. Hoy es
+    # siempre el ancho -en todo reparto `columnas >= filas`, y encima el hueco
+    # horizontal es el mayor- pero tomar el maximo es lo que sostiene el cuadrado
+    # si alguna de las dos cosas deja de valer.
+    lienzo = max(ancho_bloque, alto_bloque)
     return _Medidas(
         distribucion=distribucion,
         columnas=columnas,
         filas=filas,
         lado=lado,
         separacion=separacion,
+        separacion_filas=separacion_filas,
         lienzo=lienzo,
         y0=(lienzo - alto_bloque) // 2,
     )
@@ -240,14 +268,18 @@ def _origen(indice: int, m: _Medidas) -> tuple[int, int]:
 
     El bloque entero tambien va centrado en vertical (`m.y0`), que es lo que deja
     la lamina cuadrada sin que el set quede pegado arriba. Ver `_medidas`.
+
+    **Los dos pasos no son iguales**: el vertical lleva la separacion de filas,
+    que es mas chica. Ver `SEPARACION_FILAS_REL`.
     """
-    paso = m.lado + m.separacion
+    paso_x = m.lado + m.separacion
+    paso_y = m.lado + m.separacion_filas
     resto = indice
     for fila, cuantas in enumerate(m.distribucion):
         if resto < cuantas:
             ancho_fila = cuantas * m.lado + (cuantas - 1) * m.separacion
-            x = (m.lienzo - ancho_fila) // 2 + resto * paso
-            return x, m.y0 + fila * paso
+            x = (m.lienzo - ancho_fila) // 2 + resto * paso_x
+            return x, m.y0 + fila * paso_y
         resto -= cuantas
     raise ImagenInvalida("(lamina)", f"la celda {indice} no entra en el reparto")
 
@@ -291,6 +323,7 @@ def componer(fotos: Sequence[Path], destino: Path, fondo: tuple[int, int, int]) 
         filas=m.filas,
         lado_celda_px=m.lado,
         separacion_px=m.separacion,
+        separacion_filas_px=m.separacion_filas,
         tamano_px=(m.lienzo, m.lienzo),
         bytes_=escritos,
     )

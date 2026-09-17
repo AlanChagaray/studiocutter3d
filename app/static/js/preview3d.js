@@ -118,6 +118,53 @@ const SOMBRA_POR_MM = Math.hypot(DIR_PRINCIPAL[0], DIR_PRINCIPAL[2]) / DIR_PRINC
    0,14— y solo entra a jugar en las muy altas para su huella. */
 const TOPE_SOMBRA = 0.4;
 
+/* El tipo de mapa de sombra, **uno solo para las dos vistas**.
+ *
+ * Es una constante y no dos literales iguales por lo mismo que `EXPOSICION_VISOR`:
+ * el visor y la foto tienen que verse igual, y dos copias del mismo valor son
+ * dos copias que se pueden desincronizar sin que nadie se entere — no hay gate
+ * ni test que mire como se ve una sombra.
+ *
+ * ⚠ **VSM y no PCF, y es lo que difumina el borde.** El filtrado PCF promedia
+ * un puñado de texels alrededor del punto, asi que el ancho de la penumbra lo
+ * fija el tamaño del texel y no se puede elegir: con 2048 texels repartidos
+ * sobre la pieza da ~0,1 mm, que a 2048 px de foto son dos o tres pixeles — un
+ * borde duro. VSM guarda profundidad y profundidad al cuadrado y **desenfoca el
+ * mapa**, asi que la penumbra es un parametro (`PENUMBRA_REL`) en vez de una
+ * consecuencia de la resolucion.
+ *
+ * Lo que NO cambia es el tono: la mancha la pinta `ShadowMaterial` con su alfa
+ * fija (ver `agregarPiso`), y desenfocar el mapa mueve el borde, no la densidad.
+ */
+const TIPO_SOMBRA = THREE.VSMShadowMap;
+
+/* Cuanto se difumina el borde de la sombra, en fraccion del radio de la pieza.
+ *
+ * ⚠ **Va en proporcion y no en milimetros**, y no es un detalle: 0,7 mm de
+ * penumbra es un borde suave en un cortante de 90 mm y una mancha deshecha en
+ * uno de 8. Lo que se ve igual a cualquier escala es una penumbra proporcional
+ * a la pieza. `ajustarPenumbra` la traduce a texels, que es la unidad en la que
+ * three la pide, y esa traduccion es distinta en cada vista porque cada una
+ * reparte sus 2048 texels sobre un frustum distinto.
+ *
+ * Medido sobre una pieza de 90 mm: 0,68 mm de penumbra, unos 13 px de degradado
+ * en la foto de 2048 px, contra los 2 o 3 px del borde PCF de antes. La sombra
+ * de una pieza de 14 mm de alto mide 6,1 mm, asi que el degradado se come el
+ * 11% final — se lee difuminada al terminar y sigue habiendo sombra.
+ *
+ * **Es el unico numero que hay que mover** si queda muy dura o muy deshecha.
+ * Subirlo tambien ablanda la sombra propia del relieve (las paredes del filo
+ * sombreandose entre si), que es lo que le da espesor al dibujo: por eso este
+ * valor es conservador.
+ */
+const PENUMBRA_REL = 0.015;
+
+/* Cuantas muestras usa el desenfoque del mapa. Con menos, un degradado largo
+   sobre un fondo liso sale escalonado; con mas, cuesta de mas en una pasada que
+   —gracias a `shadow.autoUpdate = false`— corre una vez por pieza y no una vez
+   por frame. */
+const MUESTRAS_PENUMBRA = 12;
+
 /* Aire alrededor de lo que hay que meter en el cuadro — pieza MAS sombra.
  *
  * Es chico (6%) a proposito: el lugar de la sombra ya esta contado aparte, asi
@@ -464,7 +511,7 @@ function iniciar(host) {
   renderer.toneMappingExposure = EXPOSICION_VISOR;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = TIPO_SOMBRA;
   host.appendChild(renderer.domElement);
 
   const escena = new THREE.Scene();
@@ -485,7 +532,7 @@ function iniciar(host) {
     controles.autoRotate = false;
   });
 
-  agregarLuces(escena);
+  const luces = agregarLuces(escena);
   const piso = agregarPiso(escena);
 
   let modelo = null;
@@ -541,6 +588,9 @@ function iniciar(host) {
     controles.maxDistance = mayor * 8;
     controles.update();
 
+    // La huella y no el mayor de los tres: la penumbra se mide contra el radio
+    // de lo que apoya en el piso, que es lo que proyecta la sombra.
+    ajustarPenumbra(luces.principal, Math.max(tamano.x, tamano.z) / 2 || 1);
     piso.escala(mayor);
   }
 
@@ -619,7 +669,7 @@ function iniciarImagen(host) {
   renderer.toneMappingExposure = EXPOSICION_VISOR;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = TIPO_SOMBRA;
   host.appendChild(renderer.domElement);
 
   const escena = new THREE.Scene();
@@ -836,6 +886,9 @@ function iniciarImagen(host) {
     c.near = radio;
     c.far = radio * 20;
     c.updateProjectionMatrix();
+    // Despues de mover el frustum, nunca antes: el texel mide lo que mide por
+    // el frustum, asi que el radio en texels se calcula sobre el de ahora.
+    ajustarPenumbra(luz, radio);
   }
 
   function medir() {
@@ -1126,12 +1179,25 @@ function agregarLuces(escena) {
   principal.shadow.mapSize.set(2048, 2048);
   principal.shadow.bias = -0.0006;
   principal.shadow.normalBias = 0.4;
+  principal.shadow.blurSamples = MUESTRAS_PENUMBRA;
+  // El ancho del desenfoque lo pone `ajustarPenumbra` cuando se sabe de que
+  // tamaño es la pieza: en texels, y cada vista reparte los suyos distinto.
   const c = principal.shadow.camera;
   c.left = -160;
   c.right = 160;
   c.top = 160;
   c.bottom = -160;
   c.far = 600;
+  // ⚠ **El mapa de sombra no se recalcula solo, y no es una optimizacion
+  // opcional.** La luz esta fija y la pieza tampoco se mueve —lo que gira en el
+  // visor es la camara—, asi que rendirlo en cada frame es trabajo repetido
+  // sobre una imagen identica. Con PCF eso se toleraba; con VSM cada frame
+  // sumaria ademas dos pasadas de desenfoque sobre 2048x2048, que es lo que lo
+  // volveria impagable en una vista que anima. Se re-rinde cuando cambia algo
+  // que lo afecta, y lo unico que lo afecta es la pieza: por eso el unico lugar
+  // que lo pide es `ajustarPenumbra`, al que las dos vistas llaman al encuadrar.
+  principal.shadow.autoUpdate = false;
+  principal.shadow.needsUpdate = true;
   escena.add(principal);
 
   // Relleno casi neutro. Enfriaba la cara en sombra para que no se viera
@@ -1164,6 +1230,29 @@ function neutralizarAmbiente({ cielo, relleno }) {
   cielo.intensity = AMBIENTE_FOTO.hemisferico;
   relleno.color.set(0xffffff);
   relleno.intensity = AMBIENTE_FOTO.relleno;
+}
+
+/**
+ * Traduce `PENUMBRA_REL` a lo que three pide: un radio de desenfoque en texels.
+ *
+ * La conversion no es la misma en las dos vistas y por eso vive en una funcion
+ * en vez de en un numero: la foto le ajusta el frustum de sombra a la pieza
+ * (`encuadrarLuz`), asi que su texel mide en proporcion al cortante; el visor
+ * lo tiene fijo en ±160 mm, asi que el suyo mide siempre 0,156 mm. El mismo
+ * radio en texels daria dos penumbras distintas — que es exactamente como las
+ * dos vistas dejan de verse iguales.
+ *
+ * De paso pide el re-render del mapa: cambiar el desenfoque no sirve de nada
+ * hasta que el mapa se vuelva a desenfocar, y con `autoUpdate = false` eso no
+ * pasa solo. Que el pedido viva ACA y no en cada llamador es lo que evita que
+ * alguien ajuste la luz y se olvide — la sombra quedaria congelada en la de la
+ * pieza anterior, sin un solo error a la vista.
+ */
+function ajustarPenumbra(luz, radio) {
+  const c = luz.shadow.camera;
+  const mmPorTexel = (c.right - c.left) / luz.shadow.mapSize.x;
+  luz.shadow.radius = Math.max(1, (PENUMBRA_REL * radio) / mmPorTexel);
+  luz.shadow.needsUpdate = true;
 }
 
 /**

@@ -195,6 +195,14 @@
         Elegilos <strong>antes</strong> de preparar las fotos: cambiarlos despues
         vuelve a rendir todas las piezas, y con muchos diseños eso tarda.
       </div>
+      {# El set tarda DOS cosas: rendir una celda por diseño y que el servidor
+         pegue la lamina. Las dos van bajo este aviso, que se apaga recien cuando
+         la imagen esta en pantalla — no cuando el servidor contesta, que es
+         antes de que el navegador salga a buscarla.
+
+         Va en el flujo y no encima de nada: el velo del visor tapa algo que no
+         hay que ver, y aca no hay nada todavia. #}
+      {{ m.cargando('Armando el set…', id='cargando-set', clase='cargando--bloque') }}
       {# Se esconde el RESULTADO, no el panel: las paletas de arriba siguen a la
          vista. El apilado va inline como el del panel del reporte en cortante,
          que es lo mismo y esta escrito igual — y `.oculto` le gana igual porque

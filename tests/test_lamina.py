@@ -263,6 +263,79 @@ def test_el_bloque_queda_centrado_en_el_cuadro(tmp_path: Path) -> None:
     )
 
 
+def _paso_medido(rgb: Image.Image, *, vertical: bool, en: int) -> int:
+    """De donde arranca una celda a donde arranca la siguiente, en pixeles.
+
+    ⚠ **Se mide el paso y no el hueco**, y no es un rodeo: la lamina se guarda
+    en JPEG y el borde entre una celda y el fondo sale con un par de pixeles
+    intermedios que no son ni una cosa ni la otra, asi que un hueco medido por
+    color da 36 donde hay 41. Restando dos arranques el sesgo se cancela —los
+    dos bordes son el mismo borde— salvo en un caso: cuando la primera celda
+    arranca en el filo del lienzo no tiene hueco del cual salir y su arranque es
+    exacto, asi que el paso sale **un pixel corto**. De ahi la tolerancia de 1 px
+    de quien llama, que sigue siendo cuatro veces mas fina que la diferencia que
+    este test existe para ver.
+
+    Pide fotos a sangre (`pieza_completa=True`): lo que no es fondo es celda.
+    """
+    largo = rgb.height if vertical else rgb.width
+    pixeles = [rgb.getpixel((en, i) if vertical else (i, en)) for i in range(largo)]
+    # El arranque de la primera puede ser el pixel 0: a lo ancho el bloque llega
+    # al filo del lienzo, que es el punto de no tener borde exterior.
+    arranques = [
+        i
+        for i in range(largo)
+        if not _parecido(pixeles[i], FONDO) and (i == 0 or _parecido(pixeles[i - 1], FONDO))
+    ]
+    assert len(arranques) == 2, f"se esperaban dos celdas sobre la linea: {arranques}"
+    return arranques[1] - arranques[0]
+
+
+def test_las_filas_van_mas_juntas_que_las_columnas(tmp_path: Path) -> None:
+    """El hueco vertical es mas chico que el horizontal, y se mide en la imagen.
+
+    No es simetria por gusto: con celdas cuadradas y piezas mas anchas que
+    altas, entre dos filas hay el hueco MAS el fondo de arriba y de abajo de
+    cada foto, asi que a igual cantidad de pixeles el aire vertical se lee
+    mayor. Ver `SEPARACION_FILAS_REL`.
+
+    ⚠ **Se mide con fotos a sangre** (`pieza_completa=True`) y no con las de
+    siempre: el hueco entre celdas y el fondo de cada foto son del mismo color
+    —ese es el punto del diseño— asi que con fotos normales no hay forma de
+    saber donde termina una celda. A sangre, todo lo que no es fondo es celda y
+    el hueco se cuenta directo.
+
+    Es lo unico que fija la geometria VERTICAL: los demas tests muestrean el
+    centro de celdas de cientos de pixeles, donde un hueco de mas o de menos no
+    mueve nada.
+    """
+    fotos = [_foto(tmp_path / f"v{i}.jpg", 30, pieza_completa=True) for i in range(4)]
+    reporte = componer(fotos, tmp_path / "set.jpg", FONDO)
+    assert reporte.distribucion == (2, 2)
+    assert reporte.separacion_filas_px < reporte.separacion_px, (
+        "las filas no quedaron mas juntas que las columnas"
+    )
+
+    medio = reporte.lado_celda_px // 2
+    with Image.open(tmp_path / "set.jpg") as imagen:
+        rgb = imagen.convert("RGB")
+        entre_columnas = _paso_medido(rgb, vertical=False, en=medio)
+        entre_filas = _paso_medido(rgb, vertical=True, en=medio)
+    assert abs(entre_columnas - (reporte.lado_celda_px + reporte.separacion_px)) <= 1, (
+        f"el paso horizontal medido es {entre_columnas}"
+    )
+    assert abs(entre_filas - (reporte.lado_celda_px + reporte.separacion_filas_px)) <= 1, (
+        f"el paso vertical medido es {entre_filas}"
+    )
+
+    # Y el bloque sigue centrado: lo que el hueco mas chico libera se reparte
+    # arriba y abajo, no queda todo de un lado.
+    lado = reporte.tamano_px[0]
+    izquierda, arriba, derecha, abajo = _caja_del_contenido(tmp_path / "set.jpg")
+    assert abs(arriba - (lado - abajo)) <= 1, f"{arriba} arriba contra {lado - abajo} abajo"
+    assert (izquierda, derecha) == (0, lado), "con fotos a sangre el bloque llena a lo ancho"
+
+
 def _huecos_de(reporte) -> tuple[tuple[int, int], ...]:
     """Puntos que caen en la separacion entre celdas, nunca dentro de una foto.
 

@@ -502,6 +502,16 @@ body[data-pagina='post'] {
 
 /* Un anillo con un cuarto de vuelta de otro color, girando. Sin SVG ni imagen:
    son dos bordes y una animacion, y asi hereda el color del tema. */
+/* El del panel del set: el mismo aviso, pero SIN tapar. No hay nada abajo que
+   ocultar —la lamina todavia no existe— asi que ocupa su lugar en la columna en
+   vez de flotar sobre ella. */
+.cargando--bloque {
+  position: static;
+  inset: auto;
+  padding: 24px 0;
+  background: none;
+}
+
 .cargando__rueda {
   width: 30px;
   height: 30px;

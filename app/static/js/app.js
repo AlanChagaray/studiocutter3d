@@ -812,6 +812,14 @@ function iniciarVistaPrevia3D({
 
   let relojDelVelo = null;
 
+  /* Si el velo lo esta sosteniendo la pantalla y no una carga. Ver `tapar`. */
+  let sostenido = false;
+
+  /* El texto de fabrica del velo, leido del DOM. No hay una copia en este
+     archivo a proposito: lo escribe el macro `cargando`, y dos verdades sobre
+     el mismo texto se desincronizan en cuanto alguien edite el template. */
+  const TEXTO_DEL_VELO = ($('#cargando-texto') || {}).textContent || '';
+
   /**
    * Prende o apaga el velo de carga. Tapa las DOS vistas, que es lo correcto:
    * el `.glb` se carga una sola vez y lo comparten (`cuandoCargue` reparte
@@ -824,6 +832,11 @@ function iniciarVistaPrevia3D({
    * que hay un tope, el mismo del handshake de la foto.
    */
   function cargando(encendido) {
+    // ⚠ Un velo sostenido no lo apaga una carga. El lote carga un modelo por
+    // diseño y cada carga termina apagandolo, asi que sin esta linea el velo
+    // parpadearia una vez por diseño y entre parpadeo y parpadeo se veria
+    // exactamente lo que se pidio no mostrar.
+    if (sostenido) return;
     mostrar($('#cargando'), encendido);
     clearTimeout(relojDelVelo);
     if (encendido) {
@@ -1053,6 +1066,28 @@ function iniciarVistaPrevia3D({
      */
     reiniciar() {
       hayFoto = false;
+    },
+
+    /**
+     * Tapa el visor mientras la pantalla lo usa para algo que no hay que ver.
+     *
+     * Es el mismo velo de la carga, sostenido: no lo apaga ningun aviso hasta
+     * que se lo suelta con `tapar(false)`. Lo necesita post, donde la cola
+     * carga un modelo por diseño y los pinta con colores que no son los de
+     * nadie —los del set— para sacar las celdas.
+     *
+     * ⚠ **Sin temporizador propio**, a diferencia del velo normal. Ese se
+     * despega solo porque su aviso puede no llegar nunca (sin WebGL no hay
+     * quien lo emita). A este lo suelta el `finally` de quien lo prendio, y las
+     * dos esperas que hay en el medio —`cargar` y `exportar`— asientan siempre,
+     * con tope propio. Un reloj seria una segunda garantia mas debil que esa, y
+     * encima destaparia a la mitad.
+     */
+    tapar(encendido, aviso = '') {
+      sostenido = encendido;
+      clearTimeout(relojDelVelo);
+      texto($('#cargando-texto'), (encendido && aviso) || TEXTO_DEL_VELO);
+      mostrar($('#cargando'), encendido);
     },
 
     /** Le avisa al visor que hay un `.glb` nuevo para cargar. */
@@ -2003,6 +2038,11 @@ function iniciarPost() {
   procesar.addEventListener('click', async () => {
     trabajando = true;
     actualizarControles();
+    // Tapado de punta a punta: mientras dura el lote el visor es la maquina
+    // trabajando, no algo que el usuario haya elegido mirar (`mirando` es 0).
+    // Lo que va pasando se cuenta en el aviso de la columna, que es donde se
+    // lee sin tener que interpretar una pieza que aparece y desaparece.
+    previa.tapar(true, 'Preparando las fotos…');
     mostrar($('#panel-descargas'), false);
     mostrar($('#resultado-set'), false);
     try {
@@ -2012,6 +2052,10 @@ function iniciarPost() {
       avisar(estado, 'error', e.message);
     } finally {
       trabajando = false;
+      // Se destapa recien aca, con el visor ya puesto en el diseño que va a
+      // quedar mostrado: el frame en el que se levanta el velo es el primero
+      // que el usuario ve, y tiene que ser el correcto.
+      previa.tapar(false);
       pintarLista();
       // Lo que se haya elegido mientras corria el lote quedo anotado y no se
       // pudo atender: el canvas estaba ocupado. Ahora si.
@@ -2053,12 +2097,20 @@ function iniciarPost() {
   }
 
   /**
-   * Recorre los diseños de a uno: cargar el modelo y sacarle sus DOS fotos.
+   * El lote, en DOS fases: primero todas las fotos sueltas, despues el set.
    *
    * **En serie y no en paralelo**, igual que la conversion del lado del
    * servidor, pero por otro motivo: hay UN solo visor y UN solo canvas, asi que
-   * sacar dos fotos a la vez es sacar dos veces la misma. Las dos fotos del
-   * mismo diseño salen de una sola carga del modelo, que es lo caro.
+   * sacar dos fotos a la vez es sacar dos veces la misma.
+   *
+   * ⚠ **Las fases cuestan cargar cada modelo dos veces**, una por fase, en vez
+   * de sacar las dos fotos de una sola carga. El `.glb` se sirve con
+   * `FileResponse`, asi que la segunda vez es una revalidacion condicional y el
+   * archivo sale de la cache del navegador: lo que se paga de verdad es
+   * parsearlo y volver a subir la geometria a la GPU. Se paga porque las dos
+   * fotos no son la misma cosa — una es lo que el usuario se baja por diseño y
+   * la otra es materia prima del set—, y separarlas deja las descargas listas
+   * sin esperar a la lamina.
    */
   async function sacarLasFotos(trabajo) {
     const ok = [];
@@ -2070,7 +2122,7 @@ function iniciarPost() {
       }
       avisar(estado, 'info', `Sacando la foto ${ok.length + 1} de ${trabajo.disenos}…`);
       try {
-        await rendirDiseno(d.indice, { vista: true, celda: true });
+        await rendirDiseno(d.indice, { vista: true, celda: false });
       } catch (e) {
         sin.push({ ...d, error: { mensaje: e.message } });
         continue;
@@ -2079,20 +2131,51 @@ function iniciarPost() {
       conFoto.add(d.indice);
     }
 
+    // Las descargas por diseño, apenas estan: no dependen del set.
     pintarDescargas(trabajo, ok, sin);
-    if (ok.length) await armarSet();
-    // El visor quedo con la ultima celda puesta, que va con los colores del set
-    // y no con los de nadie. Se lo devuelve al ultimo diseño que salio bien,
-    // que es el que la pantalla va a estar mostrando.
+    if (ok.length) await sacarLasCeldas(ok);
+
+    // El visor queda en el PRIMER diseño, no en el ultimo que se rindio. La
+    // lista se revisa desde arriba; el ultimo es donde quedo la maquina, que no
+    // es una razon para mostrarlo.
     if (ok.length) {
-      fijarMirado(ok[ok.length - 1].indice);
+      fijarMirado(ok[0].indice);
       await traerAlVisor(mirando);
     }
     mostrar(estado, false);
   }
 
   /**
-   * Las fotos de UN diseño, con el modelo cargado una sola vez.
+   * La segunda fase: la celda de cada diseño y, con todas, la lamina.
+   *
+   * Un fallo aca **no invalida la foto suelta del diseño**: esa ya esta subida y
+   * descargable, y lo que fallo es el set. Se declara en su pista y la lamina se
+   * compone igual con las celdas que hayan salido — el servidor toma las que
+   * encuentra en disco, y media lamina con el faltante dicho es mejor que
+   * ninguna.
+   */
+  async function sacarLasCeldas(ok) {
+    // El velo ya esta puesto; lo que cambia es a que esta esperando. Decir mal
+    // por que algo tarda manda a mirar el lugar equivocado.
+    previa.tapar(true, 'Preparando el set…');
+    mostrarArmandoElSet(true);
+    const sinCelda = [];
+    for (const [i, d] of ok.entries()) {
+      avisar(estado, 'info', `Preparando el set: pieza ${i + 1} de ${ok.length}…`);
+      try {
+        await rendirDiseno(d.indice, { vista: false, celda: true });
+      } catch (_) {
+        sinCelda.push(`#${d.indice}`);
+      }
+    }
+    await armarSet(sinCelda);
+  }
+
+  /**
+   * Las fotos de UN diseño: la suelta, la del set, o las dos.
+   *
+   * El lote lo llama una vez por fase con una sola prendida; la cola de rehacer
+   * puede pedir las dos juntas, y ahi si salen de una sola carga del modelo.
    *
    * ⚠ **Los colores van antes de CADA exportacion, no solo antes de la carga.**
    * Las dos fotos salen de la misma pieza con colores distintos, asi que
@@ -2150,13 +2233,51 @@ function iniciarPost() {
   function encolarElSet() {
     conFoto.forEach((i) => pendientesSet.add(i));
     setSucio = conFoto.size > 0;
+    if (setSucio) mostrarArmandoElSet(true);
     arrancarLaCola();
   }
+
+  /**
+   * El aviso de que el set se esta armando. Va en su panel, no en el visor.
+   *
+   * Son dos esperas distintas: el velo tapa el visor porque ahi hay algo que no
+   * conviene ver, y esto ocupa el lugar de la lamina porque ahi todavia no hay
+   * nada. Cubre las dos mitades de la espera —rendir una celda por diseño y que
+   * el servidor las pegue—, que para quien mira son una sola.
+   *
+   * ⚠ **Lo apaga el `load` de la imagen, no la respuesta del servidor.** El POST
+   * contesta cuando la lamina esta escrita en disco, y recien ahi el navegador
+   * sale a buscarla: apagarlo antes deja el hueco vacio justo el rato que tarda
+   * en bajar, que con 2 MB no es cero.
+   */
+  function mostrarArmandoElSet(encendido) {
+    mostrar($('#cargando-set'), encendido);
+  }
+
+  $('#img-set').addEventListener('load', () => mostrarArmandoElSet(false));
+  $('#img-set').addEventListener('error', () => {
+    mostrarArmandoElSet(false);
+    texto($('#pista-set'), 'El set se armo pero no se pudo mostrar. Probá bajarlo.');
+  });
 
   function arrancarLaCola() {
     if (rehaciendo || trabajando) return;
     if (!pendientesVista.size && !pendientesSet.size && !setSucio) return;
     correrPendientes();
+  }
+
+  /**
+   * Si lo que la cola va a poner en el visor no es lo que el usuario mira.
+   *
+   * Las celdas tapan siempre: se rinden con los colores del set, que no son los
+   * de ningun diseño, y ver la pieza cambiar de color y volver sola es
+   * exactamente el desfasaje que se pidio sacar de la pantalla. Una foto suelta
+   * tapa solo si es de OTRO diseño — la del que se esta mirando no, porque ahi
+   * el usuario acaba de elegir ese color y lo que quiere es verlo.
+   */
+  function laColaTapa() {
+    if (pendientesSet.size) return true;
+    return [...pendientesVista].some((i) => i !== mirando);
   }
 
   async function correrPendientes() {
@@ -2171,6 +2292,10 @@ function iniciarPost() {
       // el clic siguiente —y mientras tanto la pantalla mostraba un color que
       // el JPG no tenia.
       while (pendientesVista.size || pendientesSet.size || setSucio) {
+        // Se decide en cada vuelta y no una sola vez: un `Ver` durante la cola
+        // cambia lo que se esta mirando, y con eso puede cambiar si lo que
+        // viene tapa o no.
+        previa.tapar(laColaTapa(), 'Rehaciendo las fotos…');
         while (pendientesVista.size || pendientesSet.size) {
           // El mas chico primero: se rehacen en el orden en que se ven, no en
           // el orden en que se toco cada muestra.
@@ -2197,6 +2322,9 @@ function iniciarPost() {
       avisar(estado, 'error', e.message);
     } finally {
       rehaciendo = false;
+      // Despues de `devolverElVisor`, que es sincronico si el modelo ya esta
+      // puesto: el velo se levanta sobre los colores correctos.
+      previa.tapar(false);
       actualizarControles();
     }
   }
@@ -2233,8 +2361,9 @@ function iniciarPost() {
    * pixel de la primera foto —como se hacia— porque asi se elige de una lista
    * cerrada y se valida. Ver el docstring de `componer_set`.
    */
-  async function armarSet() {
+  async function armarSet(sinCelda = []) {
     avisar(estado, 'info', 'Armando el set…');
+    mostrarArmandoElSet(true);
     const cuerpo = new FormData();
     // Solo si hay muestra marcada: sin el campo, el servidor pone el mismo
     // default que el template marca, y los dos salen de `COLORES[0]`.
@@ -2248,9 +2377,12 @@ function iniciarPost() {
       $('#bajar-set').href = `/api/trabajos/${encodeURIComponent(trabajoId)}/archivo/set`;
       // El reparto tal cual quedo (`3-2-2`) y no "3x3": con filas desparejas
       // el par columnas x filas no dice como quedo armado.
+      // Lo que no llego a la lamina se dice aca: su foto suelta esta bien y se
+      // baja igual, asi que no es un diseño fallido sino una celda que falta.
+      const faltan = sinCelda.length ? ` · sin ${sinCelda.join(', ')}` : '';
       texto(
         $('#pista-set'),
-        `${r.celdas} diseños · ${r.distribucion.join('-')} · ${r.tamano_px.join('×')} px`
+        `${r.celdas} diseños · ${r.distribucion.join('-')} · ${r.tamano_px.join('×')} px${faltan}`
       );
       mostrar($('#resultado-set'), true);
     } catch (e) {
@@ -2258,6 +2390,8 @@ function iniciarPost() {
       // estan arriba y se pueden bajar. Se dice y se sigue.
       texto($('#pista-set'), `No se pudo armar el set: ${e.message}`);
       mostrar($('#resultado-set'), true);
+      // No va a haber `load` que lo apague: aca no hay imagen nueva.
+      mostrarArmandoElSet(false);
     }
   }
 

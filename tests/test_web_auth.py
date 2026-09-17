@@ -764,9 +764,14 @@ def test_la_foto_comparte_la_maquinaria_del_visor(sesion: TestClient) -> None:
         "la exposicion no puede escribirse como numero: la unica fuente es la constante"
     )
     assert "toneMappingExposure = EXPOSICION_VISOR" in js
-    assert "THREE.PCFSoftShadowMap" in js
-    assert not re.search(r"THREE\.PCFShadowMap\b", js), (
-        "el mapa de sombra de la foto tiene que ser el mismo del visor"
+    assert re.search(r"const TIPO_SOMBRA = THREE\.\w+ShadowMap", js), (
+        "el tipo de mapa de sombra tiene que salir de una sola constante"
+    )
+    assert not re.search(r"shadowMap\.type\s*=\s*THREE\.", js), (
+        "el tipo de sombra no puede escribirse directo: la unica fuente es TIPO_SOMBRA"
+    )
+    assert codigo.count("shadowMap.type = TIPO_SOMBRA") == 2, (
+        "las dos vistas tienen que tomar el mismo tipo de sombra"
     )
     assert codigo.count("new THREE.ShadowMaterial(") == 1, "un solo material de sombra"
 
@@ -779,6 +784,60 @@ def test_la_foto_comparte_la_maquinaria_del_visor(sesion: TestClient) -> None:
     # nombran lo que se saco justamente para contar por que.
     for retirado in ("const FOTO", "ajustarSombra", "aporteClave", "aporteCenital"):
         assert retirado not in codigo, f"volvio el rig de foto viejo: {retirado}"
+
+
+def test_la_sombra_se_difumina_donde_termina(sesion: TestClient) -> None:
+    """El pedido: el tono igual, el borde difuso. Son dos cosas distintas.
+
+    Aclarar la mancha y difuminarle el borde se parecen en una miniatura y no
+    son lo mismo: una sombra mas clara sigue terminando de golpe, y una sombra
+    difuminada sigue pesando lo mismo donde apoya la pieza. Este test cuida las
+    dos mitades — que el borde sea un parametro, y que la densidad no se haya
+    movido para conseguirlo.
+
+    ⚠ **El ancho de la penumbra solo puede ser un parametro con VSM.** Con
+    filtrado PCF, `shadow.radius` lo ignora el sombreador de three: la penumbra
+    sale del tamaño del texel, o sea de la resolucion del mapa contra el
+    frustum. Volver a PCF no rompe nada visible al abrir la pantalla — deja de
+    difuminar y ya— asi que el tipo se afirma aca.
+
+    Como se ve es CV, manual. Esto dice que las decisiones que lo producen
+    siguen tomadas.
+    """
+    codigo = _sin_comentarios(sesion.get("/static/js/preview3d.js").text)
+
+    assert "const TIPO_SOMBRA = THREE.VSMShadowMap" in codigo, (
+        "sin VSM el ancho de la penumbra vuelve a depender de la resolucion"
+    )
+    assert re.search(r"PENUMBRA_REL = 0\.\d+", codigo), "no hay ancho de penumbra declarado"
+    assert "blurSamples = MUESTRAS_PENUMBRA" in codigo, "el desenfoque no declara sus muestras"
+
+    # Se traduce a texels en CADA vista: las dos reparten 2048 sobre frustums
+    # distintos —la foto se lo ajusta a la pieza, el visor lo tiene fijo— asi
+    # que el mismo radio en texels daria dos penumbras distintas, que es como
+    # las dos vistas dejan de verse iguales.
+    cuerpo = codigo.split("function ajustarPenumbra(", 1)[1].split("}", 1)[0]
+    assert "c.right - c.left" in cuerpo, "la penumbra no se mide contra el frustum de cada vista"
+    assert "PENUMBRA_REL * radio" in cuerpo, "la penumbra no es proporcional a la pieza"
+    assert codigo.count("ajustarPenumbra(") == 3, (
+        "la definicion y las dos vistas: alguna dejo de ajustar la penumbra"
+    )
+
+    # El mapa no se recalcula solo —la luz no se mueve y la pieza tampoco— y
+    # eso es lo que hace pagable el desenfoque en una vista que anima. Pero si
+    # nadie pide el re-render, la sombra queda congelada en la de la pieza
+    # anterior **sin un solo error a la vista**.
+    assert "autoUpdate = false" in codigo, "el mapa de sombra se re-rinde en cada frame"
+    assert "needsUpdate = true" in cuerpo, (
+        "se ajusta la penumbra y no se pide el re-render: el mapa queda viejo"
+    )
+
+    # ⚠ Y el TONO no se toca. Difuminar es mover el borde, no aclarar la mancha:
+    # si alguien "suaviza" bajando la alfa, esto lo frena.
+    assert "new THREE.ShadowMaterial({ opacity: 0.14 })" in codigo, (
+        "cambio la densidad de la sombra"
+    )
+    assert "oscuro ? 0.24 : 0.14" in codigo, "cambio la densidad de la sombra en tema oscuro"
 
 
 def test_la_luz_de_la_foto_es_neutra_y_no_toca_la_sombra(sesion: TestClient) -> None:
@@ -1258,7 +1317,11 @@ def test_la_vista_previa_avisa_mientras_carga(sesion: TestClient) -> None:
     avisos que lo apagan. Que se vea girar es CV.
     """
     for pagina in CON_VISOR:
-        assert 'id="cargando"' in sesion.get(pagina).text, f"{pagina} no tiene velo de carga"
+        servido = sesion.get(pagina).text
+        assert 'id="cargando"' in servido, f"{pagina} no tiene velo de carga"
+        # El texto tiene id propio porque el velo dice a QUE esta esperando, y
+        # eso lo reescribe `app.js` leyendo el de fabrica de aca.
+        assert 'id="cargando-texto"' in servido, f"{pagina} no puede decir que esta esperando"
 
     js = _sin_comentarios(sesion.get("/static/js/app.js").text)
     velo = re.search(r"function cargando\(.*?\n  \}", js, re.DOTALL)
@@ -1270,6 +1333,111 @@ def test_la_vista_previa_avisa_mientras_carga(sesion: TestClient) -> None:
 
     css = sesion.get("/static/css/estilo.css").text
     assert ".cargando" in css and "@keyframes girar" in css, "el velo no tiene rueda"
+
+
+def test_el_visor_se_tapa_mientras_la_cola_lo_pinta_de_otro_color(sesion: TestClient) -> None:
+    """El desfasaje que no se puede ver: la pieza pintada de un color ajeno.
+
+    Rehacer las celdas pinta cada diseño con los colores del SET —que no son los
+    de ninguna foto suelta— y al terminar devuelve el visor a lo que se estaba
+    mirando. Ese ida y vuelta, en pantalla, se lee como si el color del diseño se
+    hubiera cambiado solo y vuelto atras. Se tapa mientras dura.
+
+    Lo que NO se tapa es rehacer la foto del diseño que se esta mirando: ahi el
+    usuario acaba de elegir ese color y taparselo seria esconderle justo lo que
+    pidio.
+
+    El velo tiene que ser SOSTENIDO: el lote carga un modelo por diseño y cada
+    carga termina apagandolo, asi que uno normal parpadearia una vez por diseño
+    —y entre parpadeo y parpadeo se veria exactamente lo que se quiso ocultar.
+    """
+    js = _sin_comentarios(sesion.get("/static/js/app.js").text)
+
+    tapa = re.search(r"function laColaTapa\(.*?\n  \}", js, re.DOTALL)
+    assert tapa is not None, "no existe `laColaTapa`"
+    assert "pendientesSet.size) return true" in tapa.group(0), (
+        "las celdas del set no tapan el visor"
+    )
+    assert "!== mirando" in tapa.group(0), (
+        "una foto suelta de otro diseño tampoco es lo que se esta mirando"
+    )
+
+    velo = re.search(r"function cargando\(.*?\n  \}", js, re.DOTALL)
+    assert "if (sostenido) return;" in velo.group(0), (
+        "una carga puede apagar el velo sostenido: parpadea una vez por diseño"
+    )
+
+    # ⚠ Hay mas de un `#procesar` en este archivo —Correcto tiene el suyo— asi
+    # que el bloque se elige por lo que hace y no por el primero que aparece.
+    bloques = re.finditer(r"procesar\.addEventListener\(.*?\n  \}\);", js, re.DOTALL)
+    lote = next((b.group(0) for b in bloques if "sacarLasFotos(" in b.group(0)), None)
+    assert lote is not None, "no existe el boton del lote de post"
+    assert "previa.tapar(true" in lote, "el lote no tapa el visor"
+    assert "previa.tapar(false)" in lote, "el lote no lo destapa"
+
+    cola = re.search(r"async function correrPendientes\(.*?\n  \}", js, re.DOTALL)
+    assert cola is not None
+    assert "previa.tapar(laColaTapa()" in cola.group(0), "la cola no consulta si tiene que tapar"
+    assert "previa.tapar(false)" in cola.group(0), "la cola no destapa al terminar"
+
+
+def test_el_lote_saca_las_fotos_sueltas_antes_que_las_del_set(sesion: TestClient) -> None:
+    """Dos fases, no una pasada que intercala las dos fotos de cada diseño.
+
+    Son dos entregables distintos —lo que se baja por diseño y la materia prima
+    del set— y separarlos deja las descargas listas sin esperar a la lamina. El
+    precio es cargar cada modelo dos veces, una por fase; esta escrito en el
+    docstring de `sacarLasFotos`.
+
+    Y al destapar, el visor queda en el PRIMER diseño: la lista se revisa desde
+    arriba. El ultimo es donde quedo la maquina, que no es una razon.
+    """
+    js = _sin_comentarios(sesion.get("/static/js/app.js").text)
+
+    fotos = re.search(r"async function sacarLasFotos\(.*?\n  \}", js, re.DOTALL)
+    assert fotos is not None, "no existe `sacarLasFotos`"
+    cuerpo = fotos.group(0)
+    assert "{ vista: true, celda: false }" in cuerpo, "la primera fase no es solo la foto suelta"
+    assert "{ vista: true, celda: true }" not in cuerpo, (
+        "el lote sigue sacando las dos fotos en la misma pasada"
+    )
+    assert cuerpo.index("pintarDescargas(") < cuerpo.index("sacarLasCeldas("), (
+        "las descargas por diseño esperan al set"
+    )
+    assert "fijarMirado(ok[0].indice)" in cuerpo, "el visor no queda en el primer diseño"
+
+    celdas = re.search(r"async function sacarLasCeldas\(.*?\n  \}", js, re.DOTALL)
+    assert celdas is not None, "no existe la fase del set"
+    assert "{ vista: false, celda: true }" in celdas.group(0), (
+        "la segunda fase vuelve a sacar la foto suelta"
+    )
+
+
+def test_el_set_avisa_mientras_se_arma(sesion: TestClient) -> None:
+    """La lamina tarda dos cosas y las dos van bajo el mismo aviso.
+
+    Rendir una celda por diseño y despues pegarlas del lado del servidor son,
+    para quien mira, una sola espera. El aviso va en el panel del set y no sobre
+    el visor: aca no hay nada que tapar, hay un lugar vacio que explicar.
+
+    ⚠ **Se apaga con el `load` de la imagen, no con la respuesta del servidor.**
+    El POST contesta cuando la lamina esta escrita en disco; recien ahi el
+    navegador sale a buscarla, y son 2 MB.
+    """
+    pagina = sesion.get("/post").text
+    assert 'id="cargando-set"' in pagina, "el set no tiene aviso propio"
+    assert "cargando--bloque" in pagina, "el aviso del set tapa en vez de ocupar su lugar"
+    assert ".cargando--bloque" in sesion.get("/static/css/estilo.css").text
+
+    js = _sin_comentarios(sesion.get("/static/js/app.js").text)
+    assert "$('#img-set').addEventListener('load'" in js, (
+        "el aviso del set no espera a que la imagen este en pantalla"
+    )
+    celdas = re.search(r"async function sacarLasCeldas\(.*?\n  \}", js, re.DOTALL)
+    assert celdas is not None
+    assert "mostrarArmandoElSet(true)" in celdas.group(0), (
+        "la fase del set no avisa que esta armando"
+    )
 
 
 def test_post_es_tan_ancho_como_cortante(sesion: TestClient) -> None:
