@@ -16,6 +16,7 @@ Estos tests fijan las tres piezas de la defensa:
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
@@ -189,7 +190,35 @@ def test_el_techo_de_ram_deja_lugar_al_pico_medido_del_cortante() -> None:
     assert LIMITE_RAM_HIJO_MB > 277
 
 
+@pytest.fixture
+def limite_de_memoria_restaurado() -> Iterator[None]:
+    """Devuelve `RLIMIT_DATA` a como estaba al terminar el test.
+
+    `_acotar_memoria` acota EL PROCESO ACTUAL — en el hijo real es lo que se
+    quiere, pero llamarla desde pytest le pone el techo de 380 MB al proceso de
+    la suite, y ahi se queda para todos los tests que siguen. En Linux eso
+    hacia fallar a los de la web con `argon2 HashingError: Memory allocation
+    error` al hashear la contraseña de prueba, con la suite entera en verde en
+    Windows, donde `resource` no existe y estos tests se saltean. Lo agarro la
+    primera corrida de `ci-tests` en `ubuntu-latest`.
+
+    Subir el blando de vuelta es legal mientras el duro no se haya tocado, y
+    `_acotar_memoria` deja el duro como estaba.
+    """
+    if sys.platform == "win32":
+        yield
+        return
+    import resource  # noqa: PLC0415 — POSIX only, por eso el corte de arriba
+
+    antes = resource.getrlimit(resource.RLIMIT_DATA)
+    try:
+        yield
+    finally:
+        resource.setrlimit(resource.RLIMIT_DATA, antes)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="`resource` es POSIX")
+@pytest.mark.usefixtures("limite_de_memoria_restaurado")
 def test_el_techo_acota_el_heap_y_no_el_espacio_de_direcciones() -> None:
     """`RLIMIT_AS` seria el limite equivocado: ver el docstring de arriba."""
     import resource  # noqa: PLC0415 — POSIX only, por eso el skipif
@@ -198,12 +227,14 @@ def test_el_techo_acota_el_heap_y_no_el_espacio_de_direcciones() -> None:
     assert resource.getrlimit(resource.RLIMIT_AS)[0] == resource.RLIM_INFINITY
 
 
+@pytest.mark.usefixtures("limite_de_memoria_restaurado")
 def test_acotar_memoria_no_explota_en_ninguna_plataforma() -> None:
     """En Windows es un no-op; en POSIX pone el limite. Nunca levanta."""
     _acotar_memoria()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="`resource` es POSIX")
+@pytest.mark.usefixtures("limite_de_memoria_restaurado")
 def test_acotar_memoria_baja_el_limite_de_verdad() -> None:
     import resource  # noqa: PLC0415 — POSIX only, por eso el skipif de arriba
 

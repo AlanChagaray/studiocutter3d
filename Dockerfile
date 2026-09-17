@@ -41,17 +41,38 @@ COPY requirements.txt /tmp/requirements.txt
 # fallar ACA, con el nombre del paquete, y no doce lineas mas abajo con un error
 # de gcc que no existe. Las versiones vienen todas clavadas de requirements.txt.
 RUN python -m venv /opt/venv \
-    && /opt/venv/bin/pip install --no-cache-dir --only-binary=:all: -r /tmp/requirements.txt
+    && /opt/venv/bin/pip install --no-cache-dir --only-binary=:all: -r /tmp/requirements.txt \
+    && /opt/venv/bin/python -m pip uninstall --yes pip
+
+# El `pip uninstall` del final saca a pip del propio venv, que es lo unico que
+# viaja a la etapa final: instalado ya esta todo, y en produccion nadie tiene que
+# poder `pip install` nada. Verificado que ninguna libreria del motor ni de la
+# web importa pip ni setuptools al cargarse.
 
 # ── Etapa 2: lo que corre ────────────────────────────────────────────────────
 FROM python:3.13-slim-bookworm@sha256:ed86c82274b3c69b52fb5820f358f0bd7df0b603332063cb5c6e32bd220c3e6e AS final
 
+# `APT_REFRESH` no se usa para nada adentro: existe para invalidar SOLO esta capa
+# en cada build de la CI (`ci-build.yml` le pasa el id de la corrida). Sin eso,
+# el cache de capas reusa el `apt-get upgrade` del dia en que se cacheo, y los
+# parches de Debian que salieron despues no entran hasta que alguien toque el
+# Dockerfile. La base va clavada por digest, asi que este `upgrade` es la unica
+# via por la que llegan los parches del sistema entre dos digests — y es lo que
+# frenaba el escaneo de trivy con 3 HIGH de `libpcre2-8-0` que ya tenian fix.
+ARG APT_REFRESH=manual
+
 # `tini` como PID 1. La app lanza un proceso hijo por trabajo y lo mata por
 # timeout: sin un init de verdad arriba, un hijo que quede colgado no tiene
 # quien lo recoja, y las señales de `docker stop` no bajan al arbol.
-RUN apt-get update \
+RUN echo "apt refresh: ${APT_REFRESH}" \
+    && apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends tini \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    # El pip del sistema viene con la imagen base y aca no tiene trabajo: el
+    # venv ya esta armado y tampoco lo tiene. Menos herramientas para quien
+    # consiga ejecutar algo adentro, y menos paquetes que escanear.
+    && rm -rf /usr/local/lib/python3.13/site-packages/pip* /usr/local/bin/pip*
 
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \

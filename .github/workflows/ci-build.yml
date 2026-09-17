@@ -146,6 +146,13 @@ jobs:
           context: .
           load: true
           tags: studiocutter3d:candidata
+          # Invalida SOLO la capa del `apt-get upgrade` del Dockerfile en cada
+          # corrida (parches de Debian frescos) sin perder el caché de la capa
+          # pesada, la del `pip install`. Sin esto, la primera corrida de trivy
+          # marcó 3 HIGH de `libpcre2-8-0` cuyo fix ya estaba en los repos de
+          # Debian: la base clavada por digest no lo trae, el upgrade sí.
+          build-args: |
+            APT_REFRESH=${{ github.run_id }}-${{ github.run_attempt }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
