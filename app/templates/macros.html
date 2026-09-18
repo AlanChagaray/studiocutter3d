@@ -76,14 +76,18 @@
 </div>
 {%- endmacro %}
 
-{% macro marca(bajada='conversor de line art a cortantes') -%}
+{#
+  La marca de la barra superior: logo, nombre y, debajo, la version desplegada
+  —la misma que taggea `ci-release`—. Es un global de Jinja (`dependencias.py`):
+  no viene del handler. La bajada ("conversor de line art a cortantes") se saco:
+  el nombre alcanza, y la version ocupa su lugar. El login la muestra tambien,
+  con el mismo pill, debajo de su tarjeta.
+#}
+{% macro marca() -%}
 <div class="marca">
   <span class="usuario__inicial" aria-hidden="true">sC</span>
   <span>
     <span class="marca__nombre">studio<span>Cutter</span>3D</span><br>
-    <span class="marca__bajada">{{ bajada }}</span>
-    {#- La version desplegada, la misma que taggea `ci-release`. Es un global de
-        Jinja (`dependencias.py`): no viene del handler. -#}
     <span class="marca__version" title="Version desplegada">v{{ version }}</span>
   </span>
 </div>

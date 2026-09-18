@@ -250,17 +250,11 @@ body[data-pagina='post'] {
   color: var(--celeste);
 }
 
-.marca__bajada {
-  font-size: 10px;
-  color: var(--texto-3);
-  letter-spacing: 0.4px;
-}
-
-/* La version desplegada, al lado de la bajada y debajo del nombre. Es el tag
-   que crea `ci-release` en cada merge a main, asi que en mono: es un dato, no
-   texto. Del mismo gris que la bajada para que no compita con la marca. */
+/* La version desplegada: debajo del nombre en la barra y debajo de la tarjeta
+   en el login, con el mismo pill. Es el tag que crea `ci-release` en cada merge
+   a main, asi que en mono: es un dato, no texto. Del gris terciario para que no
+   compita con la marca. */
 .marca__version {
-  margin-left: 6px;
   padding: 1px 6px;
   border: 1px solid var(--borde);
   border-radius: 999px;
@@ -1281,12 +1275,18 @@ body[data-pagina='post'] {
 
 /* ── Login ──────────────────────────────────────────────────────────────── */
 
+/* En columna: la tarjeta y, debajo, la version desplegada. */
 .pantalla-login {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 14px;
   min-height: 100vh;
   padding: 24px;
+}
+.pantalla-login__version {
+  margin: 0;
 }
 
 .tarjeta-login {
@@ -1352,8 +1352,7 @@ body[data-pagina='post'] {
      fila de 60 px. Se cae todo el texto accesorio y el menu queda en iconos
      — que siguen teniendo nombre accesible por el `aria-label` del enlace. */
   .barra-superior .nav__item span,
-  .marca__bajada,
-  .marca__version,
+  .barra-superior .marca__version,
   .usuario__nombre,
   .tema span {
     display: none;

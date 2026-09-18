@@ -336,7 +336,7 @@ La versión sube según el **tipo de la rama**: `feat/` → MENOR (y PARCHE a 0)
 resto (`fix`, `hotfix`, `docs`, `chore`, `ci`, `refactor`, `perf`, `test`, `style`, `build`) → PARCHE.
 MENOR y PARCHE van de 0 a 99 y acarrean (`0.2.99` + fix → `0.3.0`). La regla y su test están en
 `scripts/version.py` y `tests/test_version.py`. El número queda **debajo del logo** en toda pantalla
-con sesión.
+con sesión, y debajo de la tarjeta del login.
 
 La versión arranca en **`1.0.0`**, con el tag `v1.0.0` sobre el commit que trajo la CI — puesto a
 mano, porque `ci-release` solo taggea lo que bumpea. El primer merge la lleva a `1.0.1` (fix,

@@ -86,11 +86,16 @@ def test_la_version_desplegada_se_ve_debajo_del_logo(sesion: TestClient, ruta: s
     assert etiquetas == [__version__]
 
 
-def test_el_login_no_dice_que_version_corre(cliente: TestClient) -> None:
-    """A quien no entro no se le cuenta que corre — la misma regla que `/salud`."""
+def test_el_login_dice_que_version_corre(cliente: TestClient) -> None:
+    """La version se ve tambien antes de entrar, debajo de la tarjeta del login.
+
+    Decision del 2026-09-18: sirve para comprobar que version llego a produccion
+    sin tener que entrar. Una sola vez y en el mismo pill que la barra; `/salud`
+    sigue sin decirla.
+    """
     html = cliente.get("/login").text
-    assert "marca__version" not in html
-    assert f"v{__version__}" not in html
+    etiquetas = re.findall(r'<span class="marca__version"[^>]*>v([^<]+)</span>', html)
+    assert etiquetas == [__version__]
 
 
 def test_logout_invalida_la_sesion(sesion: TestClient) -> None:

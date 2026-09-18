@@ -94,8 +94,9 @@ a las 08:00 ART. El detalle operativo (qué se configura a mano en GitHub y en R
   en cada merge a `main` según el tipo de la rama —`feat/` → MENOR, `break/` → MAYOR, el resto →
   PARCHE; MENOR y PARCHE van de 0 a 99 y acarrean—, commitea `chore(release): … [skip ci]`, taggea
   `vX.Y.Z` y **recién entonces** dispara el deploy hook. El número se ve debajo del logo
-  (`macros.marca`, global de Jinja `version` en `dependencias.py`) **solo con sesión**: el login no
-  lo muestra, por la misma razón que `/salud` no dice la versión.
+  (`macros.marca`, global de Jinja `version` en `dependencias.py`) y, desde el 2026-09-18, también
+  debajo de la tarjeta del login (`login.html`): así se comprueba qué versión llegó a producción
+  sin entrar. `/salud` sigue sin decirla. La marca de la barra ya no lleva bajada: nombre y versión.
 - **Las ramas se llaman `tipo/descripcion`**, con los tipos de `scripts/version.py tipos` (la
   misma lista que decide el bump: agregar un tipo es tocar un solo dict). `main` recibe solo merges
   por PR con la CI en verde (ruleset de GitHub), y el **Auto-Deploy de Render está apagado**:

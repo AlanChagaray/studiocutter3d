@@ -40,9 +40,9 @@ Es la misma `__version__` que `main.py` le da a FastAPI y la que el workflow
 `ci-release.yml` bumpea en cada merge a `main` (`scripts/version.py`): una sola
 fuente. Va como global de Jinja y no en el contexto de `_pantalla` por lo mismo
 que `modulos` vive en una constante: una pantalla nueva no tiene que acordarse
-de pasarla. Se muestra debajo del logo (`macros.marca`) y SOLO con sesion — el
-login no la lleva, por la misma razon que `/salud` no dice la version: a quien
-no entro no se le cuenta que corre."""
+de pasarla. Se muestra debajo del logo (`macros.marca`) y debajo de la tarjeta
+del login (`login.html`), con la misma etiqueta. `/salud` sigue sin decirla: ahi
+la lee un monitor, no una persona."""
 
 CLAVE_USUARIO = "usuario"
 """Lo unico que se guarda en la sesion.
