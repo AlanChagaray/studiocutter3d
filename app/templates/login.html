@@ -59,5 +59,10 @@
     </p>
 
   </div>
+
+  {#- La version desplegada, debajo de la tarjeta: el mismo global de Jinja y el
+      mismo pill que la barra superior lleva debajo del logo (`macros.marca`).
+      Sirve para ver que version llego a produccion sin tener que entrar. -#}
+  <p class="pantalla-login__version"><span class="marca__version" title="Version desplegada">v{{ version }}</span></p>
 </div>
 {% endblock %}
