@@ -56,7 +56,7 @@ if TYPE_CHECKING:  # para mypy y para las anotaciones; en runtime no se importa
     from .export import Salidas
     from .verify import ReporteFidelidad, render_texto
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 __all__ = [
     "AjustesMotor",
