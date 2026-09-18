@@ -345,10 +345,19 @@ docs, chore…) o `1.1.0` (feat) y crea el segundo tag. Un push de tag no dispar
 ### 8.2 Render — una vez
 
 1. El servicio → **Settings → Build & Deploy → Auto-Deploy: `Off`**. ⚠ Es el paso que importa: con
-   Auto-Deploy prendido Render construye en paralelo con la CI, y el deploy sale antes de que los
-   tests digan nada — la CI reportaría el error *después*.
+   Auto-Deploy en `Yes` Render construye en paralelo con la CI, y el deploy sale antes de que los
+   tests digan nada. ⚠ Y **`After CI Checks Pass` tampoco sirve** para este flujo: Render
+   desplegaría el commit del *merge* —que todavía lleva la versión vieja en los archivos— y
+   saltearía el commit del bump, que va con `[skip ci]` y por lo tanto no tiene checks
+   («Render does not trigger a deploy if zero checks are detected for the new commit»).
+   Producción quedaría siempre una versión atrás de su tag.
 2. Mismo panel → **Deploy Hook** → copiar la URL. Es una URL con una clave embebida: va a un secret
-   de GitHub (abajo), nunca al repo ni a un log.
+   de GitHub (abajo), nunca al repo ni a un log. **Es opcional**: sin él, `ci-deploy` no falla —
+   deja en el resumen de la corrida la versión, el commit a desplegar y la imagen verificada, y
+   el deploy se hace a mano en el panel (*Manual Deploy → Deploy latest commit*). Para que el
+   resumen traiga el link directo al servicio, cargar la **variable** de repositorio
+   `RENDER_DASHBOARD_URL` con la URL del servicio en `dashboard.render.com` (es una variable y
+   no un secret: no lleva ninguna clave y tiene que poder imprimirse).
 3. `STUDIOCUTTER_HOSTS` (§2.3) sigue siendo manual y **hoy está vacío**, o sea que se acepta
    cualquier `Host`. Cerrarlo es una variable en el panel, y es el hallazgo de phishing más barato
    de resolver del informe de seguridad.
@@ -359,7 +368,8 @@ docs, chore…) o `1.1.0` (feat) y crea el segundo tag. Un push de tag no dispar
 
 | Secret | Qué es | Cuándo hace falta |
 |---|---|---|
-| `RENDER_DEPLOY_HOOK_URL` | La URL del paso 8.2.2 | Desde el primer merge: sin él `ci-deploy` falla diciendo exactamente esto |
+| `RENDER_DEPLOY_HOOK_URL` | La URL del paso 8.2.2 | Opcional. Con él, cada merge despliega solo; sin él, el resumen de `ci-deploy` deja versión, commit e imagen para el deploy manual |
+| `RENDER_DASHBOARD_URL` (**variable**, no secret) | URL del servicio en `dashboard.render.com` | Opcional. Solo para que el resumen del deploy manual traiga el link directo al panel |
 | `RELEASE_TOKEN` | Fine-grained PAT del dueño del repo: *Only select repositories* → `studiocutter3d`; *Repository permissions* → **Contents: Read and write**, nada más | Apenas se active el ruleset de `main` de abajo. Antes, `ci-release` pushea con el `GITHUB_TOKEN` y anda. ⚠ Un PAT **vence**: anotarse la fecha, porque el día que expire el release falla en el checkout y `main` se queda sin bump sin que nada más avise |
 
 Van como *repository secrets* y no como secrets del environment `production`: los workflows
@@ -406,7 +416,12 @@ solo en su job.
   Actions → *CI · Release* → *Run workflow* → elegir el tipo. Después, *CI · Deploy* → *Run
   workflow* para desplegarlo.
 - **Redesplegar la misma `main`** (Render reconstruye desde el repo, así que también es el rollback
-  después de un `git revert` mergeado): Actions → *CI · Deploy* → *Run workflow*.
+  después de un `git revert` mergeado): Actions → *CI · Deploy* → *Run workflow*. Sin el hook
+  cargado, ese disparo también termina en el resumen con lo que hay que desplegar a mano.
+- **Deploy manual**: abrir la corrida de *CI · Build* del merge → el resumen del job *Deploy a
+  Render* dice la versión, el commit (`main` con la versión ya escrita), la imagen que se
+  verificó y el link al panel → *Manual Deploy → Deploy latest commit*. Al terminar, la versión
+  se lee debajo del logo.
 - **Dos merges seguidos**: `ci-build` los serializa. Actions encola una sola corrida pendiente por
   grupo, así que con tres merges en un minuto la del medio se cancela y la última bumpea una vez por
   los dos. Sigue valiendo "un deploy, un tag".

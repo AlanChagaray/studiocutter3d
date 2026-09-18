@@ -1,22 +1,35 @@
 # =============================================================================
-# CI · Deploy — el deploy hook de Render, con las compuertas ya pasadas.
+# CI · Deploy — el último eslabón: despliega en Render, o deja todo listo para
+# desplegar a mano, y lo resume.
 #
 # Render sabe redesplegar solo con cada push a main. Ese Auto-Deploy está
-# APAGADO a propósito (DESPLIEGUE.md §8): si estuviera prendido, Render
-# construiría en paralelo con esta CI y el deploy saldría antes de que los
-# tests dijeran nada. Con esto, el deploy lo dispara `ci-build.yml` recién
-# después de calidad → tests → seguridad → build → release, y queda registrado
-# en Actions quién desplegó qué versión y cuándo.
+# APAGADO a propósito (DESPLIEGUE.md §8): prendido, Render construiría en
+# paralelo con esta CI y el deploy saldría antes de que los tests dijeran nada;
+# y en su modo "After CI Checks Pass" desplegaría el commit del MERGE —que lleva
+# la versión vieja— y saltearía el commit del bump, que no tiene checks. Acá el
+# deploy llega recién después de calidad → tests → seguridad → build → release,
+# y siempre sobre el commit que lleva la versión nueva.
 #
-# Mismo molde que api/ci-deploy.yml. Dos diferencias:
-#   - lo llama `ci-build.yml` en cada push a main (allá nadie lo llama todavía)
-#   - recibe la `version` que acaba de taggear `ci-release.yml`, para el resumen
+# Dos modos, decididos por si el secret RENDER_DEPLOY_HOOK_URL está cargado:
+#
+#   hook    POST al Deploy Hook → Render encola el deploy de `main`. Automático.
+#   manual  Sin hook no falla: deja en el resumen de la corrida la versión, el
+#           commit a desplegar, la imagen que la CI construyó y escaneó, y la
+#           URL del panel de Render para hacer "Manual Deploy" a mano.
+#
+# En los dos casos el resumen es el mismo: es lo que se lee al abrir la corrida
+# para saber QUÉ quedó desplegado (o pendiente), sin abrir ningún log.
+#
+# Mismo molde que api/ci-deploy.yml. Diferencias: lo llama `ci-build.yml` en
+# cada push a main (allá nadie lo llama todavía), recibe lo que `ci-release` y
+# el build acaban de producir, y tolera la ausencia del hook.
 #
 # ⚠ Alcance real, sin adornos: el deploy hook le dice a Render "reconstruí
 #   desde el repo", NO "corré esta imagen". Render vuelve a construir el
 #   Dockerfile desde `main`, que en este punto ya lleva la versión nueva. La
 #   imagen que ci-build armó y escaneó es la prueba de que esa construcción va a
-#   andar, no el artefacto que se despliega.
+#   andar, no el artefacto que se despliega — por eso el resumen la llama
+#   "verificada", no "desplegada".
 # =============================================================================
 name: CI · Deploy
 
@@ -27,13 +40,32 @@ on:
         required: true
         type: string
       version:
-        description: 'Versión que se despliega (la del tag de ci-release)'
+        description: 'Versión que se despliega (la que acaba de taggear ci-release)'
+        required: false
+        type: string
+        default: ''
+      tag:
+        description: 'Tag de git de esa versión (vX.Y.Z)'
+        required: false
+        type: string
+        default: ''
+      commit:
+        description: 'SHA del commit a desplegar (el del bump de versión en main)'
+        required: false
+        type: string
+        default: ''
+      imagen:
+        description: 'Image ID de la imagen que ci-build construyó y escaneó en esta corrida'
         required: false
         type: string
         default: ''
     secrets:
       RENDER_DEPLOY_HOOK_URL:
-        required: true
+        # Opcional a propósito: sin él, el deploy es manual y este workflow lo
+        # dice en el resumen en vez de fallar. Con `required: true` GitHub
+        # cortaba la llamada antes del primer paso y el único mensaje era el
+        # suyo, sin el paso a paso.
+        required: false
 
   # Redeploy a mano: para volver a desplegar la misma `main` (Render reconstruye
   # desde el repo, así que también sirve para un rollback tras revertir).
@@ -69,7 +101,37 @@ jobs:
       name: ${{ inputs.entorno }}
 
     steps:
-      - name: Disparar el deploy hook de Render
+      # Solo para el disparo manual, que no recibe la versión de ci-release: se
+      # lee de `main`, que es lo que Render va a construir. El script es stdlib
+      # pura, alcanza con el python3 del runner.
+      - name: Checkout de main
+        if: inputs.version == ''
+        uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Resolver qué se despliega
+        id: que
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+          TAG_INPUT: ${{ inputs.tag }}
+          COMMIT_INPUT: ${{ inputs.commit }}
+        run: |
+          set -euo pipefail
+          if [ -n "$VERSION_INPUT" ]; then
+            VERSION="$VERSION_INPUT"; TAG="$TAG_INPUT"; COMMIT="$COMMIT_INPUT"
+          else
+            VERSION="$(python3 scripts/version.py leer)"; TAG="v${VERSION}"; COMMIT="$(git rev-parse HEAD)"
+          fi
+          {
+            echo "version=${VERSION}"
+            echo "tag=${TAG}"
+            echo "commit=${COMMIT}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Versión ${VERSION} (${TAG}), commit ${COMMIT}"
+
+      - name: Disparar el deploy hook de Render (si está cargado)
+        id: hook
         env:
           # Los secrets se inyectan por `env:` a nivel del step que los necesita,
           # nunca interpolados dentro del `run:` ni expuestos a nivel workflow.
@@ -79,10 +141,12 @@ jobs:
           set -euo pipefail
           # Un secret puede estar CARGADO Y VACÍO (`gh secret set` con stdin no
           # interactivo guarda una cadena vacía sin quejarse). Se mira el
-          # contenido, no la existencia.
+          # contenido, no la existencia. Sin hook no es un error: es el modo
+          # manual, y el resumen de abajo dice qué desplegar y dónde.
           if [ -z "${DEPLOY_HOOK}" ]; then
-            echo "::error::Falta el secret RENDER_DEPLOY_HOOK_URL. Render → el servicio → Settings → Deploy Hook → copiar la URL; GitHub → Settings → Secrets and variables → Actions → New repository secret."
-            exit 1
+            echo "Sin RENDER_DEPLOY_HOOK_URL: el deploy queda MANUAL (ver el resumen de la corrida)."
+            echo "modo=manual" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           # -o /dev/null: la URL del hook lleva una clave embebida. Nunca se
@@ -95,29 +159,64 @@ jobs:
                         "${DEPLOY_HOOK}")
 
           echo "Render respondió HTTP ${codigo}"
+          echo "codigo=${codigo}" >> "$GITHUB_OUTPUT"
 
           case "${codigo}" in
-            2*) echo "Deploy encolado en '${ENTORNO}'." ;;
-            *)  echo "::error::Render rechazó el deploy (HTTP ${codigo}). Si es 404 o 401, el hook fue regenerado en el panel y el secret quedó viejo."; exit 1 ;;
+            2*) echo "Deploy encolado en '${ENTORNO}'."; echo "modo=hook" >> "$GITHUB_OUTPUT" ;;
+            *)  echo "modo=rechazado" >> "$GITHUB_OUTPUT"
+                echo "::error::Render rechazó el deploy (HTTP ${codigo}). Si es 404 o 401, el hook fue regenerado en el panel y el secret quedó viejo: copiá el nuevo desde Render → Settings → Deploy Hook."
+                exit 1 ;;
           esac
 
+      # -----------------------------------------------------------------------
+      # El resumen: lo único que hace falta leer para saber qué quedó. Corre
+      # siempre, también cuando el hook fue rechazado. La URL del panel de
+      # Render es una VARIABLE del repo (no un secret: no lleva ninguna clave y
+      # tiene que poder imprimirse); si no está cargada, el resumen dice cómo.
+      # -----------------------------------------------------------------------
       - name: Resumen del despliegue
+        if: always()
         env:
           ENTORNO: ${{ inputs.entorno }}
-          VERSION: ${{ inputs.version }}
-          COMMIT: ${{ github.sha }}
+          VERSION: ${{ steps.que.outputs.version }}
+          TAG: ${{ steps.que.outputs.tag }}
+          COMMIT: ${{ steps.que.outputs.commit }}
+          IMAGEN: ${{ inputs.imagen }}
+          MODO: ${{ steps.hook.outputs.modo }}
+          CODIGO: ${{ steps.hook.outputs.codigo }}
+          PANEL: ${{ vars.RENDER_DASHBOARD_URL }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          set -u
+          PANEL_TXT="${PANEL:-*(cargá la variable de repositorio `RENDER_DASHBOARD_URL` con la URL del servicio en dashboard.render.com para que aparezca acá)*}"
+          case "${MODO:-}" in
+            hook)      ESTADO="✓ encolado por deploy hook (HTTP ${CODIGO})" ;;
+            manual)    ESTADO="⏳ **pendiente — deploy manual**" ;;
+            rechazado) ESTADO="✗ Render rechazó el hook (HTTP ${CODIGO})" ;;
+            *)         ESTADO="? el paso del hook no llegó a correr" ;;
+          esac
           {
-            echo "### Deploy encolado en Render"
+            echo "### Deploy · ${TAG:-?} → ${ENTORNO}"
             echo
             echo "| | |"
             echo "|---|---|"
-            echo "| Entorno | \`${ENTORNO}\` |"
-            echo "| Versión | \`${VERSION:-la de main}\` |"
-            echo "| Commit que pasó las compuertas | \`${COMMIT}\` |"
+            echo "| Versión | \`${VERSION:-?}\` (tag \`${TAG:-?}\`) |"
+            echo "| Commit a desplegar | [\`${COMMIT:0:7}\`](${REPO_URL}/commit/${COMMIT}) — es \`main\` con la versión ya escrita |"
+            echo "| Imagen verificada por la CI | \`${IMAGEN:-—}\` — construida, arrancada y escaneada en [esta corrida](${RUN_URL}); Render reconstruye desde el Dockerfile sobre ese commit |"
+            echo "| Deploy | ${ESTADO} |"
             echo
-            echo "> Render **reconstruye desde el Dockerfile** sobre \`main\`, que ya lleva"
-            echo "> la versión nueva. El hook sólo encola el deploy: el progreso real"
-            echo "> está en el panel de Render, y la versión desplegada se lee debajo"
-            echo "> del logo cuando termina."
+            if [ "${MODO:-}" = "manual" ] || [ "${MODO:-}" = "rechazado" ]; then
+              echo "**Deploy manual en Render:** ${PANEL_TXT}"
+              echo
+              echo "→ *Manual Deploy* → **Deploy latest commit** (o el commit de arriba). Cuando termine, la versión \`${VERSION:-?}\` se lee debajo del logo."
+              echo
+              echo "> Para que sea automático: Render → Settings → Deploy Hook → copiar la URL al secret \`RENDER_DEPLOY_HOOK_URL\`. Con el secret cargado este mismo paso lo encola solo."
+            else
+              echo "> El hook sólo encola el deploy: el progreso real está en el panel de Render${PANEL:+ (${PANEL})}, y la versión desplegada se lee debajo del logo cuando termina."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${MODO:-}" = "manual" ]; then
+            echo "::notice title=Deploy manual pendiente · ${TAG:-?}::Render → ${PANEL:-dashboard.render.com} → Manual Deploy → Deploy latest commit (${COMMIT:0:7}). Detalle en el resumen de la corrida."
+          fi

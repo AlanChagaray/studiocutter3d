@@ -11,7 +11,9 @@
 # Ninguna etapa arranca si la anterior falló. Es lo único que cumple
 # literalmente "evitar errores en cada deploy a main": el deploy no lo dispara
 # Render al ver el push (eso está apagado, ver DESPLIEGUE.md §8), lo dispara
-# este archivo, y recién cuando todo lo de arriba está en verde.
+# este archivo, y recién cuando todo lo de arriba está en verde. Sin el secret
+# del hook, el último job no falla: deja el resumen con la versión, el commit y
+# la imagen verificada para desplegar a mano desde el panel de Render.
 #
 # ⚠ A DIFERENCIA DE api/admin/tienda, ACÁ NO SE PUBLICA IMAGEN.
 #
@@ -128,6 +130,12 @@ jobs:
     permissions:
       contents: read
 
+    outputs:
+      # El Image ID de lo que se construyó y escaneó: va al resumen del deploy
+      # como "imagen verificada". No es lo que Render corre (reconstruye), es la
+      # prueba de qué se verificó.
+      imagen: ${{ steps.construir.outputs.imageid }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -141,6 +149,7 @@ jobs:
       # `load: true` deja la imagen en el daemon local del runner para poder
       # arrancarla y escanearla. No se publica (ver la cabecera).
       - name: Construir la imagen candidata
+        id: construir
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -231,10 +240,14 @@ jobs:
   # `needs.release.outputs.version` queda vacío cuando el release decidió no
   # hacer nada (el commit ya era un release): en ese caso el deploy ya salió en
   # la corrida anterior y no hay que repetirlo.
+  #
+  # Con el secret del hook cargado, despliega; sin él, no falla: deja en el
+  # resumen la versión, el commit y la imagen verificada, y la URL del panel
+  # para el deploy manual (ver ci-deploy.yml).
   # ---------------------------------------------------------------------------
   deploy:
     name: Deploy a Render
-    needs: release
+    needs: [build, release]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.release.outputs.version != ''
     permissions:
       contents: read
@@ -242,4 +255,7 @@ jobs:
     with:
       entorno: production
       version: ${{ needs.release.outputs.version }}
+      tag: ${{ needs.release.outputs.tag }}
+      commit: ${{ needs.release.outputs.commit }}
+      imagen: ${{ needs.build.outputs.imagen }}
     secrets: inherit
