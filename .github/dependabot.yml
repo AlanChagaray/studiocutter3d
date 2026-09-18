@@ -5,9 +5,9 @@
 #
 #   github-actions  las acciones de terceros van pineadas por SHA en los
 #                   ci-*.yml; Dependabot mueve el hash Y el comentario de versión
-#   pip             requirements.txt es el cierre transitivo exacto de la imagen;
-#                   sin esto, un CVE en una transitiva se queda hasta que alguien
-#                   regenere el freeze a mano
+#   pip             SOLO avisos de seguridad (ver abajo por qué no versiones):
+#                   requirements.txt es el cierre transitivo exacto de la imagen
+#                   y se regenera entero, no de a un pin
 #   docker          la base del Dockerfile va por digest; Dependabot propone el
 #                   digest nuevo cuando python:3.13-slim-bookworm se reconstruye
 #
@@ -44,12 +44,20 @@ updates:
       timezone: America/Argentina/Buenos_Aires
     commit-message:
       prefix: chore
-    open-pull-requests-limit: 5
-    # Parches y menores juntos; una mayor va sola, porque una mayor de numpy o
-    # de trimesh es una conversación, no un merge.
-    groups:
-      menores:
-        update-types: ["minor", "patch"]
+    # ⚠ 0 = sin actualizaciones de VERSIÓN; los PRs de SEGURIDAD (alertas de
+    # Dependabot) siguen saliendo. Es a propósito, y lo enseñó el primer PR que
+    # abrió: subió `pydantic-core` 2.46.5 → 2.49.0 dejando `pydantic==2.13.5`,
+    # que exige exactamente la 2.46.5, y el build murió en `ResolutionImpossible`.
+    # requirements.txt es el cierre transitivo CONGELADO de la imagen (ver
+    # DESPLIEGUE.md §6): mover un pin de a uno sin re-resolver rompe cualquier
+    # pareja clavada (pydantic ↔ pydantic-core, argon2-cffi ↔ bindings), y un
+    # grupo no lo arregla porque Dependabot no resuelve, reemplaza. La CI lo
+    # frenó, que es su trabajo — pero un PR roto por semana es ruido que enseña
+    # a ignorar. La señal de "hay que actualizar" la da `pip-audit` todos los
+    # días en ci-security; la actualización se hace regenerando el freeze
+    # completo (§6) o, el día que se quiera automatizar bien, con un lock de
+    # verdad (pip-tools / uv) que Dependabot sí sabe re-resolver.
+    open-pull-requests-limit: 0
 
   - package-ecosystem: docker
     directory: /
@@ -60,3 +68,10 @@ updates:
       timezone: America/Argentina/Buenos_Aires
     commit-message:
       prefix: chore
+    # Solo el DIGEST de python:3.13-slim-bookworm (parches de Debian y de
+    # Python 3.13.x). Sin esto, el primer PR que abrió fue `python:3.14`: subir
+    # de Python es una decisión del proyecto —requires-python, ruff, mypy y la
+    # CI dicen 3.13, y `coherencia` lo rechaza—, no una actualización semanal.
+    ignore:
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]

@@ -505,6 +505,18 @@ probablemente vuelvan a morder:
     —ninguno lo distingue—: lo tapa `cuerpos_sueltos()`, que pregunta otra cosa (¿esta pieza rodea
     galletita?) y falla duro antes de extruir. La lección general: un invariante derivado de la
     geometría que se quiere probar no prueba nada; el contraste tiene que venir de afuera.
+12. **El techo de RAM del hijo tiene otra mitad fuera del código: las tres `ENV` del Dockerfile**
+    (`OMP_NUM_THREADS=1`, `OPENBLAS_NUM_THREADS=1`, `MALLOC_ARENA_MAX=2`). En un Linux sin ellas,
+    OpenBLAS abre un hilo por núcleo con sus buffers y glibc una arena por hilo, y eso no entra en
+    los 380 MB de `RLIMIT_DATA`: el hijo muere con `OpenBLAS error: Memory allocation still
+    failed after 10 retries` **antes de escribir `estado.json`**, y los 4 tests `lento` que lanzan
+    el motor real fallan con `estado == "error"`. Reproducido en un contenedor de 4 CPUs: sin las
+    variables fallan los 4, con ellas pasan. En Windows no se ve porque el techo no existe. Por eso
+    `ci-tests.yml` se las pasa a pytest — y un `pytest` local en Linux también las necesita.
+    ⚠ Y `_acotar_memoria()` acota **el proceso que la llama**: los tests que la ejercitan lo hacen
+    con el fixture `limite_de_memoria_restaurado`, porque sin él el techo se le queda puesto al
+    proceso de pytest y los tests de la web que siguen no pueden ni hashear la contraseña
+    (`argon2 HashingError: Memory allocation error`). También invisible en Windows.
 
 ## Red de regresión
 

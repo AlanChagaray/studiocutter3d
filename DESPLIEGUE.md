@@ -270,13 +270,19 @@ de tocar una dependencia, regenerar el cierre transitivo desde el venv:
 .venv/Scripts/python -m pip freeze          # y actualizar las versiones del requirements
 ```
 
-**Actualizar la imagen base** (parches de seguridad de Debian y de Python):
+**Actualizar la imagen base** (parches de Python; los de Debian entran solos, ver abajo):
 
 ```bash
 docker pull python:3.13-slim-bookworm
 docker image inspect python:3.13-slim-bookworm --format '{{index .RepoDigests 0}}'
-# copiar el digest nuevo a las dos líneas FROM del Dockerfile
+# copiar el digest nuevo a las dos líneas FROM del Dockerfile (Dependabot abre ese PR solo)
 ```
+
+Los parches de **Debian** no esperan al digest: la etapa final hace `apt-get upgrade` en cada
+build, y `ci-build.yml` le pasa `APT_REFRESH=<id de la corrida>` para que esa capa —y solo esa—
+no salga del caché. Sin eso la primera corrida de trivy frenó la imagen con 3 HIGH de
+`libpcre2-8-0` cuyo fix ya estaba publicado. En un build local el arg vale `manual`: para forzar
+el upgrade, `docker build --build-arg APT_REFRESH=$(date +%s) .`.
 
 **Verificar que la imagen sigue sana** después de cualquier cambio:
 
@@ -407,7 +413,12 @@ solo en su job.
 - **Dependabot**: sus ramas `dependabot/**` están aceptadas en `ci-quality`; el tipo del release
   sale del prefijo del commit (`chore:` → PARCHE, `ci:` → PARCHE), configurado en
   `.github/dependabot.yml`. Sus PRs pasan por las mismas compuertas, incluida la construcción y el
-  escaneo de la imagen.
+  escaneo de la imagen. ⚠ Para **pip** solo abre PRs de **seguridad**, no de versión: su primer
+  PR subió `pydantic-core` sin tocar `pydantic`, que la clava, y el build murió en
+  `ResolutionImpossible`. `requirements.txt` es un freeze completo y se actualiza regenerándolo
+  entero (§6) — la señal de cuándo la da `pip-audit` cada mañana. Un PR de seguridad de Dependabot
+  sobre pip puede traer el mismo problema: si el build falla en `pip install`, la respuesta es
+  regenerar el freeze, no mergear el pin suelto.
 - **Corridas diarias (08:00 ART)**: tests, seguridad y el escaneo de la imagen. No despliegan. Lo
   que vale de ellas es enterarse de un CVE nuevo en `requirements.txt` o en el Debian base el mismo
   día que se publica, no la próxima vez que alguien toque el repo.
