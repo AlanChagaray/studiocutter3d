@@ -189,12 +189,12 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -u
-          # Comillas simples a propósito: adentro de dobles, los acentos graves
-          # del markdown serían una sustitución de comando (shellcheck SC2006).
+          # Los acentos graves del markdown van escapados: sueltos, adentro de
+          # comillas dobles, serían una sustitución de comando (shellcheck SC2006).
           if [ -n "${PANEL:-}" ]; then
             PANEL_TXT="$PANEL"
           else
-            PANEL_TXT='*(cargá la variable de repositorio `RENDER_DASHBOARD_URL` con la URL del servicio en dashboard.render.com para que aparezca acá)*'
+            PANEL_TXT="*(cargá la variable de repositorio \`RENDER_DASHBOARD_URL\` con la URL del servicio en dashboard.render.com para que aparezca acá)*"
           fi
           case "${MODO:-}" in
             hook)      ESTADO="✓ encolado por deploy hook (HTTP ${CODIGO})" ;;
