@@ -189,7 +189,13 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -u
-          PANEL_TXT="${PANEL:-*(cargá la variable de repositorio `RENDER_DASHBOARD_URL` con la URL del servicio en dashboard.render.com para que aparezca acá)*}"
+          # Comillas simples a propósito: adentro de dobles, los acentos graves
+          # del markdown serían una sustitución de comando (shellcheck SC2006).
+          if [ -n "${PANEL:-}" ]; then
+            PANEL_TXT="$PANEL"
+          else
+            PANEL_TXT='*(cargá la variable de repositorio `RENDER_DASHBOARD_URL` con la URL del servicio en dashboard.render.com para que aparezca acá)*'
+          fi
           case "${MODO:-}" in
             hook)      ESTADO="✓ encolado por deploy hook (HTTP ${CODIGO})" ;;
             manual)    ESTADO="⏳ **pendiente — deploy manual**" ;;
