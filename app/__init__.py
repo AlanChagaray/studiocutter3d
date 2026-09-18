@@ -7,4 +7,4 @@ esto sea un servicio, cambiar la capa de arriba sin tocar lo de abajo.
 
 from __future__ import annotations
 
-__version__ = "1.0.2"
+__version__ = "1.0.3"
