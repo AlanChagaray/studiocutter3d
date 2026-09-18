@@ -69,6 +69,9 @@ on:
       tag:
         description: 'El tag creado (vacío si no se releaseó nada)'
         value: ${{ jobs.release.outputs.tag }}
+      commit:
+        description: 'SHA del commit de release en main (vacío si no se releaseó nada)'
+        value: ${{ jobs.release.outputs.commit }}
     secrets:
       RELEASE_TOKEN:
         description: 'Fine-grained PAT con Contents: write sobre este repo. Opcional mientras main no esté protegida.'
@@ -116,6 +119,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.nueva }}
       tag: ${{ steps.version.outputs.tag }}
+      commit: ${{ steps.push.outputs.commit }}
 
     steps:
       # `ref: main` y no el commit de la corrida: ver "carreras" en la cabecera.
@@ -279,6 +283,9 @@ jobs:
             -m "Source-Commit: ${SRC_SHA}" \
             -m "Source-Run: ${RUN_URL}"
           git tag --annotate "$TAG" --message "studioCutter3D ${TAG}" --message "Source-Commit: ${SRC_SHA}"
+          # El SHA del commit de release: es el que Render tiene que construir, y
+          # el que ci-deploy pone en su resumen como "commit a desplegar".
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
           if SALIDA=$(git push origin "HEAD:refs/heads/main" "refs/tags/${TAG}" 2>&1); then
             echo "$SALIDA"

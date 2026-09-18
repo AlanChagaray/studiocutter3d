@@ -99,7 +99,11 @@ a las 08:00 ART. El detalle operativo (qué se configura a mano en GitHub y en R
 - **Las ramas se llaman `tipo/descripcion`**, con los tipos de `scripts/version.py tipos` (la
   misma lista que decide el bump: agregar un tipo es tocar un solo dict). `main` recibe solo merges
   por PR con la CI en verde (ruleset de GitHub), y el **Auto-Deploy de Render está apagado**:
-  despliega la CI, no el push.
+  despliega la CI, no el push — por deploy hook si el secret está cargado; si no, `ci-deploy` no
+  falla y deja en el resumen de la corrida la versión, el commit y la imagen verificada para el
+  deploy manual desde el panel. ⚠ El modo "After CI Checks Pass" de Render **no sirve acá**:
+  desplegaría el merge (versión vieja) y saltearía el bump, que va con `[skip ci]` y no tiene
+  checks.
 - ⚠ Sin el secret `RELEASE_TOKEN`, `ci-release` pushea con el `GITHUB_TOKEN`, que deja de poder
   apenas `main` quede protegida. El mensaje de error del push dice cuál de los dos falta.
 - **`arquitectura` en `ci-quality` es la frontera de abajo, ejecutada en cada PR**: `cutter3d/` no
