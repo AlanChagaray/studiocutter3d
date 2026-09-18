@@ -413,7 +413,12 @@ solo en su job.
 - **Dependabot**: sus ramas `dependabot/**` están aceptadas en `ci-quality`; el tipo del release
   sale del prefijo del commit (`chore:` → PARCHE, `ci:` → PARCHE), configurado en
   `.github/dependabot.yml`. Sus PRs pasan por las mismas compuertas, incluida la construcción y el
-  escaneo de la imagen.
+  escaneo de la imagen. ⚠ Para **pip** solo abre PRs de **seguridad**, no de versión: su primer
+  PR subió `pydantic-core` sin tocar `pydantic`, que la clava, y el build murió en
+  `ResolutionImpossible`. `requirements.txt` es un freeze completo y se actualiza regenerándolo
+  entero (§6) — la señal de cuándo la da `pip-audit` cada mañana. Un PR de seguridad de Dependabot
+  sobre pip puede traer el mismo problema: si el build falla en `pip install`, la respuesta es
+  regenerar el freeze, no mergear el pin suelto.
 - **Corridas diarias (08:00 ART)**: tests, seguridad y el escaneo de la imagen. No despliegan. Lo
   que vale de ellas es enterarse de un CVE nuevo en `requirements.txt` o en el Debian base el mismo
   día que se publica, no la próxima vez que alguien toque el repo.
